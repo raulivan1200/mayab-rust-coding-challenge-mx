@@ -57,7 +57,7 @@ body {
 
 body {
   margin: 0;
-  background: transparent;
+  background: var(--fondo);
   color: var(--tinta);
   font-family: "Archivo", ui-sans-serif, system-ui, sans-serif;
   font-size: 16px;
@@ -69,7 +69,7 @@ body {
   left: 0;
   width: 100vw;
   height: 100vh;
-  z-index: -1;
+  z-index: 0;
   pointer-events: none;
 }
 
@@ -92,6 +92,8 @@ tr:focus-visible {
 }
 
 .pantalla {
+  position: relative;
+  z-index: 1;
   width: min(1760px, calc(100vw - 28px));
   margin: 0 auto;
   padding: 14px 0 34px;
