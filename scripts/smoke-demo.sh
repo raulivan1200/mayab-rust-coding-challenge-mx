@@ -40,13 +40,25 @@ require_cmd python3
 echo "Smoke Mayab contra $BASE_URL"
 
 json_get "/healthz" "$TMP_DIR/healthz.json"
+json_get "/api/jurado" "$TMP_DIR/jurado-inicial.json"
 json_get "/api/preflight" "$TMP_DIR/preflight-inicial.json"
 json_post "/api/ga/evolucionar" '{"usarReplaySiVacio":true,"muestras":96}' "$TMP_DIR/ga.json"
 json_post "/api/demo" '{"escenario":"mercado_rentable"}' "$TMP_DIR/demo-rentable.json"
 json_post "/api/demo" '{"escenario":"rebalanceo"}' "$TMP_DIR/demo-rebalanceo.json"
+json_post "/api/demo/final" '{}' "$TMP_DIR/demo-final.json"
 json_get "/api/estado" "$TMP_DIR/estado.json"
+json_get "/api/jurado" "$TMP_DIR/jurado.json"
 json_get "/api/paquete-evaluacion" "$TMP_DIR/paquete.json"
 json_get "/api/resumen-llm" "$TMP_DIR/resumen.json"
+json_get "/api/mcp/manifest" "$TMP_DIR/mcp-manifest.json"
+json_post "/api/mcp/call" '{"tool":"summarize_for_llm"}' "$TMP_DIR/mcp-summary.json"
+json_get "/api/backtest" "$TMP_DIR/backtest.json"
+json_get "/api/lab/sweep" "$TMP_DIR/lab-sweep.json"
+json_get "/api/export/json" "$TMP_DIR/export.json"
+json_get "/api/export/csv" "$TMP_DIR/export.csv"
+json_post "/api/demo" '{"escenario":"liquidez_insuficiente"}' "$TMP_DIR/demo-liquidez.json"
+json_post "/api/demo" '{"escenario":"circuit_breaker"}' "$TMP_DIR/demo-circuit.json"
+json_get "/api/estado" "$TMP_DIR/estado-adverso.json"
 
 python3 - "$TMP_DIR" <<'PY'
 import json
@@ -59,18 +71,35 @@ def load(name):
     return json.loads((tmp / name).read_text())
 
 healthz = load("healthz.json")
+jurado_inicial = load("jurado-inicial.json")
 preflight = load("preflight-inicial.json")
 ga = load("ga.json")
 demo = load("demo-rentable.json")
 rebalanceo = load("demo-rebalanceo.json")
+demo_final = load("demo-final.json")
 estado = load("estado.json")
+jurado = load("jurado.json")
 paquete = load("paquete.json")
 resumen = load("resumen.json")
+mcp_manifest = load("mcp-manifest.json")
+mcp_summary = load("mcp-summary.json")
+backtest = load("backtest.json")
+lab = load("lab-sweep.json")
+export_json = load("export.json")
+demo_liquidez = load("demo-liquidez.json")
+demo_circuit = load("demo-circuit.json")
+estado_adverso = load("estado-adverso.json")
+export_csv = (tmp / "export.csv").read_text()
 
 errors = []
 
 if healthz.get("ok") is not True:
     errors.append("/healthz no devolvio ok=true")
+
+if jurado_inicial.get("nombre") != "Mayab Jury Mode":
+    errors.append("/api/jurado no devolvio Jury Mode")
+if len(jurado_inicial.get("rubricaOficial") or []) != 5:
+    errors.append("/api/jurado inicial no expone los 5 criterios de rubrica oficial")
 
 readiness = preflight.get("judgeReadiness") or {}
 rubrica_preflight = readiness.get("rubricaOficial") or []
@@ -86,6 +115,9 @@ if demo.get("ok") is not True:
 if rebalanceo.get("ok") is not True:
     errors.append("/api/demo rebalanceo fallo")
 
+if demo_final.get("ok") is not True:
+    errors.append("/api/demo/final fallo")
+
 metricas = estado.get("metricas") or {}
 genetico = estado.get("genetico") or {}
 eventos = estado.get("eventosEjecucion") or []
@@ -99,6 +131,18 @@ if not any(str(e.get("tipo", "")).startswith("demo") for e in eventos):
     errors.append("no hay eventos demo visibles en estado")
 if metricas.get("rebalanceosTotales", 0) <= 0:
     errors.append("no hay rebalanceos visibles despues de demo rebalanceo")
+if not estado.get("auditoriaDecisiones"):
+    errors.append("estado no contiene auditoria de decisiones")
+if not any(o.get("parcial") for o in estado.get("operaciones", []) + estado.get("oportunidades", [])):
+    errors.append("estado no contiene evidencia de fill parcial")
+
+estado_jurado = jurado.get("estado") or {}
+if estado_jurado.get("status") != "ready":
+    errors.append("/api/jurado no quedo listo despues de demo/final")
+if not jurado.get("scorecard") or len(jurado.get("scorecard") or []) < 8:
+    errors.append("/api/jurado no expone scorecard suficiente")
+if jurado.get("enlaces", {}).get("demoFinal") != "/api/demo/final":
+    errors.append("/api/jurado no enlaza demoFinal")
 
 rubrica = paquete.get("rubricaOficialComite") or []
 if len(rubrica) != 5:
@@ -115,6 +159,44 @@ if not recomendaciones or "Estado listo" not in recomendaciones[0]:
 if not resumen.get("persistencia", {}).get("activa"):
     errors.append("/api/resumen-llm no reporta persistencia activa")
 
+mcp_tools = {tool.get("name") for tool in mcp_manifest.get("tools", [])}
+if "summarize_for_llm" not in mcp_tools or "prepare_demo_final" not in mcp_tools or "jury_mode" not in mcp_tools:
+    errors.append("/api/mcp/manifest no expone herramientas clave")
+if mcp_summary.get("ok") is not True or not mcp_summary.get("result", {}).get("resumen"):
+    errors.append("/api/mcp/call summarize_for_llm no devolvio resumen")
+
+comparacion = backtest.get("comparacion") or {}
+if comparacion.get("ganador") not in {"base", "optimizada"}:
+    errors.append("/api/backtest no reporta ganador valido")
+if backtest.get("base", {}).get("rutasEvaluadas", 0) <= 0:
+    errors.append("/api/backtest no evaluo rutas")
+
+if lab.get("tipo") != "research_lab_sweep" or len(lab.get("resultados") or []) < 4:
+    errors.append("/api/lab/sweep no devolvio sweep completo")
+if not lab.get("ganador"):
+    errors.append("/api/lab/sweep no reporta ganador")
+
+for key in ["operaciones", "eventosEjecucion", "auditoriaDecisiones", "rebalanceos", "balances", "configuracion"]:
+    if key not in export_json:
+        errors.append(f"/api/export/json no incluye {key}")
+if "tipo,tiempo,ruta,detalle,cantidad_btc" not in export_csv.splitlines()[0]:
+    errors.append("/api/export/csv no incluye header esperado")
+if "operacion," not in export_csv:
+    errors.append("/api/export/csv no incluye operaciones")
+
+if demo_liquidez.get("ok") is not True:
+    errors.append("/api/demo liquidez_insuficiente fallo")
+if demo_circuit.get("ok") is not True:
+    errors.append("/api/demo circuit_breaker fallo")
+eventos_adversos = estado_adverso.get("eventosEjecucion") or []
+tipos_adversos = {str(e.get("tipo", "")) for e in eventos_adversos}
+if "liquidez_insuficiente" not in tipos_adversos:
+    errors.append("demo liquidez_insuficiente no dejo evento visible")
+if "circuit_breaker" not in tipos_adversos:
+    errors.append("demo circuit_breaker no dejo evento visible")
+if not estado_adverso.get("metricas", {}).get("circuitBreakerActivo"):
+    errors.append("circuit_breaker demo no activo metrica de riesgo")
+
 if errors:
     print("Smoke fallido:")
     for error in errors:
@@ -127,4 +209,5 @@ print(f"- operaciones: {metricas.get('operaciones')} | PnL: {metricas.get('utili
 print(f"- GA generacion: {genetico.get('generacion')} | activo: {genetico.get('activo')}")
 print(f"- rebalanceos: {metricas.get('rebalanceosTotales')}")
 print(f"- paquete: {paquete.get('puntajeTotal'):.2f} | huella: {paquete.get('huellaAuditoria')}")
+print(f"- lab ganador: {lab.get('ganador')} | export CSV bytes: {len(export_csv)}")
 PY

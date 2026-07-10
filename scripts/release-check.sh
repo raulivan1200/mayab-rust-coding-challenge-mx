@@ -47,20 +47,28 @@ APP_PID=$!
 ready=0
 for _ in $(seq 1 60); do
   if curl -fsS "${BASE_URL}/healthz" >/dev/null 2>&1 \
+    && curl -fsS -X POST "${BASE_URL}/api/demo/final" -o "${TMP_DIR}/demo-final.json" 2>/dev/null \
+    && curl -fsS "${BASE_URL}/api/jurado" -o "${TMP_DIR}/jurado.json" 2>/dev/null \
     && curl -fsS "${BASE_URL}/api/preflight" -o "${TMP_DIR}/preflight.json" 2>/dev/null \
     && curl -fsS "${BASE_URL}/api/paquete-evaluacion" -o "${TMP_DIR}/paquete.json" 2>/dev/null \
-    && python3 - "${TMP_DIR}/preflight.json" "${TMP_DIR}/paquete.json" <<'PY'
+    && python3 - "${TMP_DIR}/demo-final.json" "${TMP_DIR}/jurado.json" "${TMP_DIR}/preflight.json" "${TMP_DIR}/paquete.json" <<'PY'
 import json
 import sys
 
-preflight = json.load(open(sys.argv[1]))
-paquete = json.load(open(sys.argv[2]))
+demo = json.load(open(sys.argv[1]))
+jurado = json.load(open(sys.argv[2]))
+preflight = json.load(open(sys.argv[3]))
+paquete = json.load(open(sys.argv[4]))
 readiness = preflight.get("judgeReadiness") or {}
+jury_state = jurado.get("estado") or {}
 score = float(paquete.get("puntajeTotal") or 0)
 checks = readiness.get("checks") or []
 rubrica = readiness.get("rubricaOficial") or []
 ok = (
-    readiness.get("status") == "ready"
+    demo.get("ok") is True
+    and jurado.get("nombre") == "Mayab Jury Mode"
+    and jury_state.get("status") == "ready"
+    and readiness.get("status") == "ready"
     and len(checks) >= 9
     and len(rubrica) == 5
     and score >= 90

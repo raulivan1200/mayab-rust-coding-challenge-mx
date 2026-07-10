@@ -21,6 +21,7 @@ pub struct Config {
     pub costos: MapaCostos,
     pub capital_inicial_usd: f64,
     pub balance_inicial_btc: f64,
+    pub demo_rentable_inicial: bool,
 }
 
 impl Config {
@@ -112,6 +113,7 @@ impl Config {
             movimiento_brusco_bps: non_negative(env_f64("MOVIMIENTO_BRUSCO_BPS", 7.0), 7.0),
             rebalance_umbral_pct: non_negative(env_f64("REBALANCE_UMBRAL_PCT", 35.0), 35.0),
             rebalance_max_transfer_pct: prob_pct(env_f64("REBALANCE_MAX_TRANSFER_PCT", 35.0), 35.0),
+            costo_rebalanceo_usd: non_negative(env_f64("COSTO_REBALANCEO_USD", 5.0), 5.0),
             exchanges,
         };
 
@@ -127,6 +129,7 @@ impl Config {
             costos,
             capital_inicial_usd: positive(env_f64("CAPITAL_INICIAL_USD", 250000.0), 250000.0),
             balance_inicial_btc: positive(env_f64("BALANCE_INICIAL_BTC", 1.25), 1.25),
+            demo_rentable_inicial: env_bool("DEMO_RENTABLE_INICIAL", true),
         }
     }
 }

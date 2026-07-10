@@ -1,6 +1,6 @@
 APP=mayab-arbitrage
 
-.PHONY: run test check smoke release-check build docker
+.PHONY: run test check contrast smoke release-check build docker
 
 run:
 	cargo run
@@ -13,6 +13,10 @@ check:
 	cargo clippy -- -D warnings
 	cargo test
 	node --check internal/webui/web/app.js
+	node scripts/check-webui-contrast.mjs
+
+contrast:
+	node scripts/check-webui-contrast.mjs
 
 smoke:
 	./scripts/smoke-demo.sh

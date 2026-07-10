@@ -1,139 +1,97 @@
-(() => {
-  const canvas = document.getElementById("bg-shader");
-  if (!canvas) return;
+const gridContainer = document.getElementById("bg-grid");
 
-  const ctx = canvas.getContext("2d", { alpha: false });
-  if (!ctx) return;
-
-  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
-  const pointer = { x: 0.5, y: 0.5 };
-  let width = 0;
-  let height = 0;
-  let frame = 0;
-  let raf = 0;
-
-  function resize() {
-    const ratio = Math.min(window.devicePixelRatio || 1, 2);
-    width = window.innerWidth;
-    height = window.innerHeight;
-    canvas.width = Math.max(1, Math.floor(width * ratio));
-    canvas.height = Math.max(1, Math.floor(height * ratio));
-    canvas.style.width = `${width}px`;
-    canvas.style.height = `${height}px`;
-    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-    draw();
-  }
-
-  function drawGrid(t) {
-    const spacing = Math.max(42, Math.min(84, width / 18));
-    const offset = (t * 18) % spacing;
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = "rgba(32, 230, 154, 0.075)";
-    ctx.beginPath();
-    for (let x = -spacing + offset; x < width + spacing; x += spacing) {
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x + height * 0.15, height);
-    }
-    for (let y = -spacing + offset; y < height + spacing; y += spacing) {
-      ctx.moveTo(0, y);
-      ctx.lineTo(width, y + width * 0.04);
-    }
-    ctx.stroke();
-  }
-
-  function drawWave(t) {
-    const center = height * (0.36 + pointer.y * 0.16);
-    const amplitude = Math.max(26, height * 0.055);
-    const gradient = ctx.createLinearGradient(0, center - amplitude, width, center + amplitude);
-    gradient.addColorStop(0, "rgba(32, 230, 154, 0)");
-    gradient.addColorStop(0.45, "rgba(32, 230, 154, 0.28)");
-    gradient.addColorStop(1, "rgba(34, 211, 238, 0)");
-
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = gradient;
-    ctx.shadowColor = "rgba(32, 230, 154, 0.28)";
-    ctx.shadowBlur = 18;
-    ctx.beginPath();
-    for (let x = 0; x <= width; x += 18) {
-      const y =
-        center +
-        Math.sin(x * 0.008 + t * 1.8) * amplitude +
-        Math.sin(x * 0.017 - t * 1.1) * amplitude * 0.38;
-      if (x === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-  }
-
-  function drawParticles(t) {
-    const total = Math.min(90, Math.max(34, Math.floor(width / 22)));
-    for (let i = 0; i < total; i += 1) {
-      const seed = i * 97.13;
-      const x = (Math.sin(seed) * 10000 + width + t * (8 + (i % 5) * 3)) % width;
-      const baseY = (Math.cos(seed * 1.7) * 10000 + height) % height;
-      const y = (baseY + Math.sin(t * 0.9 + i) * 18) % height;
-      const size = 1 + (i % 4) * 0.55;
-      const alpha = 0.08 + (i % 7) * 0.018;
-      ctx.fillStyle = i % 9 === 0 ? `rgba(247, 147, 26, ${alpha})` : `rgba(34, 211, 238, ${alpha})`;
-      ctx.fillRect(x, y, size, size);
+if (gridContainer) {
+  let resizeTimer = 0;
+  let tiles = [];
+  let cols = 0;
+  let rows = 0;
+  let hoverTimers = new Map();
+  
+  const colors = [
+    "var(--blue)",
+    "var(--green)",
+    "var(--orange)",
+    "var(--yellow)",
+    "var(--purple)"
+  ];
+  
+  function createGrid() {
+    gridContainer.innerHTML = "";
+    tiles = [];
+    hoverTimers.clear();
+    
+    const tileSize = 52; 
+    cols = Math.ceil(window.innerWidth / tileSize);
+    rows = Math.ceil(window.innerHeight / tileSize);
+    
+    gridContainer.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+    gridContainer.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+    
+    const numTiles = cols * rows;
+    
+    for (let i = 0; i < numTiles; i++) {
+      const tile = document.createElement("div");
+      tile.className = "grid-tile";
+      
+      const hoverColor = colors[Math.floor(Math.random() * colors.length)];
+      tile.style.setProperty("--hover-c", hoverColor);
+      
+      gridContainer.appendChild(tile);
+      tiles.push(tile);
     }
   }
 
-  function draw() {
-    const t = frame / 60;
-    const glowX = width * (0.15 + pointer.x * 0.7);
-    const glowY = height * (0.2 + pointer.y * 0.5);
+  createGrid();
 
-    ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = "#070806";
-    ctx.fillRect(0, 0, width, height);
+  window.addEventListener("resize", () => {
+    window.clearTimeout(resizeTimer);
+    resizeTimer = window.setTimeout(createGrid, 200);
+  }, { passive: true });
 
-    const radial = ctx.createRadialGradient(glowX, glowY, 0, glowX, glowY, Math.max(width, height) * 0.72);
-    radial.addColorStop(0, "rgba(32, 230, 154, 0.16)");
-    radial.addColorStop(0.34, "rgba(247, 147, 26, 0.08)");
-    radial.addColorStop(1, "rgba(7, 8, 6, 0)");
-    ctx.fillStyle = radial;
-    ctx.fillRect(0, 0, width, height);
-
-    drawGrid(t);
-    drawWave(t);
-    drawParticles(t);
-  }
-
-  function tick() {
-    frame += 1;
-    draw();
-    if (!reducedMotion.matches && !document.hidden) {
-      raf = window.requestAnimationFrame(tick);
+  window.addEventListener("mousemove", (e) => {
+    const col = Math.floor((e.clientX / window.innerWidth) * cols);
+    const row = Math.floor((e.clientY / window.innerHeight) * rows);
+    const index = row * cols + col;
+    
+    if (tiles[index]) {
+      const tile = tiles[index];
+      tile.classList.add("hovered");
+      
+      if (hoverTimers.has(index)) {
+        clearTimeout(hoverTimers.get(index));
+      }
+      
+      hoverTimers.set(index, setTimeout(() => {
+        tile.classList.remove("hovered");
+        hoverTimers.delete(index);
+      }, 150));
     }
-  }
+  }, { passive: true });
+}
 
-  function start() {
-    window.cancelAnimationFrame(raf);
-    if (reducedMotion.matches || document.hidden) {
-      draw();
-      return;
-    }
-    raf = window.requestAnimationFrame(tick);
-  }
+import { ShaderMount, paperTextureFragmentShader, getShaderColorFromString } from 'https://esm.sh/@paper-design/shaders@0.0.76';
 
-  window.addEventListener("resize", resize, { passive: true });
-  window.addEventListener(
-    "pointermove",
-    (event) => {
-      pointer.x = width > 0 ? event.clientX / width : 0.5;
-      pointer.y = height > 0 ? event.clientY / height : 0.5;
+const paperOverlay = document.getElementById('paper-texture-overlay');
+if (paperOverlay) {
+  new ShaderMount(
+    paperOverlay,
+    paperTextureFragmentShader,
+    {
+      u_colorBack: getShaderColorFromString('#ffffff'),
+      u_colorFront: getShaderColorFromString('#9fadbc'),
+      u_contrast: 0.3,
+      u_roughness: 0.4,
+      u_fiber: 0.3,
+      u_fiberSize: 0.2,
+      u_crumples: 0.3,
+      u_crumpleSize: 0.35,
+      u_folds: 0.65,
+      u_foldCount: 5,
+      u_drops: 0.2,
+      u_fade: 0,
+      u_seed: 5.8
     },
-    { passive: true },
+    undefined,
+    0
   );
-  document.addEventListener("visibilitychange", start);
-  if (typeof reducedMotion.addEventListener === "function") {
-    reducedMotion.addEventListener("change", start);
-  } else if (typeof reducedMotion.addListener === "function") {
-    reducedMotion.addListener(start);
-  }
-
-  resize();
-  start();
-})();
+}

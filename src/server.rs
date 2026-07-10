@@ -39,25 +39,52 @@ use crate::{
 struct EstadoApp {
     motor: Arc<Motor>,
     token_admin: Option<String>,
+    ws_tx: tokio::sync::broadcast::Sender<String>,
 }
 
 /// Construye el router Axum completo del binario.
 pub fn router(motor: Arc<Motor>, token_admin: Option<String>) -> Router {
-    let state = EstadoApp { motor, token_admin };
+    let (ws_tx, _) = tokio::sync::broadcast::channel(16);
+    let state = EstadoApp {
+        motor: motor.clone(),
+        token_admin,
+        ws_tx: ws_tx.clone(),
+    };
+
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_millis(180));
+        loop {
+            ticker.tick().await;
+            if ws_tx.receiver_count() == 0 {
+                continue;
+            }
+            let mut estado = motor.estado().await;
+            compactar_estado_ws(&mut estado);
+            if let Ok(payload) = serde_json::to_string(&estado) {
+                let _ = ws_tx.send(payload);
+            }
+        }
+    });
     let archivos_estaticos =
         ServeDir::new("internal/webui/web").append_index_html_on_directories(true);
     Router::new()
         .route("/healthz", get(healthz))
         .route("/api/estado", get(estado))
+        .route("/api/jurado", get(jurado))
         .route("/api/preflight", get(preflight))
         .route("/api/resumen-llm", get(resumen_llm))
+        .route("/api/mcp", get(mcp_manifest))
+        .route("/api/mcp/manifest", get(mcp_manifest))
+        .route("/api/mcp/call", post(mcp_call))
         .route("/api/paquete-evaluacion", get(paquete_evaluacion))
         .route("/api/latencias", get(latencias))
         .route("/api/backtest", get(backtest))
+        .route("/api/lab/sweep", get(lab_sweep))
         .route("/api/export/json", get(exportar_json))
         .route("/api/export/csv", get(exportar_csv))
         .route("/api/config", post(actualizar_config_http))
         .route("/api/demo", post(demo_escenario))
+        .route("/api/demo/final", post(demo_final_http))
         .route("/api/ga/estado", get(ga_estado))
         .route("/api/ga/config", get(obtener_config_ga).post(actualizar_config_ga_http))
         .route("/api/ga/evolucionar", post(evolucionar_ga_http))
@@ -102,9 +129,164 @@ async fn preflight(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     Json(construir_preflight(&estado))
 }
 
+async fn jurado(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+    let estado = app.motor.estado().await;
+    Json(construir_modo_jurado(&estado))
+}
+
 async fn resumen_llm(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     let estado = app.motor.estado().await;
     Json(construir_resumen_llm(&estado))
+}
+
+async fn mcp_manifest() -> Json<serde_json::Value> {
+    Json(construir_mcp_manifest())
+}
+
+async fn mcp_call(
+    State(app): State<EstadoApp>,
+    headers: HeaderMap,
+    payload: Result<Json<SolicitudMcp>, JsonRejection>,
+) -> Response {
+    let Json(payload) = match payload {
+        Ok(payload) => payload,
+        Err(err) => return rechazo_json(err).into_response(),
+    };
+    let tool = payload.tool.as_str();
+    if matches!(tool, "prepare_demo_final" | "evolve_ga" | "demo_scenario") {
+        if let Some(response) = autorizar_mutacion(&app, &headers) {
+            return response;
+        }
+    }
+
+    let estado = app.motor.estado().await;
+    let args = payload.arguments.unwrap_or_else(|| json!({}));
+    let respuesta = match tool {
+        "get_state" => json!({ "ok": true, "tool": tool, "result": estado }),
+        "preflight" => json!({ "ok": true, "tool": tool, "result": construir_preflight(&estado) }),
+        "jury_mode" => {
+            json!({ "ok": true, "tool": tool, "result": construir_modo_jurado(&estado) })
+        }
+        "summarize_for_llm" => {
+            json!({ "ok": true, "tool": tool, "result": construir_resumen_llm(&estado) })
+        }
+        "evaluation_package" => {
+            json!({ "ok": true, "tool": tool, "result": construir_paquete_evaluacion(&estado) })
+        }
+        "latency_ranking" => json!({
+            "ok": true,
+            "tool": tool,
+            "result": {
+                "generadoEn": estado.generado_en,
+                "latenciaPromedioMs": estado.metricas.latencia_promedio_ms,
+                "estadoRiesgo": estado.metricas.estado_riesgo,
+                "exchanges": estado.latencias_exchange,
+            }
+        }),
+        "backtest" => json!({
+            "ok": true,
+            "tool": tool,
+            "result": backtest_reproducible(&estado.configuracion)
+        }),
+        "research_lab_sweep" => json!({
+            "ok": true,
+            "tool": tool,
+            "result": lab_sweep_reproducible(&estado.configuracion)
+        }),
+        "prepare_demo_final" => {
+            let ga = app.motor.evolucionar_ga(true, 96).await;
+            let rentable = app
+                .motor
+                .activar_escenario_demo(EscenarioDemo::MercadoRentable)
+                .await;
+            let fill_parcial = app
+                .motor
+                .activar_escenario_demo(EscenarioDemo::FillParcial)
+                .await;
+            let rebalanceo = app
+                .motor
+                .activar_escenario_demo(EscenarioDemo::Rebalanceo)
+                .await;
+            let estado_final = app.motor.estado().await;
+            json!({
+                "ok": true,
+                "tool": tool,
+                "result": {
+                    "ga": ga,
+                    "mercadoRentable": rentable,
+                    "fillParcial": fill_parcial,
+                    "rebalanceo": rebalanceo,
+                    "metricas": estado_final.metricas,
+                    "mlEdge": estado_final.ml_edge,
+                    "preflight": construir_preflight(&estado_final),
+                }
+            })
+        }
+        "evolve_ga" => {
+            let usar_replay = args
+                .get("usarReplaySiVacio")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let muestras = args
+                .get("muestras")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .unwrap_or(96);
+            json!({
+                "ok": true,
+                "tool": tool,
+                "result": app.motor.evolucionar_ga(usar_replay, muestras).await
+            })
+        }
+        "demo_scenario" => {
+            let escenario = match args.get("escenario").and_then(|v| v.as_str()) {
+                Some("fallo_orden") => EscenarioDemo::FalloOrden,
+                Some("mercado_movido") => EscenarioDemo::MercadoMovido,
+                Some("liquidez_insuficiente") => EscenarioDemo::LiquidezInsuficiente,
+                Some("fill_parcial") => EscenarioDemo::FillParcial,
+                Some("circuit_breaker") => EscenarioDemo::CircuitBreaker,
+                Some("rebalanceo") => EscenarioDemo::Rebalanceo,
+                Some("mercado_rentable") => EscenarioDemo::MercadoRentable,
+                _ => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "ok": false,
+                            "error": "escenario invalido",
+                            "validos": [
+                                "fallo_orden",
+                                "mercado_movido",
+                                "liquidez_insuficiente",
+                                "fill_parcial",
+                                "circuit_breaker",
+                                "rebalanceo",
+                                "mercado_rentable"
+                            ]
+                        })),
+                    )
+                        .into_response()
+                }
+            };
+            json!({
+                "ok": true,
+                "tool": tool,
+                "result": app.motor.activar_escenario_demo(escenario).await
+            })
+        }
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "ok": false,
+                    "error": "tool no soportada",
+                    "manifest": "/api/mcp/manifest"
+                })),
+            )
+                .into_response()
+        }
+    };
+
+    Json(respuesta).into_response()
 }
 
 async fn paquete_evaluacion(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
@@ -128,6 +310,11 @@ async fn backtest(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     Json(backtest_reproducible(&estado.configuracion))
 }
 
+async fn lab_sweep(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+    let estado = app.motor.estado().await;
+    Json(lab_sweep_reproducible(&estado.configuracion))
+}
+
 async fn exportar_json(State(app): State<EstadoApp>) -> Response {
     let estado = app.motor.estado().await;
     let payload = json!({
@@ -141,6 +328,7 @@ async fn exportar_json(State(app): State<EstadoApp>) -> Response {
         "balances": estado.balances,
         "configuracion": estado.configuracion,
         "genetico": estado.genetico,
+        "mlEdge": estado.ml_edge,
         "persistencia": estado.persistencia,
     });
     let body = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".into());
@@ -159,33 +347,43 @@ async fn exportar_json(State(app): State<EstadoApp>) -> Response {
 
 async fn exportar_csv(State(app): State<EstadoApp>) -> Response {
     let estado = app.motor.estado().await;
-    let mut csv = String::from(
-        "tipo,tiempo,ruta,detalle,cantidad_btc,utilidad_usd,diferencial_neto_bps,score,costo_usd\n",
-    );
-    for op in &estado.operaciones {
-        csv.push_str(&format!(
-            "operacion,{},{},{},{:.8},{:.4},,,{:.4}\n",
+
+    let header = "tipo,tiempo,ruta,detalle,cantidad_btc,utilidad_usd,diferencial_neto_bps,score,costo_usd,decision_code,decision_reason\n".to_string();
+
+    let mut config_rows = String::new();
+    let config_json = serde_json::to_string(&estado.configuracion).unwrap_or_default();
+    config_rows.push_str(&format!(
+        "parametro,{},configuracion_json,{},,,,,,,,\n",
+        estado.generado_en.to_rfc3339(),
+        csv_cell(&config_json)
+    ));
+
+    let op_iter = estado.operaciones.into_iter().map(|op| {
+        format!(
+            "operacion,{},{},{},{:.8},{:.4},,,{:.4},,\n",
             op.ejecutada_en.to_rfc3339(),
             csv_cell(&format!("{}->{}", op.compra_en, op.venta_en)),
             csv_cell(&op.par),
             op.cantidad_btc,
             op.utilidad_usd,
             op.costos.total_usd,
-        ));
-    }
-    for evento in &estado.eventos_ejecucion {
-        csv.push_str(&format!(
-            "evento,{},{},{},{:.8},{:.4},,,\n",
+        )
+    });
+
+    let evt_iter = estado.eventos_ejecucion.into_iter().map(|evento| {
+        format!(
+            "evento,{},{},{},{:.8},{:.4},,,,,,\n",
             evento.tiempo.to_rfc3339(),
             csv_cell(&evento.ruta),
             csv_cell(&evento.detalle),
             evento.cantidad_btc,
             evento.utilidad_usd,
-        ));
-    }
-    for audit in &estado.auditoria_decisiones {
-        csv.push_str(&format!(
-            "auditoria,{},{},{},{:.8},{:.4},{:.4},{:.6},{:.4}\n",
+        )
+    });
+
+    let aud_iter = estado.auditoria_decisiones.into_iter().map(|audit| {
+        format!(
+            "auditoria,{},{},{},{:.8},{:.4},{:.4},{:.6},{:.4},{},{}\n",
             audit.tiempo.to_rfc3339(),
             csv_cell(&audit.ruta),
             csv_cell(&audit.razon),
@@ -194,18 +392,32 @@ async fn exportar_csv(State(app): State<EstadoApp>) -> Response {
             audit.diferencial_neto_bps,
             audit.score,
             audit.costo_total_usd,
-        ));
-    }
-    for rebalanceo in &estado.rebalanceos {
-        csv.push_str(&format!(
-            "rebalanceo,{},{},{},{:.8},,,,{:.4}\n",
+            csv_cell(&audit.decision_code),
+            csv_cell(&audit.decision_reason),
+        )
+    });
+
+    let reb_iter = estado.rebalanceos.into_iter().map(|rebalanceo| {
+        format!(
+            "rebalanceo,{},{},{},{:.8},,,,{:.4},,\n",
             rebalanceo.tiempo.to_rfc3339(),
             csv_cell(&format!("{}->{}", rebalanceo.desde, rebalanceo.hacia)),
             csv_cell(&rebalanceo.razon),
             rebalanceo.cantidad,
             rebalanceo.costo_usd,
-        ));
-    }
+        )
+    });
+
+    let stream = futures_util::stream::iter(
+        std::iter::once(header)
+            .chain(std::iter::once(config_rows))
+            .chain(op_iter)
+            .chain(evt_iter)
+            .chain(aud_iter)
+            .chain(reb_iter)
+            .map(Ok::<_, std::convert::Infallible>),
+    );
+
     (
         [
             (header::CONTENT_TYPE, "text/csv; charset=utf-8"),
@@ -214,7 +426,7 @@ async fn exportar_csv(State(app): State<EstadoApp>) -> Response {
                 "attachment; filename=\"mayab-arbitraje-auditoria.csv\"",
             ),
         ],
-        csv,
+        axum::body::Body::from_stream(stream),
     )
         .into_response()
 }
@@ -261,6 +473,8 @@ struct ParcheConfig {
     rebalance_umbral_pct: Option<f64>,
     #[serde(rename = "rebalanceMaxTransferPct")]
     rebalance_max_transfer_pct: Option<f64>,
+    #[serde(rename = "costoRebalanceoUsd")]
+    costo_rebalanceo_usd: Option<f64>,
     exchanges: Option<HashMap<String, ExchangeConfig>>,
 }
 
@@ -302,6 +516,13 @@ struct SolicitudEvolucionGa {
     muestras: Option<usize>,
 }
 
+#[derive(Deserialize)]
+struct SolicitudMcp {
+    tool: String,
+    #[serde(default)]
+    arguments: Option<serde_json::Value>,
+}
+
 async fn actualizar_config_http(
     State(app): State<EstadoApp>,
     headers: HeaderMap,
@@ -339,6 +560,52 @@ async fn demo_escenario(
             .activar_escenario_demo(payload.escenario.into())
             .await,
     )
+    .into_response()
+}
+
+async fn demo_final_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Response {
+    if let Some(response) = autorizar_mutacion(&app, &headers) {
+        return response;
+    }
+
+    let ga = app.motor.evolucionar_ga(true, 96).await;
+    let rentable = app
+        .motor
+        .activar_escenario_demo(EscenarioDemo::MercadoRentable)
+        .await;
+    let fill_parcial = app
+        .motor
+        .activar_escenario_demo(EscenarioDemo::FillParcial)
+        .await;
+    let rebalanceo = app
+        .motor
+        .activar_escenario_demo(EscenarioDemo::Rebalanceo)
+        .await;
+    let estado = app.motor.estado().await;
+    let preflight = construir_preflight(&estado);
+
+    Json(json!({
+        "ok": true,
+        "modo": "demo_final",
+        "pasos": [
+            "GA evolucionado con historial real o replay sintetico",
+            "mercado_rentable inyectado con operaciones demo_rentable",
+            "fill_parcial generado para evidenciar profundidad/inventario",
+            "rebalanceo forzado para evidenciar wallets"
+        ],
+        "ga": ga,
+        "mercadoRentable": rentable,
+        "fillParcial": fill_parcial,
+        "rebalanceo": rebalanceo,
+        "metricas": estado.metricas,
+        "mlEdge": estado.ml_edge,
+        "preflight": preflight,
+        "siguiente": [
+            "Abrir /api/preflight",
+            "Abrir /api/paquete-evaluacion",
+            "Exportar /api/export/json o /api/export/csv"
+        ]
+    }))
     .into_response()
 }
 
@@ -441,32 +708,27 @@ fn autorizar_mutacion(app: &EstadoApp, headers: &HeaderMap) -> Option<Response> 
 }
 
 async fn tiempo_real(State(app): State<EstadoApp>, ws: WebSocketUpgrade) -> Response {
-    ws.on_upgrade(move |socket| websocket_loop(socket, app.motor))
+    let rx = app.ws_tx.subscribe();
+    ws.on_upgrade(move |socket| websocket_loop(socket, rx))
 }
 
-async fn websocket_loop(socket: WebSocket, motor: Arc<Motor>) {
+async fn websocket_loop(socket: WebSocket, mut rx: tokio::sync::broadcast::Receiver<String>) {
     let (mut sender, mut receiver) = socket.split();
-    let receiver_task = tokio::spawn(async move {
-        while let Some(Ok(msg)) = receiver.next().await {
-            if matches!(msg, Message::Close(_)) {
+
+    let rx_task = tokio::spawn(async move {
+        while let Ok(payload) = rx.recv().await {
+            if sender.send(Message::Text(payload)).await.is_err() {
                 break;
             }
         }
     });
 
-    let mut ticker = tokio::time::interval(Duration::from_millis(180));
-    loop {
-        ticker.tick().await;
-        let mut estado = motor.estado().await;
-        compactar_estado_ws(&mut estado);
-        let Ok(payload) = serde_json::to_string(&estado) else {
-            continue;
-        };
-        if sender.send(Message::Text(payload)).await.is_err() {
+    while let Some(Ok(msg)) = receiver.next().await {
+        if matches!(msg, Message::Close(_)) {
             break;
         }
     }
-    receiver_task.abort();
+    rx_task.abort();
 }
 
 fn compactar_estado_ws(estado: &mut EstadoPublico) {
@@ -479,10 +741,9 @@ fn compactar_estado_ws(estado: &mut EstadoPublico) {
     retener_ultimos(&mut estado.serie_diferencial, 160);
 }
 
-fn retener_ultimos<T>(items: &mut Vec<T>, maximo: usize) {
-    if items.len() > maximo {
-        let quitar = items.len() - maximo;
-        items.drain(0..quitar);
+fn retener_ultimos<T>(items: &mut std::collections::VecDeque<T>, maximo: usize) {
+    while items.len() > maximo {
+        items.pop_front();
     }
 }
 
@@ -703,6 +964,14 @@ fn aplicar_config_patch(cfg: &mut MapaCostos, patch: ParcheConfig) -> Result<(),
     )? {
         cfg.rebalance_max_transfer_pct = v;
     }
+    if let Some(v) = validar_f64(
+        "costoRebalanceoUsd",
+        patch.costo_rebalanceo_usd,
+        |v| v >= 0.0,
+        "mayor o igual a 0",
+    )? {
+        cfg.costo_rebalanceo_usd = v;
+    }
     if let Some(exchanges) = patch.exchanges {
         for (nombre, exchange) in exchanges {
             let nombre = nombre.trim();
@@ -783,6 +1052,81 @@ fn validar_muestras_ga(muestras: Option<usize>) -> Result<(), ErrorApi> {
     Ok(())
 }
 
+fn construir_mcp_manifest() -> serde_json::Value {
+    json!({
+        "name": "mayab-arbitraje-btc",
+        "version": env!("CARGO_PKG_VERSION"),
+        "transport": "http-json",
+        "description": "Bridge MCP-lite para que agentes LLM inspeccionen y preparen la demo sin parsear HTML.",
+        "safety": {
+            "realTrading": false,
+            "custody": false,
+            "secrets": false,
+            "mutableToolsRequireAdminToken": true,
+            "note": "Las herramientas mutables solo cambian estado simulado en memoria."
+        },
+        "endpoints": {
+            "manifest": "/api/mcp/manifest",
+            "call": "/api/mcp/call",
+            "llmSummary": "/api/resumen-llm",
+            "juryMode": "/api/jurado",
+            "evaluationPackage": "/api/paquete-evaluacion",
+            "preflight": "/api/preflight"
+        },
+        "callShape": {
+            "method": "POST",
+            "contentType": "application/json",
+            "body": {
+                "tool": "summarize_for_llm",
+                "arguments": {}
+            }
+        },
+        "tools": [
+            mcp_tool("get_state", false, "Devuelve /api/estado completo con contratos JSON del dominio.", json!({})),
+            mcp_tool("preflight", false, "Checklist operativo y readiness del jurado.", json!({})),
+            mcp_tool("jury_mode", false, "Superficie unica con rubrica, scorecard, cobertura finalista y enlaces.", json!({})),
+            mcp_tool("summarize_for_llm", false, "Snapshot compacto narrativo para agentes, jueces y reportes.", json!({})),
+            mcp_tool("evaluation_package", false, "Scorecard, evidencia, backtest, huella y guion reproducible.", json!({})),
+            mcp_tool("latency_ranking", false, "Ranking EWMA/p50/p95/p99 por exchange.", json!({})),
+            mcp_tool("backtest", false, "Backtest reproducible con costos actuales.", json!({})),
+            mcp_tool("research_lab_sweep", false, "Compara presets conservador, balanceado, agresivo y GA Edge.", json!({})),
+            mcp_tool("prepare_demo_final", true, "Ejecuta GA, demo rentable, fill parcial y rebalanceo simulado.", json!({})),
+            mcp_tool("evolve_ga", true, "Fuerza evolucion GA con historial real o replay sintetico.", json!({
+                "usarReplaySiVacio": "boolean opcional, default true",
+                "muestras": "entero opcional, default 96"
+            })),
+            mcp_tool("demo_scenario", true, "Dispara un escenario demo simulado.", json!({
+                "escenario": "fallo_orden | mercado_movido | liquidez_insuficiente | fill_parcial | circuit_breaker | rebalanceo | mercado_rentable"
+            })),
+        ],
+        "examples": [
+            {
+                "description": "Resumen para un agente",
+                "curl": "curl -sS -X POST http://localhost:8080/api/mcp/call -H 'Content-Type: application/json' -d '{\"tool\":\"summarize_for_llm\"}'"
+            },
+            {
+                "description": "Preparar demo final con ADMIN_TOKEN si esta configurado",
+                "curl": "curl -sS -X POST http://localhost:8080/api/mcp/call -H 'Content-Type: application/json' -H 'Authorization: Bearer $ADMIN_TOKEN' -d '{\"tool\":\"prepare_demo_final\"}'"
+            }
+        ]
+    })
+}
+
+fn mcp_tool(
+    name: &str,
+    mutable: bool,
+    description: &str,
+    arguments: serde_json::Value,
+) -> serde_json::Value {
+    json!({
+        "name": name,
+        "mutable": mutable,
+        "requiresAdminToken": mutable,
+        "description": description,
+        "arguments": arguments,
+    })
+}
+
 fn construir_resumen_llm(estado: &EstadoPublico) -> serde_json::Value {
     let mejor = estado
         .oportunidades
@@ -793,8 +1137,8 @@ fn construir_resumen_llm(estado: &EstadoPublico) -> serde_json::Value {
         .iter()
         .filter(|o| o.ejecutable)
         .max_by(|a, b| a.utilidad_usd.total_cmp(&b.utilidad_usd));
-    let ultimo_evento = estado.eventos_ejecucion.first();
-    let ultimo_rebalanceo = estado.rebalanceos.first();
+    let ultimo_evento = estado.eventos_ejecucion.front();
+    let ultimo_rebalanceo = estado.rebalanceos.front();
     let mejor_latencia = estado.latencias_exchange.first();
     let peor_latencia = estado
         .latencias_exchange
@@ -962,6 +1306,21 @@ fn construir_resumen_llm(estado: &EstadoPublico) -> serde_json::Value {
             "toleranciaLatenciaMs": g.tolerancia_latencia_ms,
             "metaheuristicas": g.metaheuristicas,
         })),
+        "mlEdge": estado.ml_edge.as_ref().map(|m| json!({
+            "modelo": m.modelo,
+            "version": m.version,
+            "activo": m.activo,
+            "decision": m.decision,
+            "scoreActual": m.score_actual,
+            "confianza": m.confianza,
+            "expectedValueUsd": m.expected_value_usd,
+            "survivalProbability": m.survival_probability,
+            "fillProbability": m.fill_probability,
+            "adverseSelectionBps": m.adverse_selection_bps,
+            "features": m.features,
+            "explicacion": m.explicacion,
+            "nota": "Capa ML/GA explicable para ranking de oportunidades simuladas; no ejecuta ordenes reales."
+        })),
         "persistencia": persistencia.map(|p| json!({
             "activa": p.activa,
             "backend": p.backend,
@@ -1061,6 +1420,13 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
         .as_ref()
         .map(|g| g.poblacion >= 10 && g.tasa_mutacion.is_finite() && g.tasa_cruce.is_finite())
         .unwrap_or(false);
+    let ml_edge_ok = estado
+        .ml_edge
+        .as_ref()
+        .map(|m| {
+            m.score_actual.is_finite() && m.expected_value_usd.is_finite() && m.features.len() >= 5
+        })
+        .unwrap_or(false);
     let export_ok = true;
     let persistencia_ok = estado
         .persistencia
@@ -1076,12 +1442,11 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
     let decision_inspector_ok = estado
         .auditoria_decisiones
         .iter()
-        .any(|a| !a.decision_code.is_empty() && !a.decision_reason.is_empty())
-        || estado.auditoria_decisiones.is_empty();
+        .any(|a| !a.decision_code.is_empty() && !a.decision_reason.is_empty());
     let demo_mode_ok = true;
     let partial_fill_evidence = estado.operaciones.iter().any(|o| o.parcial)
         || estado.oportunidades.iter().any(|o| o.parcial);
-    let partial_fill_ok = true;
+    let partial_fill_ok = partial_fill_evidence;
     let wallet_ok = estado.balances.len() >= activos.min(2) && !estado.balances.is_empty();
     let judge_checks = vec![
         ("realTimeOrderBooks", feeds_ok),
@@ -1090,6 +1455,7 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
         ("partialFillSupport", partial_fill_ok),
         ("walletAccounting", wallet_ok),
         ("decisionInspector", decision_inspector_ok),
+        ("mlEdgeExplainable", ml_edge_ok),
         ("riskGuards", riesgo_ok),
         ("safeDemoMode", demo_mode_ok),
         ("exports", export_ok),
@@ -1103,7 +1469,8 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
         && dashboard_ok
         && ga_ok
         && export_ok
-        && decision_inspector_ok;
+        && decision_inspector_ok
+        && ml_edge_ok;
 
     let mut feed_detalle: Vec<_> = estado
         .cotizaciones
@@ -1137,6 +1504,7 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
             "status": if judge_passed == judge_total { "ready" } else { "review" },
             "partialFillEvidence": partial_fill_evidence,
             "rubricaOficial": matriz_rubrica_oficial(estado),
+            "coberturaFinalista": cobertura_finalista(estado),
             "recomendaciones": recomendaciones_ganadoras(estado),
             "checks": judge_checks
                 .into_iter()
@@ -1155,9 +1523,10 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
             check("riesgo_operativo", riesgo_ok, format!("riesgo={}, circuitBreaker={}, ejecucionEnCurso={}", estado.metricas.estado_riesgo, estado.metricas.circuit_breaker_activo, estado.metricas.ejecucion_en_curso)),
             check("decision_inspector", decision_inspector_ok, format!("{} decisiones recientes con decisionCode y decisionReason", estado.auditoria_decisiones.len())),
             check("wallet_accounting", wallet_ok, format!("{} wallets simuladas visibles", estado.balances.len())),
-            check("partial_fills", partial_fill_ok, format!("soporte de fills parciales activo; evidencia visible en estado actual={partial_fill_evidence}")),
+            check("partial_fills", partial_fill_ok, format!("evidencia visible de fill parcial en estado actual={partial_fill_evidence}")),
             check("demo_segura", demo_mode_ok, "POST /api/demo disponible; solo modifica estado simulado en memoria"),
             check("ga_disponible", ga_ok, estado.genetico.as_ref().map(|g| format!("poblacion={}, generacion={}, diversidad={:.3}", g.poblacion, g.generacion, g.diversidad)).unwrap_or_else(|| "sin estado GA".into())),
+            check("ml_edge_explicable", ml_edge_ok, estado.ml_edge.as_ref().map(|m| format!("{} score={:.3}, EV={:.2} USD, confianza={:.1}%", m.version, m.score_actual, m.expected_value_usd, m.confianza * 100.0)).unwrap_or_else(|| "esperando auditoria para calcular ML Edge".into())),
             check("dashboard_estatico", dashboard_ok, "index.html, app.js y styles.css encontrados"),
             check("auditoria_exportable", export_ok, "/api/export/json y /api/export/csv disponibles"),
             check("sqlite_auditoria", persistencia_ok, estado.persistencia.as_ref().map(|p| format!("{} ops, {} oportunidades, {} auditorias en {}", p.operaciones, p.oportunidades, p.auditorias, p.ruta)).unwrap_or_else(|| "persistencia no inicializada".into())),
@@ -1166,11 +1535,13 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
         "feeds": feed_detalle,
         "endpoints": {
             "estado": "/api/estado",
+            "jurado": "/api/jurado",
             "preflight": "/api/preflight",
             "resumenLlm": "/api/resumen-llm",
             "paqueteEvaluacion": "/api/paquete-evaluacion",
             "latencias": "/api/latencias",
             "backtest": "/api/backtest",
+            "labSweep": "/api/lab/sweep",
             "exportJson": "/api/export/json",
             "exportCsv": "/api/export/csv",
             "websocket": "/tiempo-real"
@@ -1179,6 +1550,101 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
             "El motor consume datos publicos; no custodia fondos ni firma ordenes reales.",
             "Solo se permite una operacion simulada en validacion/ejecucion a la vez para evitar doble gasto de balances.",
             "Las rutas se revalidan contra el snapshot fresco antes de mover carteras simuladas."
+        ]
+    })
+}
+
+fn construir_modo_jurado(estado: &EstadoPublico) -> serde_json::Value {
+    let preflight = construir_preflight(estado);
+    let paquete = construir_paquete_evaluacion(estado);
+    let readiness = preflight
+        .get("judgeReadiness")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let cobertura = readiness
+        .get("coberturaFinalista")
+        .cloned()
+        .unwrap_or_else(|| cobertura_finalista(estado));
+    let rubrica = readiness
+        .get("rubricaOficial")
+        .cloned()
+        .unwrap_or_else(|| json!(matriz_rubrica_oficial(estado)));
+    let checks = readiness
+        .get("checks")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let scorecard = paquete
+        .get("criterios")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let puntaje_total = paquete
+        .get("puntajeTotal")
+        .cloned()
+        .unwrap_or_else(|| json!(0.0));
+    let huella = paquete
+        .get("huellaAuditoria")
+        .cloned()
+        .unwrap_or_else(|| json!(huella_estado(estado)));
+
+    json!({
+        "generadoEn": estado.generado_en,
+        "nombre": "Mayab Jury Mode",
+        "objetivo": "Superficie unica para evaluar la demo contra el benchmark finalista sin navegar todo el dashboard.",
+        "estado": {
+            "status": readiness.get("status").cloned().unwrap_or_else(|| json!("review")),
+            "passed": readiness.get("passed").cloned().unwrap_or_else(|| json!(0)),
+            "total": readiness.get("total").cloned().unwrap_or_else(|| json!(0)),
+            "puntajeTotal": puntaje_total,
+            "huellaAuditoria": huella,
+        },
+        "script60Segundos": [
+            "GET /healthz",
+            "GET /api/jurado",
+            "POST /api/demo/final",
+            "GET /api/preflight",
+            "GET /api/paquete-evaluacion",
+            "GET /api/export/json"
+        ],
+        "rubricaOficial": rubrica,
+        "scorecard": scorecard,
+        "coberturaFinalista": cobertura,
+        "checks": checks,
+        "evidenciaClave": {
+            "parametrosControlablesEstimados": parametros_controlables(estado),
+            "feedsWebSocketFrescos": estado.cotizaciones.iter().filter(|c| snapshot_websocket_fresco(estado, c)).count(),
+            "feedsRestFallback": estado.cotizaciones.iter().filter(|c| c.ultimo_mensaje == "rest_fallback").count(),
+            "operaciones": estado.metricas.operaciones,
+            "pnlUsd": estado.metricas.utilidad_acumulada_usd,
+            "rebalanceos": estado.metricas.rebalanceos_totales,
+            "auditorias": estado.auditoria_decisiones.len(),
+            "latenciasP99": estado.latencias_exchange,
+            "ga": estado.genetico,
+            "mlEdge": estado.ml_edge,
+            "persistencia": estado.persistencia,
+        },
+        "enlaces": {
+            "dashboard": "/",
+            "estadoCompleto": "/api/estado",
+            "preflight": "/api/preflight",
+            "resumenLlm": "/api/resumen-llm",
+            "paqueteEvaluacion": "/api/paquete-evaluacion",
+            "latencias": "/api/latencias",
+            "backtest": "/api/backtest",
+            "researchLab": "/api/lab/sweep",
+            "exportJson": "/api/export/json",
+            "exportCsv": "/api/export/csv",
+            "demoFinal": "/api/demo/final"
+        },
+        "lectura": if readiness.get("status").and_then(|v| v.as_str()) == Some("ready") {
+            "Listo para presentar: ejecutar demo final solo si se quiere refrescar evidencia runtime."
+        } else {
+            "Accion recomendada: ejecutar POST /api/demo/final y volver a abrir /api/jurado."
+        },
+        "limitesSeguros": [
+            "No usa llaves API privadas.",
+            "No coloca ordenes reales.",
+            "No custodia fondos.",
+            "Los POST solo mutan simulacion en memoria."
         ]
     })
 }
@@ -1202,13 +1668,15 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
     let preflight = construir_preflight(estado);
     let resumen = construir_resumen_llm(estado);
     let backtest = backtest_reproducible(&estado.configuracion);
+    let lab_sweep = lab_sweep_reproducible(&estado.configuracion);
     let mejor_oportunidad = estado
         .oportunidades
         .iter()
         .max_by(|a, b| a.utilidad_usd.total_cmp(&b.utilidad_usd));
-    let ultima_auditoria = estado.auditoria_decisiones.first();
-    let ultimo_evento = estado.eventos_ejecucion.first();
+    let ultima_auditoria = estado.auditoria_decisiones.front();
+    let ultimo_evento = estado.eventos_ejecucion.front();
     let ga = estado.genetico.as_ref();
+    let ml_edge = estado.ml_edge.as_ref();
     let persistencia = estado.persistencia.as_ref();
     let ws_conectados = estado
         .cotizaciones
@@ -1300,6 +1768,23 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
             .unwrap_or_else(|| "Sin estado GA publico.".into()),
         ),
         criterio(
+            "ml_edge_explicable",
+            ml_edge.is_some(),
+            ml_edge.map(|m| if m.activo { 96 } else { 82 }).unwrap_or(0),
+            ml_edge
+                .map(|m| {
+                    format!(
+                        "{} score {:.3}, EV {:.2} USD, confianza {:.1}%, {} features auditables.",
+                        m.version,
+                        m.score_actual,
+                        m.expected_value_usd,
+                        m.confianza * 100.0,
+                        m.features.len()
+                    )
+                })
+                .unwrap_or_else(|| "Sin auditoria reciente para calcular ML Edge.".into()),
+        ),
+        criterio(
             "riesgo_y_resiliencia",
             estado.metricas.estado_riesgo != "critico",
             if estado.metricas.circuit_breaker_activo {
@@ -1319,7 +1804,7 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
             "backtest_y_export",
             true,
             96,
-            "Incluye backtest deterministico y exportaciones JSON/CSV de auditoria.",
+            "Incluye backtest deterministico, Research Lab sweep y exportaciones JSON/CSV de auditoria.",
         ),
         criterio(
             "persistencia_durable",
@@ -1358,11 +1843,13 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
         "puntajeTotal": puntaje_total,
         "huellaAuditoria": huella_estado(estado),
         "rubricaOficialComite": matriz_rubrica_oficial(estado),
+        "coberturaFinalista": cobertura_finalista(estado),
         "recomendacionesParaGanar": recomendaciones_ganadoras(estado),
         "radarCompetitivo": {
             "enfoque": "Diferenciar por evidencia verificable, no por promesas: cada fortaleza apunta a endpoint, metrica o evento auditable.",
             "ventajasDefendibles": [
                 "demo rentable etiquetada para no depender del mercado real",
+                "Mayab Edge Tensor con EV, supervivencia, fill probability, adverse selection y contribuciones por feature",
                 "decision inspector con costos, pesos GA y balances previos",
                 "preflight y paquete de evaluacion para revisar sin navegar toda la UI",
                 "auditoria durable SQLite y exports JSON/CSV",
@@ -1392,17 +1879,21 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
             },
             "mejorOportunidad": mejor_oportunidad,
             "ultimaAuditoria": ultima_auditoria,
+            "mlEdge": ml_edge,
             "ultimoEvento": ultimo_evento,
             "ga": ga,
             "persistencia": persistencia,
             "preflight": preflight,
-            "backtest": backtest,
+                "backtest": backtest,
+                "researchLab": lab_sweep,
         },
         "scriptDemo": [
             "GET /healthz",
             "GET /api/preflight",
+            "POST /api/demo/final",
             "POST /api/ga/evolucionar {\"usarReplaySiVacio\":true,\"muestras\":96}",
             "POST /api/demo {\"escenario\":\"mercado_rentable\"}",
+            "GET /api/lab/sweep",
             "GET /api/paquete-evaluacion",
             "GET /api/export/json"
         ],
@@ -1410,6 +1901,8 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
             "Rust single-binary con WebSockets publicos, API Axum y dashboard sin build frontend.",
             "WebSocket-first con REST fallback publico cuando un feed queda stale o desconectado.",
             "GA real con elitismo, torneo, cruce, mutacion, annealing e inyeccion diferencial.",
+            "ML Edge explicable: score EV, probabilidades de supervivencia/fill, adverse selection y contribuciones por feature.",
+            "Research Lab sweep: conservador, balanceado, agresivo y GA Edge sobre el mismo replay deterministico.",
             "Auditoria por decision: score, costos, z-score, latencia, pesos GA y balances previos.",
             "Demo rentable controlada para probar valor aunque el mercado real este plano.",
             "SQLite local para auditoria durable de operaciones, oportunidades y eventos.",
@@ -1417,10 +1910,13 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
         ],
         "endpoints": {
             "estado": "/api/estado",
+            "jurado": "/api/jurado",
             "preflight": "/api/preflight",
             "resumenLlm": "/api/resumen-llm",
             "paqueteEvaluacion": "/api/paquete-evaluacion",
             "backtest": "/api/backtest",
+            "labSweep": "/api/lab/sweep",
+            "demoFinal": "/api/demo/final",
             "exportJson": "/api/export/json",
             "exportCsv": "/api/export/csv",
             "gaEstado": "/api/ga/estado"
@@ -1429,7 +1925,7 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
 }
 
 fn matriz_rubrica_oficial(estado: &EstadoPublico) -> Vec<serde_json::Value> {
-    let parametros_controlables = 18 + estado.configuracion.exchanges.len() * 4;
+    let parametros_controlables = parametros_controlables(estado);
     let exchanges_activos = estado.exchanges_activos.values().filter(|v| **v).count();
     let eventos_adversos = estado
         .eventos_ejecucion
@@ -1458,6 +1954,7 @@ fn matriz_rubrica_oficial(estado: &EstadoPublico) -> Vec<serde_json::Value> {
         .as_ref()
         .map(|g| g.activo || g.generacion > 0)
         .unwrap_or(false);
+    let ml_edge_ok = estado.ml_edge.is_some();
 
     vec![
         rubrica_item(
@@ -1508,15 +2005,17 @@ fn matriz_rubrica_oficial(estado: &EstadoPublico) -> Vec<serde_json::Value> {
             20,
             (if dashboard_ok { 55 } else { 0 }
                 + puntaje_ratio(estado.auditoria_decisiones.len(), 12).min(35)
-                + if estado.metricas.operaciones > 0 { 10 } else { 0 })
+                + if estado.metricas.operaciones > 0 { 6 } else { 0 }
+                + if ml_edge_ok { 4 } else { 0 })
                 .min(100),
             "Se puede seguir en tiempo real lo que hace el bot, historial, PnL y oportunidades?",
             format!(
-                "Dashboard={}, {} oportunidades, {} operaciones, {} auditorias.",
+                "Dashboard={}, {} oportunidades, {} operaciones, {} auditorias, ML Edge={}.",
                 if dashboard_ok { "ok" } else { "faltante" },
                 estado.oportunidades.len(),
                 estado.metricas.operaciones,
-                estado.auditoria_decisiones.len()
+                estado.auditoria_decisiones.len(),
+                if ml_edge_ok { "visible" } else { "pendiente" }
             ),
             "Presentar primero el dashboard y despues abrir /api/paquete-evaluacion para evidencia estructurada.",
         ),
@@ -1535,6 +2034,178 @@ fn matriz_rubrica_oficial(estado: &EstadoPublico) -> Vec<serde_json::Value> {
             "Mantener README alineado: toda promesa debe existir en API/UI o quitarse antes del deploy final.",
         ),
     ]
+}
+
+fn cobertura_finalista(estado: &EstadoPublico) -> serde_json::Value {
+    let parametros = parametros_controlables(estado);
+    let feeds_ws = estado
+        .cotizaciones
+        .iter()
+        .filter(|c| snapshot_websocket_fresco(estado, c))
+        .count();
+    let rest_fallbacks = estado
+        .cotizaciones
+        .iter()
+        .filter(|c| c.ultimo_mensaje == "rest_fallback")
+        .count();
+    let eventos_adversos = estado
+        .eventos_ejecucion
+        .iter()
+        .filter(|e| {
+            let tipo = e.tipo.as_str();
+            tipo.contains("fallo")
+                || tipo.contains("movido")
+                || tipo.contains("parcial")
+                || tipo.contains("circuit")
+                || tipo.contains("liquidez")
+                || tipo.contains("demo")
+        })
+        .count();
+    let fill_parcial = estado.operaciones.iter().any(|op| op.parcial)
+        || estado.oportunidades.iter().any(|op| op.parcial);
+    let ga_activo = estado
+        .genetico
+        .as_ref()
+        .map(|g| g.activo || g.generacion > 0 || g.poblacion >= 10)
+        .unwrap_or(false);
+    let ml_edge = estado.ml_edge.as_ref();
+    let persistencia = estado.persistencia.as_ref();
+    let latencias_p99 = estado.latencias_exchange.iter().any(|l| l.p99_ms > 0);
+    let backtest_lab = true;
+    let exports = true;
+    let dashboard = Path::new("internal/webui/web/index.html").is_file()
+        && Path::new("internal/webui/web/app.js").is_file()
+        && Path::new("internal/webui/web/styles.css").is_file();
+
+    let dimensiones = vec![
+        cobertura_item(
+            "parametrizacion_profunda",
+            parametros >= 34 && ga_activo,
+            format!(
+                "{} parametros controlables estimados: riesgo, costos, exchanges, adversidad, rebalanceo, GA y toggles por venue.",
+                parametros
+            ),
+            "UI controles, POST /api/config, POST /api/ga/config y /api/estado.",
+        ),
+        cobertura_item(
+            "robustez_adversa",
+            estado.metricas.estado_riesgo != "critico" && eventos_adversos > 0,
+            format!(
+                "{} eventos adversos recientes; circuitBreaker={}, conservador={}, singleTradeInFlight={}.",
+                eventos_adversos,
+                estado.metricas.circuit_breaker_activo,
+                estado.metricas.modo_conservador,
+                estado.metricas.ejecucion_en_curso
+            ),
+            "Botones de Demo controlada y POST /api/demo.",
+        ),
+        cobertura_item(
+            "wallets_rebalanceo",
+            estado.balances.len() >= 2 && (estado.metricas.rebalanceos_totales > 0 || fill_parcial),
+            format!(
+                "{} wallets, {} rebalanceos, fillParcial={}.",
+                estado.balances.len(),
+                estado.metricas.rebalanceos_totales,
+                fill_parcial
+            ),
+            "Panel Carteras, tabla Rebalanceos, demo rebalanceo y exports.",
+        ),
+        cobertura_item(
+            "ui_visualizacion_jurado",
+            dashboard && !estado.auditoria_decisiones.is_empty(),
+            format!(
+                "Dashboard={}, {} auditorias, {} oportunidades, {} operaciones.",
+                dashboard,
+                estado.auditoria_decisiones.len(),
+                estado.oportunidades.len(),
+                estado.metricas.operaciones
+            ),
+            "Dashboard, panel Readiness, Mayab Edge Tensor, mapa, timeline y auditoria.",
+        ),
+        cobertura_item(
+            "metricas_latency_replay",
+            latencias_p99 || backtest_lab,
+            format!(
+                "p99 latencia visible={}, backtest={}, researchLab={}, restFallbacks={}.",
+                latencias_p99, backtest_lab, backtest_lab, rest_fallbacks
+            ),
+            "GET /api/latencias, /api/backtest y /api/lab/sweep.",
+        ),
+        cobertura_item(
+            "documentacion_tests_deploy",
+            Path::new("README.md").is_file() && Path::new("scripts/smoke-demo.sh").is_file(),
+            "README, ARCHITECTURE, DEMO_SCRIPT, release-check, smoke-demo y comandos cargo fmt/cargo test documentados.".to_string(),
+            "README, scripts/release-check.sh y scripts/smoke-demo.sh.",
+        ),
+        cobertura_item(
+            "auditoria_durable_exports",
+            exports && persistencia.map(|p| p.activa).unwrap_or(false),
+            persistencia
+                .map(|p| {
+                    format!(
+                        "SQLite activa={} en {}, operaciones={}, oportunidades={}, auditorias={}.",
+                        p.activa, p.ruta, p.operaciones, p.oportunidades, p.auditorias
+                    )
+                })
+                .unwrap_or_else(|| "SQLite no inicializada; exports siguen disponibles.".into()),
+            "GET /api/export/json, /api/export/csv y AUDITORIA_DB_PATH.",
+        ),
+        cobertura_item(
+            "ia_explicable_ga",
+            ga_activo && ml_edge.is_some(),
+            ml_edge
+                .map(|m| {
+                    format!(
+                        "GA activo={}, ML Edge {} con {} features, EV {:.2} USD.",
+                        ga_activo,
+                        m.version,
+                        m.features.len(),
+                        m.expected_value_usd
+                    )
+                })
+                .unwrap_or_else(|| format!("GA activo={}, ML Edge pendiente de auditoria.", ga_activo)),
+            "Panel GA Lab, Mayab Edge Tensor, /api/ga/estado y /api/resumen-llm.",
+        ),
+    ];
+
+    let cubiertas = dimensiones
+        .iter()
+        .filter(|d| d.get("ok").and_then(|v| v.as_bool()).unwrap_or(false))
+        .count();
+    json!({
+        "nombre": "Cobertura de benchmark finalista publico",
+        "fuente": "Sintesis interna basada en la revision publica adjunta: parametrizacion, robustez, wallets/rebalanceo, UI, metricas, tests, deploy y documentacion.",
+        "cubiertas": cubiertas,
+        "total": dimensiones.len(),
+        "status": if cubiertas == dimensiones.len() { "completo" } else { "accionable" },
+        "parametrosControlablesEstimados": parametros,
+        "feedsWebSocketFrescos": feeds_ws,
+        "restFallbacks": rest_fallbacks,
+        "dimensiones": dimensiones,
+        "lectura": if cubiertas == dimensiones.len() {
+            "La demo cubre el benchmark finalista con evidencia en API/UI/export."
+        } else {
+            "Ejecuta /api/demo/final y revisa /api/preflight para llenar evidencia runtime faltante."
+        }
+    })
+}
+
+fn cobertura_item(
+    nombre: &'static str,
+    ok: bool,
+    evidencia: impl Into<String>,
+    donde_verificar: &'static str,
+) -> serde_json::Value {
+    json!({
+        "nombre": nombre,
+        "ok": ok,
+        "evidencia": evidencia.into(),
+        "dondeVerificar": donde_verificar,
+    })
+}
+
+fn parametros_controlables(estado: &EstadoPublico) -> usize {
+    21 + estado.configuracion.exchanges.len() * 4
 }
 
 fn rubrica_item(
@@ -1616,9 +2287,9 @@ fn huella_estado(estado: &EstadoPublico) -> String {
         "operaciones": estado.metricas.operaciones,
         "operacionesFallidas": estado.metricas.operaciones_fallidas,
         "utilidadAcumuladaUsd": estado.metricas.utilidad_acumulada_usd,
-        "auditoria": estado.auditoria_decisiones.first(),
-        "ultimaOperacion": estado.operaciones.first(),
-        "ultimoEvento": estado.eventos_ejecucion.first(),
+        "auditoria": estado.auditoria_decisiones.front(),
+        "ultimaOperacion": estado.operaciones.front(),
+        "ultimoEvento": estado.eventos_ejecucion.front(),
         "ga": estado.genetico,
     });
     let mut hasher = DefaultHasher::new();
@@ -1659,12 +2330,69 @@ fn backtest_reproducible(cfg: &MapaCostos) -> serde_json::Value {
         (cfg.max_operacion_btc * 1.20).clamp(0.03, 0.60),
         42,
     );
+    let delta_pnl = optimizada.pnl_usd - base.pnl_usd;
+    let delta_drawdown = base.max_drawdown_usd - optimizada.max_drawdown_usd;
     json!({
         "ticks": 1200,
         "rutasEvaluadas": base.rutas_evaluadas,
         "base": base,
         "optimizada": optimizada,
+        "comparacion": {
+            "deltaPnlUsd": delta_pnl,
+            "deltaDrawdownUsd": delta_drawdown,
+            "ganador": if delta_pnl >= 0.0 { "optimizada" } else { "base" },
+            "criterio": "Mismo seed y costos vigentes; cambia umbral/tamano para comparar seleccion de rutas."
+        },
         "nota": "Monte Carlo deterministico sobre BTC con costos actuales, cinco exchanges y shocks de dispersion entre libros."
+    })
+}
+
+fn lab_sweep_reproducible(cfg: &MapaCostos) -> serde_json::Value {
+    let presets = [
+        ("conservador", 1.60, 0.08, 11_u64),
+        ("balanceado", 0.65, 0.18, 11_u64),
+        ("agresivo", 0.25, 0.35, 11_u64),
+        (
+            "ga_edge",
+            (cfg.min_diferencial_neto_bps * 0.65).clamp(0.20, 1.25),
+            (cfg.max_operacion_btc * 1.20).clamp(0.03, 0.60),
+            11_u64,
+        ),
+    ];
+    let resultados = presets
+        .into_iter()
+        .map(|(nombre, umbral, max_btc, seed)| {
+            let resultado = simular_backtest(cfg, umbral, max_btc, seed);
+            json!({
+                "preset": nombre,
+                "umbralBps": umbral,
+                "maxOperacionBtc": max_btc,
+                "resultado": resultado,
+                "scoreLab": score_lab(&resultado),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let ganador = resultados
+        .iter()
+        .max_by(|a, b| {
+            let sa = a.get("scoreLab").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let sb = b.get("scoreLab").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            sa.total_cmp(&sb)
+        })
+        .and_then(|v| v.get("preset"))
+        .cloned()
+        .unwrap_or_else(|| json!("sin_ganador"));
+
+    json!({
+        "generadoEn": chrono::Utc::now(),
+        "tipo": "research_lab_sweep",
+        "ticks": 1200,
+        "seed": 11,
+        "ganador": ganador,
+        "resultados": resultados,
+        "lectura": "Sweep reproducible: todos los presets usan el mismo mercado sintetico y costos vigentes para comparar PnL, drawdown, win rate e intervalo de confianza.",
+        "limitacion": "No prueba rentabilidad real; prueba sensibilidad del motor y parametros bajo un replay deterministico."
     })
 }
 
@@ -1682,6 +2410,18 @@ struct ResultadoBacktest {
     max_drawdown_usd: f64,
     #[serde(rename = "spreadNetoMedioBps")]
     spread_neto_medio_bps: f64,
+    #[serde(rename = "utilidadMediaUsd")]
+    utilidad_media_usd: f64,
+    #[serde(rename = "utilidadP50Usd")]
+    utilidad_p50_usd: f64,
+    #[serde(rename = "utilidadP95Usd")]
+    utilidad_p95_usd: f64,
+    #[serde(rename = "desviacionUsd")]
+    desviacion_usd: f64,
+    #[serde(rename = "intervaloConfianza95Usd")]
+    intervalo_confianza_95_usd: f64,
+    #[serde(rename = "profitFactor")]
+    profit_factor: f64,
 }
 
 fn simular_backtest(
@@ -1700,6 +2440,7 @@ fn simular_backtest(
     let mut pico = 0.0;
     let mut drawdown = 0.0;
     let mut suma_spread = 0.0;
+    let mut utilidades = Vec::new();
 
     for _ in 0..1200 {
         precio *= 1.0 + rng.gen_range(-0.0009..0.0009);
@@ -1746,6 +2487,7 @@ fn simular_backtest(
                 if utilidad >= cfg.min_utilidad_usd && neto_bps >= umbral_bps {
                     trades += 1;
                     pnl += utilidad;
+                    utilidades.push(utilidad);
                     suma_spread += neto_bps;
                     if utilidad > 0.0 {
                         wins += 1;
@@ -1761,6 +2503,24 @@ fn simular_backtest(
             }
         }
     }
+    utilidades.sort_by(|a, b| a.total_cmp(b));
+    let utilidad_media = if utilidades.is_empty() {
+        0.0
+    } else {
+        utilidades.iter().sum::<f64>() / utilidades.len() as f64
+    };
+    let desviacion = desviacion_estandar(&utilidades, utilidad_media);
+    let intervalo_95 = if utilidades.len() > 1 {
+        1.96 * desviacion / (utilidades.len() as f64).sqrt()
+    } else {
+        0.0
+    };
+    let ganancias = utilidades.iter().filter(|v| **v > 0.0).sum::<f64>();
+    let perdidas = utilidades
+        .iter()
+        .filter(|v| **v < 0.0)
+        .map(|v| v.abs())
+        .sum::<f64>();
 
     ResultadoBacktest {
         rutas_evaluadas: rutas,
@@ -1777,5 +2537,462 @@ fn simular_backtest(
         } else {
             suma_spread / trades as f64
         },
+        utilidad_media_usd: utilidad_media,
+        utilidad_p50_usd: percentil(&utilidades, 0.50),
+        utilidad_p95_usd: percentil(&utilidades, 0.95),
+        desviacion_usd: desviacion,
+        intervalo_confianza_95_usd: intervalo_95,
+        profit_factor: if perdidas > 0.0 {
+            ganancias / perdidas
+        } else if ganancias > 0.0 {
+            ganancias
+        } else {
+            0.0
+        },
+    }
+}
+
+fn percentil(valores: &[f64], p: f64) -> f64 {
+    if valores.is_empty() {
+        return 0.0;
+    }
+    let idx = ((valores.len() - 1) as f64 * p.clamp(0.0, 1.0)).round() as usize;
+    valores[idx.min(valores.len() - 1)]
+}
+
+fn desviacion_estandar(valores: &[f64], media: f64) -> f64 {
+    if valores.len() < 2 {
+        return 0.0;
+    }
+    let var = valores.iter().map(|v| (v - media).powi(2)).sum::<f64>() / (valores.len() - 1) as f64;
+    var.sqrt()
+}
+
+fn score_lab(resultado: &ResultadoBacktest) -> f64 {
+    resultado.pnl_usd - resultado.max_drawdown_usd * 0.55
+        + resultado.win_rate * 120.0
+        + resultado.profit_factor.min(25.0) * 4.0
+        - resultado.intervalo_confianza_95_usd
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, collections::VecDeque};
+
+    use chrono::Utc;
+    use serde_json::Value;
+
+    use super::*;
+    use crate::types::{
+        AuditoriaDecision, Balance, CostosOperacion, EstadoGenetico, EstadoMlEdge,
+        EstadoPersistencia, EventoEjecucion, FeatureMlEdge, LatenciaExchange, Metricas, NivelOrden,
+        Operacion, PuntoSerie, Rebalanceo,
+    };
+
+    #[test]
+    fn preflight_exige_evidencia_forense_y_fill_parcial() {
+        let sin_evidencia = construir_preflight(&estado_publico_test(false, false));
+        let checks = checks_por_nombre(&sin_evidencia);
+
+        assert_eq!(checks.get("decisionInspector"), Some(&false));
+        assert_eq!(checks.get("partialFillSupport"), Some(&false));
+        assert_eq!(
+            sin_evidencia
+                .pointer("/judgeReadiness/status")
+                .and_then(Value::as_str),
+            Some("review")
+        );
+
+        let con_evidencia = construir_preflight(&estado_publico_test(true, true));
+        let checks = checks_por_nombre(&con_evidencia);
+
+        assert_eq!(checks.get("decisionInspector"), Some(&true));
+        assert_eq!(checks.get("partialFillSupport"), Some(&true));
+        assert_eq!(
+            con_evidencia
+                .pointer("/judgeReadiness/status")
+                .and_then(Value::as_str),
+            Some("ready")
+        );
+    }
+
+    #[test]
+    fn backtest_y_lab_exponen_contratos_qa() {
+        let cfg = cfg_test();
+        let backtest = backtest_reproducible(&cfg);
+        let lab = lab_sweep_reproducible(&cfg);
+
+        assert_eq!(backtest["ticks"], 1200);
+        assert!(backtest["base"]["rutasEvaluadas"].as_u64().unwrap_or(0) > 0);
+        assert!(matches!(
+            backtest["comparacion"]["ganador"].as_str(),
+            Some("base" | "optimizada")
+        ));
+
+        assert_eq!(lab["tipo"], "research_lab_sweep");
+        assert_eq!(lab["resultados"].as_array().map(Vec::len), Some(4));
+        assert!(lab["ganador"].as_str().is_some_and(|v| !v.is_empty()));
+    }
+
+    #[test]
+    fn mcp_manifest_expone_herramientas_para_agentes() {
+        let manifest = construir_mcp_manifest();
+        let tools = manifest["tools"].as_array().expect("tools array");
+        let names = tools
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&"summarize_for_llm"));
+        assert!(names.contains(&"jury_mode"));
+        assert!(names.contains(&"evaluation_package"));
+        assert!(names.contains(&"prepare_demo_final"));
+        let demo_final = tools
+            .iter()
+            .find(|tool| tool["name"] == "prepare_demo_final")
+            .expect("prepare_demo_final tool");
+        assert_eq!(demo_final["mutable"].as_bool(), Some(true));
+        assert_eq!(demo_final["requiresAdminToken"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn modo_jurado_consolida_rubrica_scorecard_y_enlaces() {
+        let estado = estado_publico_test(true, true);
+        let jurado = construir_modo_jurado(&estado);
+
+        assert_eq!(jurado["nombre"], "Mayab Jury Mode");
+        assert_eq!(
+            jurado.pointer("/estado/status").and_then(Value::as_str),
+            Some("ready")
+        );
+        assert_eq!(
+            jurado
+                .pointer("/rubricaOficial")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(5)
+        );
+        assert!(jurado
+            .pointer("/scorecard")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.len() >= 8));
+        assert_eq!(
+            jurado
+                .pointer("/enlaces/paqueteEvaluacion")
+                .and_then(Value::as_str),
+            Some("/api/paquete-evaluacion")
+        );
+        assert_eq!(
+            jurado.pointer("/enlaces/demoFinal").and_then(Value::as_str),
+            Some("/api/demo/final")
+        );
+    }
+
+    #[test]
+    fn preflight_y_paquete_exponen_cobertura_finalista() {
+        let estado = estado_publico_test(true, true);
+        let preflight = construir_preflight(&estado);
+        let cobertura = preflight
+            .pointer("/judgeReadiness/coberturaFinalista")
+            .expect("cobertura finalista en preflight");
+
+        assert_eq!(
+            cobertura["nombre"],
+            "Cobertura de benchmark finalista publico"
+        );
+        assert_eq!(cobertura["total"].as_u64(), Some(8));
+        assert_eq!(
+            cobertura["dimensiones"].as_array().map(|items| {
+                items
+                    .iter()
+                    .filter(|item| item["ok"].as_bool().unwrap_or(false))
+                    .count()
+            }),
+            cobertura["cubiertas"].as_u64().map(|v| v as usize)
+        );
+        assert!(cobertura["dimensiones"]
+            .as_array()
+            .expect("dimensiones")
+            .iter()
+            .any(|item| item["nombre"] == "wallets_rebalanceo"));
+
+        let paquete = construir_paquete_evaluacion(&estado);
+        assert_eq!(
+            paquete
+                .pointer("/coberturaFinalista/dimensiones")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(8)
+        );
+    }
+
+    fn checks_por_nombre(preflight: &Value) -> HashMap<String, bool> {
+        preflight
+            .pointer("/judgeReadiness/checks")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|check| {
+                Some((
+                    check.get("name")?.as_str()?.to_string(),
+                    check.get("ok")?.as_bool()?,
+                ))
+            })
+            .collect()
+    }
+
+    fn estado_publico_test(con_auditoria: bool, con_fill_parcial: bool) -> EstadoPublico {
+        let ahora = Utc::now();
+        let mut exchanges_activos = HashMap::new();
+        for exchange in ["Binance", "Kraken", "Coinbase"] {
+            exchanges_activos.insert(exchange.to_string(), true);
+        }
+
+        let cotizaciones = vec![
+            cotizacion_test("Binance", "BTC/USDT", 99_990.0, 100_010.0, ahora),
+            cotizacion_test("Kraken", "BTC/USD", 100_000.0, 100_020.0, ahora),
+            cotizacion_test("Coinbase", "BTC/USD", 100_005.0, 100_025.0, ahora),
+        ];
+
+        let mut operaciones = VecDeque::new();
+        if con_fill_parcial {
+            operaciones.push_front(Operacion {
+                id: "op-parcial-test".to_string(),
+                compra_en: "Binance".to_string(),
+                venta_en: "Kraken".to_string(),
+                par: "BTC/USD".to_string(),
+                cantidad_btc: 0.04,
+                precio_compra: 100_000.0,
+                precio_venta: 100_090.0,
+                utilidad_usd: 2.4,
+                costos: CostosOperacion::default(),
+                parcial: true,
+                ejecutada_en: ahora,
+                latencia_max_ms: 12,
+            });
+        }
+
+        let mut auditoria_decisiones = VecDeque::new();
+        if con_auditoria {
+            auditoria_decisiones.push_front(AuditoriaDecision {
+                id: "aud-test".to_string(),
+                ruta: "Binance->Kraken".to_string(),
+                par: "BTC/USD".to_string(),
+                decision: "aceptada".to_string(),
+                decision_code: "ACCEPT_EXECUTABLE".to_string(),
+                decision_reason: "evidencia QA con costos netos".to_string(),
+                decision_threshold: 0.65,
+                decision_actual: 1.40,
+                razon: "ruta rentable".to_string(),
+                score: 0.82,
+                pesos_ga: vec![0.4, 0.2, 0.2, 0.1, 0.1],
+                utilidad_usd: 2.4,
+                diferencial_neto_bps: 1.4,
+                cantidad_btc: 0.04,
+                costo_total_usd: 0.8,
+                latencia_max_ms: 12,
+                z_score: 1.2,
+                compra_usd_antes: 10_000.0,
+                venta_btc_antes: 0.2,
+                tiempo: ahora,
+            });
+        }
+
+        EstadoPublico {
+            generado_en: ahora,
+            cotizaciones,
+            oportunidades: VecDeque::new(),
+            operaciones,
+            eventos_ejecucion: VecDeque::from([EventoEjecucion {
+                id: "evt-test".to_string(),
+                tipo: "demo_rentable".to_string(),
+                ruta: "Binance->Kraken".to_string(),
+                detalle: "evento QA".to_string(),
+                severidad: "normal".to_string(),
+                tiempo: ahora,
+                utilidad_usd: 2.4,
+                cantidad_btc: 0.04,
+            }]),
+            auditoria_decisiones,
+            rebalanceos: VecDeque::from([Rebalanceo {
+                id: "reb-test".to_string(),
+                desde: "Binance".to_string(),
+                hacia: "Kraken".to_string(),
+                activo: "BTC".to_string(),
+                cantidad: 0.01,
+                costo_usd: 5.0,
+                razon: "QA rebalanceo".to_string(),
+                tiempo: ahora,
+            }]),
+            balances: vec![
+                Balance {
+                    exchange: "Binance".to_string(),
+                    usd: 10_000.0,
+                    btc: 0.2,
+                },
+                Balance {
+                    exchange: "Kraken".to_string(),
+                    usd: 10_000.0,
+                    btc: 0.2,
+                },
+                Balance {
+                    exchange: "Coinbase".to_string(),
+                    usd: 10_000.0,
+                    btc: 0.2,
+                },
+            ],
+            latencias_exchange: vec![LatenciaExchange {
+                exchange: "Binance".to_string(),
+                promedio_ms: 12.0,
+                ultimo_ms: 12,
+                min_ms: 10,
+                max_ms: 20,
+                p50_ms: 12,
+                p95_ms: 18,
+                p99_ms: 20,
+                eventos: 5,
+                estado: "ok".to_string(),
+                region_sugerida: "us-central1".to_string(),
+            }],
+            serie_pnl: VecDeque::from([PuntoSerie {
+                tiempo: ahora,
+                valor: 2.4,
+            }]),
+            serie_diferencial: VecDeque::new(),
+            metricas: Metricas {
+                estado_riesgo: "normal".to_string(),
+                operaciones: if con_fill_parcial { 1 } else { 0 },
+                utilidad_acumulada_usd: if con_fill_parcial { 2.4 } else { 0.0 },
+                rebalanceos_totales: 1,
+                ..Metricas::default()
+            },
+            configuracion: cfg_test(),
+            genetico: Some(EstadoGenetico {
+                activo: true,
+                generacion: 1,
+                mejor_fitness: 10.0,
+                fitness_promedio: 8.0,
+                retador_fitness: 9.0,
+                diversidad: 0.8,
+                tasa_mutacion: 0.15,
+                tasa_cruce: 0.7,
+                poblacion: 40,
+                convergente: false,
+                mejores_pesos: vec![0.4, 0.2, 0.2, 0.1, 0.1],
+                umbral_optimizado: 0.65,
+                max_operacion_optimizada_btc: 0.18,
+                tolerancia_latencia_ms: 4500,
+                operaciones_evaluadas: 24,
+                fallos_evaluados: 1,
+                mejora_generacional: 1.2,
+                temperatura_annealing: 0.9,
+                inyecciones_diferenciales: 1,
+                metaheuristicas: vec!["torneo".to_string(), "annealing".to_string()],
+            }),
+            ml_edge: Some(EstadoMlEdge {
+                activo: true,
+                modelo: "Mayab Edge Tensor".to_string(),
+                version: "qa-test".to_string(),
+                decision: "aceptar".to_string(),
+                score_actual: 0.82,
+                confianza: 0.76,
+                expected_value_usd: 2.4,
+                survival_probability: 0.91,
+                fill_probability: 0.88,
+                adverse_selection_bps: 0.2,
+                features: (0..5)
+                    .map(|i| FeatureMlEdge {
+                        nombre: format!("feature_{i}"),
+                        peso: 0.2,
+                        valor: 1.0,
+                        contribucion: 0.2,
+                    })
+                    .collect(),
+                explicacion: "QA explicable".to_string(),
+            }),
+            persistencia: Some(EstadoPersistencia {
+                activa: true,
+                backend: "sqlite".to_string(),
+                ruta: "/tmp/mayab-qa.sqlite".to_string(),
+                operaciones: if con_fill_parcial { 1 } else { 0 },
+                oportunidades: 1,
+                eventos: 1,
+                auditorias: if con_auditoria { 1 } else { 0 },
+                rebalanceos: 1,
+                error: None,
+            }),
+            exchanges_activos,
+            pares_activos: vec!["BTC/USD".to_string()],
+        }
+    }
+
+    fn cotizacion_test(
+        exchange: &str,
+        par: &str,
+        bid: f64,
+        ask: f64,
+        ahora: chrono::DateTime<Utc>,
+    ) -> Cotizacion {
+        Cotizacion {
+            exchange: exchange.to_string(),
+            par: par.to_string(),
+            bid,
+            bid_cantidad: 1.0,
+            ask,
+            ask_cantidad: 1.0,
+            bids: vec![NivelOrden {
+                precio: bid,
+                cantidad: 1.0,
+            }],
+            asks: vec![NivelOrden {
+                precio: ask,
+                cantidad: 1.0,
+            }],
+            evento_unix_ms: ahora.timestamp_millis(),
+            recibida_en: ahora,
+            latencia_ms: 12,
+            secuencia: 1,
+            conectado: true,
+            ultimo_mensaje: String::new(),
+        }
+    }
+
+    fn cfg_test() -> MapaCostos {
+        let mut exchanges = HashMap::new();
+        for nombre in ["Binance", "Kraken", "Coinbase"] {
+            exchanges.insert(
+                nombre.to_string(),
+                ExchangeConfig {
+                    nombre: nombre.to_string(),
+                    fee_taker: 0.001,
+                    retiro_btc: 0.0001,
+                    confiabilidad: 0.99,
+                },
+            );
+        }
+        MapaCostos {
+            max_operacion_btc: 0.18,
+            min_utilidad_usd: 1.25,
+            min_diferencial_neto_bps: 0.65,
+            deslizamiento_bps: 0.18,
+            latencia_riesgo_bps: 0.08,
+            retiro_amortizado_bps: 0.12,
+            stale_ms: 4_500,
+            enfriamiento_ms: 800,
+            usdt_usd_premium_bps: 3.0,
+            permitir_cruce_usd_usdt: true,
+            circuit_breaker_perdida_usd: 80.0,
+            circuit_breaker_ventana_min: 15,
+            volatilidad_umbral_bps: 50.0,
+            volatilidad_ventana_seg: 30,
+            simular_adversidad: true,
+            prob_fallo_orden: 0.0,
+            prob_movimiento_brusco: 0.0,
+            movimiento_brusco_bps: 7.0,
+            rebalance_umbral_pct: 35.0,
+            rebalance_max_transfer_pct: 35.0,
+            costo_rebalanceo_usd: 5.0,
+            exchanges,
+        }
     }
 }

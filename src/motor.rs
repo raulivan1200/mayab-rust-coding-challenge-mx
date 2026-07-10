@@ -5,7 +5,7 @@
 //! el estado consumido por la API y el dashboard.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
@@ -42,15 +42,16 @@ struct State {
     inicio: DateTime<Utc>,
     cotizaciones: HashMap<String, Cotizacion>,
     carteras: Carteras,
-    oportunidades: Vec<Oportunidad>,
-    operaciones: Vec<Operacion>,
-    operaciones_riesgo: Vec<Operacion>,
-    eventos_ejecucion: Vec<EventoEjecucion>,
-    auditoria_decisiones: Vec<AuditoriaDecision>,
-    rebalanceos: Vec<Rebalanceo>,
+    oportunidades: VecDeque<Oportunidad>,
+    operaciones: VecDeque<Operacion>,
+    operaciones_riesgo: VecDeque<Operacion>,
+    eventos_ejecucion: VecDeque<EventoEjecucion>,
+    auditoria_decisiones: VecDeque<AuditoriaDecision>,
+    rebalanceos: VecDeque<Rebalanceo>,
     rebalanceos_total: u64,
-    serie_pnl: Vec<PuntoSerie>,
-    serie_diferencial: Vec<PuntoSerie>,
+    costo_rebalanceo_acumulado_usd: f64,
+    serie_pnl: VecDeque<PuntoSerie>,
+    serie_diferencial: VecDeque<PuntoSerie>,
     latencias_exchange: HashMap<String, LatenciaEstado>,
     enfriamiento: HashMap<String, DateTime<Utc>>,
     utilidad: f64,
@@ -91,7 +92,11 @@ struct LatenciaEstado {
     ultimo_ms: i64,
     min_ms: i64,
     max_ms: i64,
+    p50_ms: i64,
+    p95_ms: i64,
+    p99_ms: i64,
     eventos: u64,
+    historial: VecDeque<i64>,
 }
 
 struct EjecucionGuard<'a>(&'a AtomicBool);
@@ -123,15 +128,16 @@ impl Motor {
                 inicio: Utc::now(),
                 cotizaciones: HashMap::new(),
                 carteras,
-                oportunidades: Vec::with_capacity(128),
-                operaciones: Vec::with_capacity(128),
-                operaciones_riesgo: Vec::with_capacity(512),
-                eventos_ejecucion: Vec::with_capacity(128),
-                auditoria_decisiones: Vec::with_capacity(160),
-                rebalanceos: Vec::with_capacity(64),
+                oportunidades: VecDeque::with_capacity(128),
+                operaciones: VecDeque::with_capacity(128),
+                operaciones_riesgo: VecDeque::with_capacity(512),
+                eventos_ejecucion: VecDeque::with_capacity(128),
+                auditoria_decisiones: VecDeque::with_capacity(160),
+                rebalanceos: VecDeque::with_capacity(64),
                 rebalanceos_total: 0,
-                serie_pnl: Vec::with_capacity(256),
-                serie_diferencial: Vec::with_capacity(256),
+                costo_rebalanceo_acumulado_usd: 0.0,
+                serie_pnl: VecDeque::with_capacity(256),
+                serie_diferencial: VecDeque::with_capacity(256),
                 latencias_exchange: HashMap::new(),
                 enfriamiento: HashMap::new(),
                 utilidad: 0.0,
@@ -216,7 +222,7 @@ impl Motor {
             let precio_ref = precio_referencia(cotizaciones.values());
             if state.ciclos % 100 == 0 {
                 let costos_rebalanceo = state.costos.clone();
-                let mut eventos = state
+                let eventos = state
                     .carteras
                     .rebalancear(precio_ref, &costos_rebalanceo, ahora);
                 if !eventos.is_empty() {
@@ -224,7 +230,11 @@ impl Motor {
                         self.persistir_rebalanceo(evento);
                     }
                     state.rebalanceos_total += eventos.len() as u64;
-                    state.rebalanceos.splice(0..0, eventos.drain(..));
+                    state.costo_rebalanceo_acumulado_usd +=
+                        eventos.iter().map(|e| e.costo_usd).sum::<f64>();
+                    for e in eventos.into_iter().rev() {
+                        state.rebalanceos.push_front(e);
+                    }
                     state.rebalanceos.truncate(64);
                 }
             }
@@ -307,10 +317,10 @@ impl Motor {
                     .historial_spreads
                     .insert(ruta, limitar_ultimos(nuevos, 100));
             }
-            let mut merged = oportunidades.clone();
+            let mut merged = VecDeque::from(oportunidades.clone());
             merged.extend(state.oportunidades.clone());
             state.oportunidades = limitar(merged, 80);
-            state.serie_diferencial.push(PuntoSerie {
+            state.serie_diferencial.push_back(PuntoSerie {
                 tiempo: ahora,
                 valor: mejor_dif,
             });
@@ -384,7 +394,7 @@ impl Motor {
                 "media",
                 ahora,
             );
-            if let Some(evento) = state.eventos_ejecucion.first() {
+            if let Some(evento) = state.eventos_ejecucion.front() {
                 self.persistir_evento(evento);
             }
             return;
@@ -396,7 +406,7 @@ impl Motor {
             Err(evento) => {
                 let evento = *evento;
                 self.persistir_evento(&evento);
-                state.eventos_ejecucion.insert(0, evento);
+                state.eventos_ejecucion.push_front(evento);
                 state.eventos_ejecucion.truncate(128);
                 self.ops_fallidas.fetch_add(1, Ordering::SeqCst);
                 return;
@@ -406,7 +416,7 @@ impl Motor {
         if let Some(evento) = aplicar_adversidad(&mut op, &state.costos, ahora, demo_forzado) {
             let falla = evento.severidad == "alta";
             self.persistir_evento(&evento);
-            state.eventos_ejecucion.insert(0, evento);
+            state.eventos_ejecucion.push_front(evento);
             state.eventos_ejecucion.truncate(128);
             if falla {
                 actualizar_historial(&op, &mut state.historial_rutas, false);
@@ -419,16 +429,16 @@ impl Motor {
         actualizar_historial(&op, &mut state.historial_rutas, exito);
         if exito {
             self.persistir_operacion(&op);
-            state.operaciones.insert(0, op.clone());
+            state.operaciones.push_front(op.clone());
             state.operaciones.truncate(80);
-            state.operaciones_riesgo.insert(0, op.clone());
+            state.operaciones_riesgo.push_front(op.clone());
             state.operaciones_riesgo.truncate(5_000);
             state
                 .enfriamiento
                 .insert(format!("{}->{}", op.compra_en, op.venta_en), ahora);
             state.utilidad += op.utilidad_usd;
             let utilidad = state.utilidad;
-            state.serie_pnl.push(PuntoSerie {
+            state.serie_pnl.push_back(PuntoSerie {
                 tiempo: ahora,
                 valor: utilidad,
             });
@@ -441,7 +451,7 @@ impl Motor {
                 ahora,
             );
             self.persistir_evento(&evento);
-            state.eventos_ejecucion.insert(0, evento);
+            state.eventos_ejecucion.push_front(evento);
             state.eventos_ejecucion.truncate(128);
             self.ops_ejecutadas.fetch_add(1, Ordering::SeqCst);
         } else {
@@ -453,15 +463,15 @@ impl Motor {
                 ahora,
             );
             self.persistir_evento(&evento);
-            state.eventos_ejecucion.insert(0, evento);
+            state.eventos_ejecucion.push_front(evento);
             state.eventos_ejecucion.truncate(128);
             self.ops_fallidas.fetch_add(1, Ordering::SeqCst);
             tracing::warn!(ruta = %format!("{}->{}", op.compra_en, op.venta_en), cantidad = op.cantidad_btc, "operacion simulada fallida por saldo insuficiente");
         }
         if state.ciclos % 500 == 0 {
-            let operaciones = state.operaciones.clone();
+            let mut operaciones = state.operaciones.clone();
             let fallos = self.ops_fallidas.load(Ordering::SeqCst) as usize;
-            state.ga.evolucionar(&operaciones, fallos);
+            state.ga.evolucionar(operaciones.make_contiguous(), fallos);
         }
     }
 
@@ -510,18 +520,20 @@ impl Motor {
                 latencia_promedio_ms: state.latencia_ewma,
                 estado_riesgo: estado_riesgo(state.latencia_ewma, state.costos.stale_ms),
                 trabajadores: 11,
-                sharpe_ratio: sharpe(&state.operaciones),
-                win_rate: win_rate(&state.operaciones),
-                max_drawdown_usd: max_drawdown(&state.serie_pnl),
+                sharpe_ratio: sharpe(state.operaciones.clone().make_contiguous()),
+                win_rate: win_rate(state.operaciones.clone().make_contiguous()),
+                max_drawdown_usd: max_drawdown(state.serie_pnl.clone().make_contiguous()),
                 operaciones_totales,
                 operaciones_fallidas: self.ops_fallidas.load(Ordering::SeqCst),
                 rebalanceos_totales: state.rebalanceos_total as usize,
+                costo_rebalanceo_acumulado_usd: state.costo_rebalanceo_acumulado_usd,
                 circuit_breaker_activo: state.circuit_breaker_activo,
                 modo_conservador: state.modo_conservador,
                 ejecucion_en_curso: self.ejecucion_en_curso.load(Ordering::SeqCst),
             },
             configuracion: state.costos.clone(),
             genetico: state.ga.public(),
+            ml_edge: construir_ml_edge(&state),
             persistencia: self.persistencia.as_ref().map(|p| p.estado()),
             exchanges_activos: state.exchanges_activos.clone(),
             pares_activos: state.pares_activos.clone(),
@@ -648,12 +660,12 @@ impl Motor {
                 seed,
                 Utc::now(),
             );
-            operaciones = replay.operaciones;
+            operaciones = replay.operaciones.into();
             fallos = replay.fallos;
             fuente = "replay_sintetico";
         }
         let muestras = operaciones.len();
-        state.ga.evolucionar(&operaciones, fallos);
+        state.ga.evolucionar(operaciones.make_contiguous(), fallos);
         let ga = state.ga.api_estado();
         tracing::debug!(
             fuente,
@@ -690,7 +702,7 @@ impl Motor {
                     _ => unreachable!(),
                 };
                 insertar_evento_sistema(&mut state, "demo_armado", detalle, "media", ahora);
-                if let Some(evento) = state.eventos_ejecucion.first() {
+                if let Some(evento) = state.eventos_ejecucion.front() {
                     self.persistir_evento(evento);
                 }
                 serde_json::json!({ "ok": true, "modo": "pendiente", "detalle": detalle })
@@ -703,7 +715,7 @@ impl Motor {
                     "alta",
                     ahora,
                 );
-                if let Some(evento) = state.eventos_ejecucion.first() {
+                if let Some(evento) = state.eventos_ejecucion.front() {
                     self.persistir_evento(evento);
                 }
                 serde_json::json!({ "ok": true, "modo": "instantaneo" })
@@ -726,7 +738,7 @@ impl Motor {
                         "alta",
                         ahora,
                     );
-                    if let Some(evento) = state.eventos_ejecucion.first() {
+                    if let Some(evento) = state.eventos_ejecucion.front() {
                         self.persistir_evento(evento);
                     }
                     return serde_json::json!({ "ok": false, "modo": "sin_inventario" });
@@ -735,9 +747,9 @@ impl Motor {
                 state.utilidad += op.utilidad_usd;
                 let utilidad_actual = state.utilidad;
                 self.persistir_operacion(&op);
-                state.operaciones.insert(0, op.clone());
-                state.operaciones_riesgo.insert(0, op.clone());
-                state.serie_pnl.push(PuntoSerie {
+                state.operaciones.push_front(op.clone());
+                state.operaciones_riesgo.push_front(op.clone());
+                state.serie_pnl.push_back(PuntoSerie {
                     tiempo: op.ejecutada_en,
                     valor: utilidad_actual,
                 });
@@ -754,9 +766,9 @@ impl Motor {
                 self.persistir_oportunidades(std::slice::from_ref(&oportunidad));
                 self.persistir_auditorias(std::slice::from_ref(&auditoria));
                 self.persistir_evento(&evento);
-                state.oportunidades.insert(0, oportunidad);
-                state.auditoria_decisiones.insert(0, auditoria);
-                state.eventos_ejecucion.insert(0, evento);
+                state.oportunidades.push_front(oportunidad);
+                state.auditoria_decisiones.push_front(auditoria);
+                state.eventos_ejecucion.push_front(evento);
                 state.operaciones.truncate(80);
                 state.operaciones_riesgo.truncate(5_000);
                 state.oportunidades.truncate(80);
@@ -774,7 +786,13 @@ impl Motor {
             }
             EscenarioDemo::CircuitBreaker => {
                 state.circuit_breaker_activo = true;
-                let perdida_demo = -(state.costos.circuit_breaker_perdida_usd + 1.0);
+                let pnl_ventana: f64 = state
+                    .operaciones_riesgo
+                    .iter()
+                    .map(|op| op.utilidad_usd)
+                    .sum();
+                let perdida_demo =
+                    -(pnl_ventana.max(0.0) + state.costos.circuit_breaker_perdida_usd + 1.0);
                 state.operaciones_riesgo.insert(
                     0,
                     Operacion {
@@ -800,7 +818,7 @@ impl Motor {
                     "alta",
                     ahora,
                 );
-                if let Some(evento) = state.eventos_ejecucion.first() {
+                if let Some(evento) = state.eventos_ejecucion.front() {
                     self.persistir_evento(evento);
                 }
                 serde_json::json!({ "ok": true, "modo": "instantaneo" })
@@ -810,7 +828,7 @@ impl Motor {
                 let evento = state.carteras.forzar_rebalanceo_demo(precio, ahora);
                 self.persistir_rebalanceo(&evento);
                 state.rebalanceos_total += 1;
-                state.rebalanceos.insert(0, evento.clone());
+                state.rebalanceos.push_front(evento.clone());
                 state.rebalanceos.truncate(64);
                 insertar_evento_sistema(
                     &mut state,
@@ -819,7 +837,7 @@ impl Motor {
                     "normal",
                     ahora,
                 );
-                if let Some(evento) = state.eventos_ejecucion.first() {
+                if let Some(evento) = state.eventos_ejecucion.front() {
                     self.persistir_evento(evento);
                 }
                 serde_json::json!({ "ok": true, "modo": "instantaneo", "rebalanceo": evento })
@@ -847,9 +865,9 @@ impl Motor {
                     state.utilidad += op.utilidad_usd;
                     let utilidad_actual = state.utilidad;
                     self.persistir_operacion(&op);
-                    state.operaciones.insert(0, op.clone());
-                    state.operaciones_riesgo.insert(0, op.clone());
-                    state.serie_pnl.push(PuntoSerie {
+                    state.operaciones.push_front(op.clone());
+                    state.operaciones_riesgo.push_front(op.clone());
+                    state.serie_pnl.push_back(PuntoSerie {
                         tiempo: op.ejecutada_en,
                         valor: utilidad_actual,
                     });
@@ -865,9 +883,9 @@ impl Motor {
                     self.persistir_oportunidades(std::slice::from_ref(&oportunidad));
                     self.persistir_auditorias(std::slice::from_ref(&auditoria));
                     self.persistir_evento(&evento);
-                    state.oportunidades.insert(0, oportunidad);
-                    state.auditoria_decisiones.insert(0, auditoria);
-                    state.eventos_ejecucion.insert(0, evento);
+                    state.oportunidades.push_front(oportunidad);
+                    state.auditoria_decisiones.push_front(auditoria);
+                    state.eventos_ejecucion.push_front(evento);
                     insertadas += 1;
                     self.ops_ejecutadas.fetch_add(1, Ordering::SeqCst);
                 }
@@ -878,9 +896,9 @@ impl Motor {
                 state.eventos_ejecucion.truncate(128);
                 truncar_primeros(&mut state.serie_pnl, 240);
 
-                let operaciones = state.operaciones.clone();
+                let mut operaciones = state.operaciones.clone();
                 let fallos = self.ops_fallidas.load(Ordering::SeqCst) as usize;
-                state.ga.evolucionar(&operaciones, fallos);
+                state.ga.evolucionar(operaciones.make_contiguous(), fallos);
                 tracing::debug!(
                     operaciones_insertadas = insertadas,
                     generacion = state.ga.generacion,
@@ -894,7 +912,7 @@ impl Motor {
                     "normal",
                     ahora,
                 );
-                if let Some(evento) = state.eventos_ejecucion.first() {
+                if let Some(evento) = state.eventos_ejecucion.front() {
                     self.persistir_evento(evento);
                 }
                 serde_json::json!({
@@ -1007,13 +1025,14 @@ impl Carteras {
                             .map(|i| (other.clone(), b.usd - i.usd))
                     })
                     .max_by(|a, b| a.1.total_cmp(&b.1));
-                if let Some((src, surplus)) = src.filter(|(_, s)| *s > 10.0) {
+                if let Some((src, surplus)) = src.filter(|(_, s)| *s > costos.costo_rebalanceo_usd)
+                {
                     let amount = ((init.usd - actual.usd) * max_transfer).min(surplus);
                     if let Some(src_bal) = self.balances.get_mut(&src) {
                         src_bal.usd -= amount;
                     }
                     if let Some(dst_bal) = self.balances.get_mut(&name) {
-                        dst_bal.usd += (amount - 10.0).max(0.0);
+                        dst_bal.usd += (amount - costos.costo_rebalanceo_usd).max(0.0);
                     }
                     eventos.push(Rebalanceo {
                         id: format!("reb-usd-{}-{}-{}", src, name, ahora.timestamp_millis()),
@@ -1021,7 +1040,7 @@ impl Carteras {
                         hacia: name.clone(),
                         activo: "USD".to_string(),
                         cantidad: amount,
-                        costo_usd: 10.0_f64.min(amount),
+                        costo_usd: costos.costo_rebalanceo_usd.min(amount),
                         razon: "USD bajo objetivo operativo".to_string(),
                         tiempo: ahora,
                     });
@@ -1525,6 +1544,99 @@ fn registrar_auditoria_oportunidades(
     state.auditoria_decisiones.truncate(160);
 }
 
+fn construir_ml_edge(state: &State) -> Option<EstadoMlEdge> {
+    let auditoria = state.auditoria_decisiones.front()?;
+    let max_operacion = state.costos.max_operacion_btc.max(0.00000001);
+    let stale_ms = state.costos.stale_ms.max(1) as f64;
+    let pesos = pesos_normalizados(&auditoria.pesos_ga);
+    let utilidad_norm = (auditoria.utilidad_usd / 25.0).tanh().max(0.0);
+    let frescura = (1.0 - auditoria.latencia_max_ms as f64 / stale_ms).clamp(0.0, 1.0);
+    let liquidez = (auditoria.cantidad_btc / max_operacion).clamp(0.0, 1.0);
+    let confiabilidad = confianza_ruta(&state.historial_rutas, &auditoria.ruta);
+    let z_score = (0.5 + auditoria.z_score.tanh() / 2.0).clamp(0.0, 1.0);
+    let valores = [
+        ("utilidad_neta", utilidad_norm),
+        ("frescura_book", frescura),
+        ("liquidez_fill", liquidez),
+        ("confiabilidad_ruta", confiabilidad),
+        ("z_score_spread", z_score),
+    ];
+    let features = valores
+        .iter()
+        .zip(pesos.iter())
+        .map(|((nombre, valor), peso)| FeatureMlEdge {
+            nombre: (*nombre).to_string(),
+            peso: *peso,
+            valor: *valor,
+            contribucion: *peso * *valor,
+        })
+        .collect::<Vec<_>>();
+    let score_actual = features.iter().map(|f| f.contribucion).sum::<f64>();
+    let survival_probability = frescura
+        .mul_add(0.56, confiabilidad * 0.24)
+        .mul_add(1.0, z_score * 0.20)
+        .clamp(0.0, 1.0);
+    let fill_probability =
+        (liquidez * 0.72 + confiabilidad * 0.18 + frescura * 0.10).clamp(0.0, 1.0);
+    let adverse_selection_bps = ((1.0 - survival_probability) * state.costos.movimiento_brusco_bps)
+        + (auditoria.latencia_max_ms as f64 / stale_ms).clamp(0.0, 2.0)
+            * state.costos.latencia_riesgo_bps;
+    let expected_value_usd = auditoria.utilidad_usd * survival_probability * fill_probability
+        - auditoria.costo_total_usd * (1.0 - fill_probability) * 0.12;
+    let confianza =
+        ((score_actual * 0.55) + (survival_probability * 0.25) + (fill_probability * 0.20))
+            .clamp(0.0, 1.0);
+    let activo = state.ga.generacion > 0 && state.ga.operaciones_evaluadas > 0;
+    let explicacion = format!(
+        "Score EV {:.3}: utilidad {:.0}%, frescura {:.0}%, liquidez {:.0}%, supervivencia {:.0}% y fill {:.0}%; decision {}.",
+        score_actual,
+        utilidad_norm * 100.0,
+        frescura * 100.0,
+        liquidez * 100.0,
+        survival_probability * 100.0,
+        fill_probability * 100.0,
+        auditoria.decision_code
+    );
+    Some(EstadoMlEdge {
+        activo,
+        modelo: "Mayab ML Edge GA/EV".to_string(),
+        version: "ml-edge-v1".to_string(),
+        decision: auditoria.decision_code.clone(),
+        score_actual,
+        confianza,
+        expected_value_usd,
+        survival_probability,
+        fill_probability,
+        adverse_selection_bps,
+        features,
+        explicacion,
+    })
+}
+
+fn pesos_normalizados(pesos: &[f64]) -> [f64; 5] {
+    let mut out = [0.40, 0.20, 0.20, 0.10, 0.10];
+    for (idx, peso) in pesos.iter().take(5).enumerate() {
+        if peso.is_finite() && *peso >= 0.0 {
+            out[idx] = *peso;
+        }
+    }
+    let total = out.iter().sum::<f64>();
+    if total > 0.0 {
+        for peso in &mut out {
+            *peso /= total;
+        }
+    }
+    out
+}
+
+fn confianza_ruta(historial: &HashMap<String, f64>, ruta: &str) -> f64 {
+    historial
+        .get(ruta)
+        .copied()
+        .map(|v| (0.50 + v * 0.08).clamp(0.05, 0.98))
+        .unwrap_or(0.58)
+}
+
 fn insertar_evento_sistema(
     state: &mut State,
     tipo: &str,
@@ -1853,12 +1965,28 @@ fn actualizar_latencia_exchange(state: &mut State, exchange: &str, latencia_ms: 
             ultimo_ms: latencia_ms,
             min_ms: latencia_ms,
             max_ms: latencia_ms,
+            p50_ms: latencia_ms,
+            p95_ms: latencia_ms,
+            p99_ms: latencia_ms,
             eventos: 0,
+            historial: VecDeque::with_capacity(100),
         });
     lat.eventos += 1;
     lat.ultimo_ms = latencia_ms;
     lat.min_ms = lat.min_ms.min(latencia_ms);
     lat.max_ms = lat.max_ms.max(latencia_ms);
+    lat.historial.push_back(latencia_ms);
+    if lat.historial.len() > 100 {
+        lat.historial.pop_front();
+    }
+    let mut sorted: Vec<_> = lat.historial.iter().copied().collect();
+    sorted.sort_unstable();
+    if !sorted.is_empty() {
+        let n = sorted.len();
+        lat.p50_ms = sorted[(n as f64 * 0.50) as usize];
+        lat.p95_ms = sorted[(n as f64 * 0.95).min((n - 1) as f64) as usize];
+        lat.p99_ms = sorted[(n as f64 * 0.99).min((n - 1) as f64) as usize];
+    }
     lat.promedio_ms = if lat.eventos <= 1 {
         latencia_ms as f64
     } else {
@@ -1876,6 +2004,9 @@ fn snapshot_latencias(state: &State) -> Vec<LatenciaExchange> {
             ultimo_ms: lat.ultimo_ms,
             min_ms: lat.min_ms,
             max_ms: lat.max_ms,
+            p50_ms: lat.p50_ms,
+            p95_ms: lat.p95_ms,
+            p99_ms: lat.p99_ms,
             eventos: lat.eventos,
             estado: estado_riesgo(lat.promedio_ms, state.costos.stale_ms),
             region_sugerida: region_sugerida(exchange, lat.promedio_ms).to_string(),
@@ -2180,7 +2311,7 @@ fn normalizar_par_operativo(par: &str) -> String {
     }
 }
 
-fn limitar<T>(mut items: Vec<T>, maximo: usize) -> Vec<T> {
+fn limitar<T>(mut items: VecDeque<T>, maximo: usize) -> VecDeque<T> {
     if items.len() > maximo {
         items.truncate(maximo);
     }
@@ -2188,14 +2319,16 @@ fn limitar<T>(mut items: Vec<T>, maximo: usize) -> Vec<T> {
 }
 
 fn limitar_ultimos<T>(mut items: Vec<T>, maximo: usize) -> Vec<T> {
-    truncar_primeros(&mut items, maximo);
-    items
-}
-
-fn truncar_primeros<T>(items: &mut Vec<T>, maximo: usize) {
     if items.len() > maximo {
         let quitar = items.len() - maximo;
         items.drain(0..quitar);
+    }
+    items
+}
+
+fn truncar_primeros<T>(items: &mut VecDeque<T>, maximo: usize) {
+    while items.len() > maximo {
+        items.pop_front();
     }
 }
 
@@ -2246,6 +2379,7 @@ mod tests {
             movimiento_brusco_bps: 0.0,
             rebalance_umbral_pct: 35.0,
             rebalance_max_transfer_pct: 50.0,
+            costo_rebalanceo_usd: 10.0,
             exchanges,
         }
     }
@@ -2492,6 +2626,11 @@ mod tests {
         let ga = estado.genetico.expect("estado GA publico");
         assert!(ga.activo);
         assert!(ga.operaciones_evaluadas > 0);
+        let ml_edge = estado.ml_edge.expect("estado ML Edge publico");
+        assert!(ml_edge.activo);
+        assert!(ml_edge.score_actual.is_finite());
+        assert!(ml_edge.expected_value_usd.is_finite());
+        assert_eq!(ml_edge.features.len(), 5);
     }
 
     #[tokio::test]
@@ -2515,5 +2654,28 @@ mod tests {
             .eventos_ejecucion
             .iter()
             .any(|e| e.tipo == "fill_parcial"));
+    }
+
+    #[tokio::test]
+    async fn demo_circuit_breaker_supera_pnl_positivo_previo() {
+        let motor = Motor::new(cfg_test(), 250_000.0, 2.5, "BTC/USD".to_string(), None);
+        motor
+            .activar_escenario_demo(EscenarioDemo::MercadoRentable)
+            .await;
+
+        let resultado = motor
+            .activar_escenario_demo(EscenarioDemo::CircuitBreaker)
+            .await;
+        assert!(resultado
+            .get("ok")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false));
+
+        let estado = motor.estado().await;
+        assert!(estado.metricas.circuit_breaker_activo);
+        assert!(estado
+            .eventos_ejecucion
+            .iter()
+            .any(|e| e.tipo == "circuit_breaker"));
     }
 }

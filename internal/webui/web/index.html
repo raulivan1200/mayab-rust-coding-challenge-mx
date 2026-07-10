@@ -1,16 +1,32 @@
 <!doctype html>
-<html lang="es" data-theme="dark">
+<html lang="es" data-theme="dark" class="theme-preload">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Mayab Arbitraje BTC</title>
     <meta name="description" content="Mayab Arbitraje BTC — Sistema de arbitraje de Bitcoin en tiempo real con monitoreo multi-exchange" />
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><circle cx=%2250%22 cy=%2250%22 r=%2245%22 fill=%22%237c5cfc%22/><text x=%2250%22 y=%2268%22 font-size=%2255%22 font-weight=%22bold%22 font-family=%22sans-serif%22 fill=%22%23fff%22 text-anchor=%22middle%22>₿</text></svg>" />
+    <link rel="icon" type="image/svg+xml" href="/icons/currency_bitcoin.svg" />
     <meta property="og:title" content="Mayab Arbitraje BTC" />
     <meta property="og:description" content="Sistema de arbitraje de Bitcoin en tiempo real con monitoreo multi-exchange." />
     <meta property="og:type" content="website" />
     <meta name="theme-color" content="#0c0e14" id="themeMetaColor" />
-    <link rel="stylesheet" href="/styles.css" />
+    <style>
+      html { background: #111111; color-scheme: dark; }
+      html[data-theme="light"] { background: #f4e9e1; color-scheme: light; }
+    </style>
+    <script>
+      (function() {
+        try {
+          const tema = localStorage.getItem("tema") || "dark";
+          document.documentElement.setAttribute("data-theme", tema);
+          document.documentElement.style.colorScheme = tema;
+          const metaColor = tema === "dark" ? "#0c0e14" : "#f4e9e1";
+          const meta = document.getElementById("themeMetaColor");
+          if (meta) meta.setAttribute("content", metaColor);
+        } catch (e) {}
+      })();
+    </script>
+    <link rel="stylesheet" href="/styles.css?v=20260710-landing-cards" />
   </head>
   <body>
     <noscript>
@@ -19,10 +35,88 @@
       </div>
     </noscript>
 
-    <canvas id="bg-shader" aria-hidden="true"></canvas>
+    <div id="bg-grid" aria-hidden="true"></div>
 
     <main class="pantalla">
-      <header class="barra-superior">
+      <section class="landing-page" aria-label="Landing Mayab Arbitraje BTC">
+        <div class="landing-nav">
+          <a class="landing-brand" href="#landing-top" aria-label="Mayab inicio">Mayab BTC</a>
+          <a class="landing-nav-link" href="#dashboard">Entrar al dashboard</a>
+        </div>
+
+        <div id="landing-top" class="landing-hero">
+          <div class="landing-copy reveal-card">
+            <p class="landing-kicker">Demo rentable por defecto · mercado vivo en paralelo</p>
+            <h1>El bot muestra utilidad neta desde el primer segundo.</h1>
+            <p>
+              Mayab arranca con una corrida rentable, simulada y auditada para que el comité vea el flujo completo: detección, costos, ejecución, carteras, GA y PnL. Los feeds públicos siguen activos para comparar contra mercado real.
+            </p>
+            <a class="landing-cta" href="#dashboard">
+              Ver motor en vivo
+              <span class="material-icon material-icon-arrow" aria-hidden="true"></span>
+            </a>
+          </div>
+
+          <div class="landing-card-stack" aria-label="Resumen de capacidades">
+            <article class="landing-card landing-card-blue reveal-card">
+              <span>01</span>
+              <h2>Mercado real</h2>
+              <ul>
+                <li>Feeds públicos WebSocket de exchanges grandes</li>
+                <li>Latencia, frescura y fallback REST visibles</li>
+                <li>Rutas reales separadas de la corrida demo</li>
+              </ul>
+            </article>
+            <article class="landing-card landing-card-yellow reveal-card">
+              <span>02</span>
+              <h2>Profit demo</h2>
+              <ul>
+                <li>PnL positivo sin esperar suerte del mercado</li>
+                <li>Fees, slippage, latencia y fills parciales</li>
+                <li>GA entrenado con replay sintético etiquetado</li>
+              </ul>
+            </article>
+          </div>
+        </div>
+
+        <div class="landing-grid">
+          <article class="landing-card landing-card-green reveal-card">
+            <span>03</span>
+            <h2>Riesgo defendible</h2>
+            <ul>
+              <li>Circuit breaker y modo conservador a la vista</li>
+              <li>Inventario USD/BTC por exchange</li>
+              <li>Rebalanceos internos con costo explícito</li>
+            </ul>
+          </article>
+          <article class="landing-card landing-card-purple reveal-card">
+            <span>04</span>
+            <h2>IA que se explica</h2>
+            <ul>
+              <li>Mayab Edge Tensor con variables legibles</li>
+              <li>Pesos GA, fitness y diversidad por generación</li>
+              <li>JSON/CSV para auditar fuera del dashboard</li>
+            </ul>
+          </article>
+          <article class="landing-card landing-card-black reveal-card">
+            <span>05</span>
+            <h2>Listo para ganar</h2>
+            <ul>
+              <li>Score jurado, preflight y paquete de evaluación</li>
+              <li>Smoke reproducible y contratos HTTP estables</li>
+              <li>Sin llaves, sin custodia, sin trading real</li>
+            </ul>
+          </article>
+        </div>
+
+        <a class="scroll-indicator" href="#dashboard" aria-label="Bajar al dashboard">
+          <span></span>
+          <span></span>
+          <span></span>
+        </a>
+      </section>
+
+      <header id="dashboard" class="barra-superior">
         <div class="brand-block">
           <div class="topline">
             <p class="ceja">Mayab Arbitraje BTC</p>
@@ -30,13 +124,13 @@
             <span id="modoConservadorBadge" class="modo-conservador-badge" hidden>MODO CONSERVADOR</span>
           </div>
           <div>
-            <h1>Motor de arbitraje BTC en tiempo real</h1>
+          <h1>Mayab Edge: arbitraje BTC explicado</h1>
           </div>
         </div>
         <div class="toolbar">
-          <button id="themeToggle" class="tema-toggle" aria-label="Cambiar tema">
-            <svg class="icon-sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px;display:none;"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
-            <svg class="icon-moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px;"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+          <button id="themeToggle" class="tema-toggle" type="button" aria-label="Cambiar a modo oscuro" title="Cambiar a modo oscuro">
+            <span class="theme-icon icon-sun" aria-hidden="true"></span>
+            <span class="theme-icon icon-moon" aria-hidden="true"></span>
           </button>
           <div class="estado-live" id="estadoSocket">
             <span class="pulso"></span>
@@ -46,19 +140,40 @@
       </header>
 
       <div id="circuitBreakerBanner" class="circuit-breaker-banner" hidden>
-        ⚠️ CIRCUIT BREAKER ACTIVO: Se han pausado las ejecuciones simuladas debido a pérdidas acumuladas.
+        <span class="material-icon material-icon-warning" aria-hidden="true"></span>
+        <span>CIRCUIT BREAKER ACTIVO: Se han pausado las ejecuciones simuladas debido a pérdidas acumuladas.</span>
       </div>
 
+
+      <nav class="tabs-nav" aria-label="Navegación principal">
+        <button class="tab-btn activo" data-tab="tab-overview">Overview</button>
+        <button class="tab-btn" data-tab="tab-mercado">Mercado y Rutas</button>
+        <button class="tab-btn" data-tab="tab-riesgo">Gestión de Riesgo</button>
+        <button class="tab-btn" data-tab="tab-logs">Logs y Backtest</button>
+        <button class="tab-btn" data-tab="tab-galab">Laboratorio GA</button>
+      </nav>
+
+      <div class="tab-content activo" id="tab-overview">
       <section class="llm-strip" aria-label="Resumen operativo para humanos y LLMs">
         <div>
           <p class="ceja">Lectura rápida</p>
-          <h2>Qué está pasando ahora</h2>
+          <h2>Lectura ejecutiva</h2>
         </div>
-        <p id="resumenLlm">
-          Esperando datos del motor. Este resumen se actualiza con PnL, riesgo, mejor ruta, estado GA y última acción observable.
-        </p>
+        <ul class="llm-lista" id="resumenLlm">
+          <li><span>Modo</span><strong id="llm-modo">Cargando...</strong></li>
+          <li><span>PnL</span><strong id="llm-pnl">Cargando...</strong></li>
+          <li><span>Riesgo</span><strong id="llm-riesgo">Cargando...</strong></li>
+          <li><span>Mejor ruta</span><strong id="llm-ruta">Cargando...</strong></li>
+          <li><span>Decisión</span><strong id="llm-decision">Cargando...</strong></li>
+          <li><span>GA</span><strong id="llm-ga">Cargando...</strong></li>
+          <li><span>ML Edge</span><strong id="llm-ml">Cargando...</strong></li>
+          <li><span>Sistema</span><strong id="llm-sistema">Cargando...</strong></li>
+          <li><span>Latencia</span><strong id="llm-latencia">Cargando...</strong></li>
+        </ul>
         <div class="strip-actions" aria-label="Exportar auditoría">
-          <a class="btn-link btn-link-destacado" href="/api/paquete-evaluacion" target="_blank" rel="noopener">Paquete jurado</a>
+          <a class="btn-link btn-link-destacado" href="/api/jurado" target="_blank" rel="noopener">Ver score jurado</a>
+          <a class="btn-link btn-link-destacado" href="/api/paquete-evaluacion" target="_blank" rel="noopener">Evidencia final</a>
+          <a class="btn-link" href="/api/mcp/manifest" target="_blank" rel="noopener">MCP tools</a>
           <a class="btn-link" href="/api/export/json" download>Exportar JSON</a>
           <a class="btn-link" href="/api/export/csv" download>Exportar CSV</a>
         </div>
@@ -66,9 +181,9 @@
 
       <section class="metricas metricas-principales" aria-label="Métricas principales">
         <article>
-          <span>Ganancia/pérdida simulada</span>
+          <span>Utilidad neta demo</span>
           <strong id="pnl">$0.00</strong>
-          <p id="pnlDetalle">Resultado acumulado de operaciones simuladas después de costos.</p>
+          <p id="pnlDetalle">Corrida rentable precargada: PnL simulado después de costos, fill parcial y rebalanceo.</p>
         </article>
         <article>
           <span>Retorno</span>
@@ -100,18 +215,18 @@
         </article>
         <article>
           <span>Max Drawdown</span>
-          <strong id="maxDrawdown">$0.00</strong>
+          <strong id="maxDrawdown" class="metric-money"><span class="metric-amount">0.00</span><small class="metric-unit">USD</small></strong>
           <p>Peor caída acumulada desde un máximo de PnL.</p>
         </article>
         <article>
           <span>Trades Ejecutados</span>
           <strong id="operacionesTotales">0</strong>
-          <p>Operaciones simuladas aceptadas por el motor.</p>
+          <p>Trades simulados que pasaron filtros de utilidad, balance y riesgo.</p>
         </article>
         <article>
           <span>Fallos</span>
           <strong id="operacionesFallidas">0</strong>
-          <p>Rechazos o fallas adversas simuladas.</p>
+          <p>Fallas controladas para demostrar robustez bajo estrés.</p>
         </article>
         <article>
           <span>Rebalanceos</span>
@@ -126,17 +241,91 @@
             <p class="ceja">Jurado</p>
             <h2>Readiness</h2>
           </div>
-          <a class="btn-link btn-link-destacado" href="/api/preflight" target="_blank" rel="noopener">Preflight</a>
+          <a class="btn-link btn-link-destacado" href="/api/jurado" target="_blank" rel="noopener">Score jurado</a>
+          <a class="btn-link" href="/api/preflight" target="_blank" rel="noopener">Preflight</a>
         </div>
-        <div id="judgeReadiness" class="judge-readiness">Calculando readiness del jurado...</div>
+        <div id="judgeReadiness" class="judge-readiness">Armando score de jurado con evidencia runtime...</div>
       </section>
 
-      <section class="tablero">
+      <section class="panel benchmark-panel" aria-label="Cobertura de benchmark finalista">
+        <div class="panel-titulo">
+          <div>
+            <p class="ceja">Benchmark finalista</p>
+            <h2>Cobertura competitiva</h2>
+          </div>
+          <a class="btn-link" href="/api/paquete-evaluacion" target="_blank" rel="noopener">Ver evidencia</a>
+        </div>
+        <p class="panel-ayuda">Cobertura contra la rúbrica final: parametrización, adversidad, wallets, visualización, documentación y evidencia reproducible.</p>
+        <div id="benchmarkCobertura" class="benchmark-grid">Calculando cobertura contra la rúbrica...</div>
+      </section>
+
+      <section class="panel edge-panel" aria-label="Mayab Edge Tensor">
+        <div class="panel-titulo">
+          <div>
+            <p class="ceja">IA / Evidencia</p>
+            <h2>Mayab Edge Tensor</h2>
+          </div>
+          <span id="edgeEstado" class="edge-status">esperando señal explicable</span>
+        </div>
+        <p id="edgeExplicacion" class="panel-ayuda">El motor calcula valor esperado con utilidad neta, frescura del book, liquidez, confiabilidad histórica y z-score del spread.</p>
+        <div class="edge-plane" aria-label="Plano cartesiano ML Edge">
+          <svg id="edgePlane" viewBox="0 0 360 240" role="img" aria-label="Plano de probabilidad contra impacto">
+            <defs>
+              <pattern id="edgeGridPattern" width="26" height="26" patternUnits="userSpaceOnUse">
+                <path d="M 26 0 L 0 0 0 26" fill="none" />
+              </pattern>
+            </defs>
+            <rect class="edge-plane-bg" x="0" y="0" width="360" height="240" rx="0"></rect>
+            <rect class="edge-plane-grid" x="54" y="24" width="266" height="180"></rect>
+            <line class="edge-axis" x1="54" y1="114" x2="320" y2="114"></line>
+            <line class="edge-axis" x1="54" y1="24" x2="54" y2="204"></line>
+            <text class="edge-axis-label" x="187" y="228">probabilidad / confianza</text>
+            <text class="edge-axis-label edge-axis-y" x="18" y="118">impacto</text>
+            <text class="edge-axis-tick" x="50" y="219">0%</text>
+            <text class="edge-axis-tick" x="302" y="219">100%</text>
+            <text class="edge-axis-tick" x="20" y="31">+</text>
+            <text class="edge-axis-tick" x="22" y="206">-</text>
+            <g class="edge-plane-point ev">
+              <circle id="edgePointEv" r="6"></circle>
+              <text id="edgeLabelEv"></text>
+            </g>
+            <g class="edge-plane-point confianza">
+              <circle id="edgePointConfianza" r="5"></circle>
+              <text id="edgeLabelConfianza"></text>
+            </g>
+            <g class="edge-plane-point supervivencia">
+              <circle id="edgePointSurvival" r="5"></circle>
+              <text id="edgeLabelSurvival"></text>
+            </g>
+            <g class="edge-plane-point fill">
+              <circle id="edgePointFill" r="5"></circle>
+              <text id="edgeLabelFill"></text>
+            </g>
+            <g class="edge-plane-point adversidad">
+              <circle id="edgePointAdverse" r="5"></circle>
+              <text id="edgeLabelAdverse"></text>
+            </g>
+          </svg>
+          <div class="edge-plane-legend">
+            <div><span>EV</span><strong id="edgeEv">$0.00</strong></div>
+            <div><span>Confianza</span><strong id="edgeConfianza">0.0%</strong></div>
+            <div><span>Supervivencia</span><strong id="edgeSurvival">0.0%</strong></div>
+            <div><span>Fill</span><strong id="edgeFill">0.0%</strong></div>
+            <div><span>Adversidad</span><strong id="edgeAdverse">0.00 bps</strong></div>
+          </div>
+        </div>
+        <div id="edgeFeatures" class="edge-features"></div>
+      </section>
+
+      </div>
+
+      <div class="tab-content" id="tab-mercado">
+      <section class="tablero tablero-mercado">
         <section class="panel mercado">
           <div class="panel-titulo">
             <div>
               <p class="ceja">Cinta</p>
-              <h2>Mercado vivo</h2>
+          <h2>Feeds y precios</h2>
             </div>
             <span id="riesgo">esperando mercado</span>
           </div>
@@ -144,8 +333,9 @@
           <div class="exchange-lista" id="exchangeLista"></div>
           <div class="latencia-ranking" aria-label="Ranking de latencia por exchange">
             <div class="mini-tabla-titulo">
-              <span>Latencia por feed</span>
-              <small>EWMA / región</small>
+              <strong>Latencia por feed</strong>
+              <span>EWMA</span>
+              <small>P50 / P99</small>
             </div>
             <div id="latenciaRanking" class="mini-tabla"></div>
           </div>
@@ -154,15 +344,19 @@
         <section class="panel mapa">
           <div class="panel-titulo">
             <div>
-              <p class="ceja">Rutas</p>
+              <p class="ceja" id="conteoRutas">0 RUTAS</p>
               <h2>Mapa de arbitraje</h2>
             </div>
             <span id="mejorDiferencial">0.00 bps</span>
           </div>
-          <p class="panel-ayuda">Las líneas conectan compra y venta entre exchanges. Verde indica rutas ejecutables; rojo indica rutas descartadas por costos, riesgo o balance.</p>
+          <p class="panel-ayuda">Cada línea es una ruta compra-venta. Las aceptadas pasan por utilidad neta, profundidad, inventario, latencia y riesgo.</p>
           <canvas id="canvasMapa" width="960" height="620"></canvas>
         </section>
+      </section>
+      </div>
 
+      <div class="tab-content" id="tab-riesgo">
+      <div class="inferior inferior-dos-columnas">
         <section class="panel cartera">
           <div class="panel-titulo">
             <div>
@@ -171,10 +365,23 @@
             </div>
             <span id="trabajadores">0 trabajadores</span>
           </div>
-          <p class="panel-ayuda">Capital simulado disponible por exchange y parámetros activos. En despliegues protegidos, los cambios requieren token admin.</p>
+          <p class="panel-ayuda">Inventario simulado por exchange: aquí se ve si el bot puede comprar, vender o necesita rebalancear antes de operar.</p>
           <div id="balances" class="balances"></div>
           <div class="config-grid" id="configGrid"></div>
-          
+          <div class="tabla-scroll exchange-costos-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Exchange</th>
+                  <th>Fee taker</th>
+                  <th>Retiro BTC</th>
+                  <th>Confiabilidad</th>
+                </tr>
+              </thead>
+              <tbody id="exchangeCostos"></tbody>
+            </table>
+          </div>
+
           <div class="config-controles">
             <h3 class="ceja form-title">Ajustar parámetros POST</h3>
             <div class="preset-grid" aria-label="Presets de simulación">
@@ -212,12 +419,28 @@
               <input type="number" id="inputLatenciaRiesgo" step="0.01" min="0" max="20" />
             </div>
             <div class="control-fila">
+              <label for="inputRetiroAmortizado">Retiro amortizado (bps):</label>
+              <input type="number" id="inputRetiroAmortizado" step="0.01" min="0" max="50" />
+            </div>
+            <div class="control-fila">
+              <label for="inputUsdtPremium">Basis USDT/USD (bps):</label>
+              <input type="number" id="inputUsdtPremium" step="0.01" min="0" max="100" />
+            </div>
+            <div class="control-fila">
               <label for="inputCircuitBreaker">Circuit breaker USD:</label>
               <input type="number" id="inputCircuitBreaker" step="25" min="0" max="100000" />
             </div>
             <div class="control-fila">
+              <label for="inputCircuitVentana">Ventana circuit (min):</label>
+              <input type="number" id="inputCircuitVentana" step="1" min="1" max="240" />
+            </div>
+            <div class="control-fila">
               <label for="inputVolatilidad">Volatilidad umbral (bps):</label>
               <input type="number" id="inputVolatilidad" step="1" min="0" max="1000" />
+            </div>
+            <div class="control-fila">
+              <label for="inputVolatilidadVentana">Ventana volatilidad (seg):</label>
+              <input type="number" id="inputVolatilidadVentana" step="1" min="1" max="3600" />
             </div>
             <div class="control-fila">
               <label for="inputProbFallo">Prob. fallo orden:</label>
@@ -239,6 +462,18 @@
               <label for="inputRebalanceTransfer">Transfer max (%):</label>
               <input type="number" id="inputRebalanceTransfer" step="1" min="1" max="100" />
             </div>
+            <div class="control-fila">
+              <label for="inputCostoRebalanceo">Costo rebalanceo USD:</label>
+              <input type="number" id="inputCostoRebalanceo" step="0.25" min="0" max="1000" />
+            </div>
+            <div class="control-fila">
+              <label for="inputCruceUsdUsdt">Cruce USD/USDT:</label>
+              <input type="checkbox" id="inputCruceUsdUsdt" />
+            </div>
+            <div class="control-fila">
+              <label for="inputSimularAdversidad">Simular adversidad:</label>
+              <input type="checkbox" id="inputSimularAdversidad" />
+            </div>
             <button id="btnAplicarConfig" class="btn-primario">Aplicar Parámetros</button>
             <span id="configFeedback" class="config-feedback"></span>
           </div>
@@ -248,14 +483,15 @@
       <section class="panel demo-panel">
         <div class="panel-titulo">
           <div>
-            <p class="ceja">Demo controlada</p>
-            <h2>Escenarios adversos</h2>
+            <p class="ceja">Sala de pruebas</p>
+            <h2>Demuestra edge bajo presión</h2>
           </div>
           <span id="demoEstado">listo</span>
         </div>
-        <p class="panel-ayuda">Dispara eventos visibles para demostrar robustez o un mercado rentable sin depender del azar del mercado real.</p>
+        <p class="panel-ayuda">Usa estos botones para enseñar al comité cómo responde el bot cuando gana, cuando falla una orden, cuando falta liquidez o cuando toca proteger capital.</p>
         <div class="demo-actions">
-          <button type="button" class="btn-secundario demo-primary" data-demo="mercado_rentable">Demo rentable + GA</button>
+          <button type="button" id="btnDemoFinal" class="btn-secundario demo-final">Cargar demo ganadora</button>
+          <button type="button" class="btn-secundario demo-primary" data-demo="mercado_rentable">Inyectar profit + GA</button>
           <button type="button" class="btn-secundario" data-demo="fallo_orden">Fallar siguiente orden</button>
           <button type="button" class="btn-secundario" data-demo="mercado_movido">Shock de mercado</button>
           <button type="button" class="btn-secundario" data-demo="fill_parcial">Fill parcial</button>
@@ -265,29 +501,32 @@
         </div>
         <span id="demoFeedback" class="feedback"></span>
       </section>
+      </div>
+      </div>
 
-      <section class="inferior">
+      <div class="tab-content" id="tab-logs">
+      <section class="inferior inferior-dos-columnas">
         <section class="panel grafica">
           <div class="panel-titulo">
             <div>
               <p class="ceja">Rendimiento</p>
-              <h2>Ganancia/pérdida y diferencial neto</h2>
+              <h2>PnL y spread neto</h2>
             </div>
           </div>
-          <p class="panel-ayuda">Compara la utilidad acumulada contra el mejor spread neto detectado. Sirve para ver si el mercado trae oportunidades reales o solo ruido.</p>
+          <p class="panel-ayuda">Compara la utilidad demo contra el mejor spread neto observado. Ayuda a distinguir oportunidad real, ruido de mercado y evidencia simulada.</p>
           <canvas id="canvasSeries" width="1200" height="360"></canvas>
         </section>
 
-        <section class="panel tabla">
+        <section class="panel tabla route-decisions-panel">
           <div class="panel-titulo">
             <div>
               <p class="ceja">Motor</p>
-              <h2>Oportunidades</h2>
+              <h2>Decisiones de ruta</h2>
             </div>
           </div>
           <p class="panel-ayuda">Ranking de rutas candidatas. Selecciona una fila para ver por qué se ejecuta o se descarta.</p>
-          <div class="tabla-scroll">
-            <table>
+          <div class="tabla-scroll route-table-scroll">
+            <table class="route-table">
               <thead>
                 <tr>
                   <th>Ruta</th>
@@ -304,8 +543,8 @@
           </div>
           <div class="detalle-oportunidad" id="detalleOportunidad">
             <span class="ceja">Forense</span>
-            <strong>Esperando oportunidad</strong>
-            <p>Cuando el motor detecte una ruta, aquí aparecerá el desglose neto de costos, liquidez, latencia y decisión.</p>
+            <strong>Sin ruta seleccionada</strong>
+            <p>Selecciona una fila para ver por qué el motor acepta o descarta una ruta: utilidad neta, costos, liquidez, latencia, balance y score GA.</p>
           </div>
         </section>
 
@@ -316,7 +555,7 @@
               <h2>Operaciones</h2>
             </div>
           </div>
-          <p class="panel-ayuda">Historial de trades simulados que sí pasaron filtros de spread, balance, latencia y costos.</p>
+          <p class="panel-ayuda">Trades simulados aceptados. En demo rentable aparecen desde el arranque para que el PnL, la auditoría y el GA sean visibles.</p>
           <div class="tabla-scroll">
             <table>
               <thead>
@@ -363,7 +602,7 @@
               <h2>Rebalanceos</h2>
             </div>
           </div>
-          <p class="panel-ayuda">Transferencias simuladas entre carteras para no quedar sin USD o BTC en un exchange específico.</p>
+          <p class="panel-ayuda">Movimientos internos simulados para mantener inventario operativo entre exchanges, con costo explícito.</p>
           <div class="tabla-scroll">
             <table>
               <thead>
@@ -387,7 +626,7 @@
               <h2>Decisiones</h2>
             </div>
           </div>
-          <p class="panel-ayuda">Registro de por qué el motor aceptó o descartó rutas: score, pesos GA, costos, balances y latencia.</p>
+          <p class="panel-ayuda">Bitácora forense: cada aceptación o descarte queda explicado con score, pesos GA, costos, balances y latencia.</p>
           <div class="tabla-scroll">
             <table>
               <thead>
@@ -410,7 +649,7 @@
         <div class="panel-titulo">
           <div>
             <p class="ceja">Replay</p>
-            <h2>Backtest reproducible</h2>
+            <h2>Backtest que se puede repetir</h2>
           </div>
           <button id="btnBacktest" class="btn-primario btn-inline">Ejecutar</button>
         </div>
@@ -424,7 +663,8 @@
                 <th>PnL</th>
                 <th>Win Rate</th>
                 <th>Drawdown</th>
-                <th>Spread Neto</th>
+                <th>IC 95%</th>
+                <th>Profit Factor</th>
               </tr>
             </thead>
             <tbody id="backtestResultados"></tbody>
@@ -432,6 +672,37 @@
         </div>
       </section>
 
+      <section class="panel tabla lab-panel">
+        <div class="panel-titulo">
+          <div>
+            <p class="ceja">Research Lab</p>
+            <h2>Sweep de presets</h2>
+          </div>
+          <button id="btnLabSweep" class="btn-primario btn-inline">Comparar</button>
+        </div>
+        <p id="labLectura" class="panel-ayuda">Compara Conservador, Balanceado, Agresivo y GA Edge sobre el mismo replay determinístico. La comparación usa las mismas condiciones para todos.</p>
+        <div class="tabla-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Preset</th>
+                <th>Umbral</th>
+                <th>Max BTC</th>
+                <th>Trades</th>
+                <th>PnL</th>
+                <th>Drawdown</th>
+                <th>Win</th>
+                <th>Score</th>
+              </tr>
+            </thead>
+            <tbody id="labSweepResultados"></tbody>
+          </table>
+        </div>
+      </section>
+
+      </div>
+
+      <div class="tab-content" id="tab-galab">
       <section class="panel ga-panel" aria-label="Laboratorio GA en tiempo real">
         <div class="panel-titulo">
           <div>
@@ -444,7 +715,7 @@
         <div class="ga-hero">
           <div>
             <span class="ga-status" id="gaEstado">Listo para evolucionar</span>
-            <p>El GA prueba combinaciones de estrategia, conserva las mejores y muta otras para mejorar la selección de rutas.</p>
+            <p>El GA compite contra sí mismo: prueba estrategias, conserva campeones y muta retadores para seleccionar mejores rutas.</p>
             <dl class="ga-explica">
               <div><dt>Fitness</dt><dd>Puntaje total de qué tan buena salió una estrategia.</dd></div>
               <div><dt>Diversidad</dt><dd>Qué tan distintas son las estrategias de la población.</dd></div>
@@ -490,8 +761,8 @@
         <div class="ga-progress">
           <div>
             <span class="ceja">Auto GA</span>
-            <p class="panel-ayuda">Evoluciona con historial real; si no hay trades, usa replay sintético para mantener la demo explicable. La línea ámbar es el campeón; la rosa es el retador; la cian es el promedio.</p>
-            <strong id="gaDuelo" class="ga-duelo">Campeón 0.00 vs Retador 0.00</strong>
+            <p class="panel-ayuda">Evoluciona con historial real; si el mercado está plano, usa replay sintético etiquetado. El campeón se conserva por elitismo; si empata con el retador, queda retenido hasta que otro lo supere.</p>
+            <strong id="gaDuelo" class="ga-duelo">Campeón retenido · Δ 0.00</strong>
           </div>
           <canvas id="canvasGa" width="1200" height="300"></canvas>
         </div>
@@ -525,6 +796,18 @@
             <p class="panel-ayuda">Estos pesos dicen qué prefiere el motor al ordenar oportunidades: utilidad, frescura, liquidez, confiabilidad y z-score.</p>
             <div id="gaPesos" class="ga-pesos"></div>
           </div>
+          <div class="ga-card ga-ml-card">
+            <span class="ceja">ML Edge</span>
+            <p class="panel-ayuda">Explica la decisión con valor esperado, probabilidad de fill/supervivencia y contribución por variable.</p>
+            <div class="ml-edge-kpis">
+              <div><span>EV</span><strong id="mlEv">$0.00</strong></div>
+              <div><span>Confianza</span><strong id="mlConfianza">0.0%</strong></div>
+              <div><span>Supervivencia</span><strong id="mlSurvival">0.0%</strong></div>
+              <div><span>Fill</span><strong id="mlFill">0.0%</strong></div>
+            </div>
+            <div id="mlFeatures" class="ml-features"></div>
+            <p id="mlExplicacion" class="ml-explicacion">Carga la demo ganadora o selecciona una ruta para explicar el edge en variables humanas.</p>
+          </div>
           <div class="ga-card">
             <span class="ceja">Parámetros GA</span>
             <p class="panel-ayuda">Población es cuántas estrategias compiten. Mutación cambia genes al azar. Cruce mezcla dos estrategias ganadoras.</p>
@@ -554,9 +837,13 @@
         </div>
       </section>
 
+      </div>
+
       <div id="notificaciones" class="notificaciones-container"></div>
     </main>
-    <script src="/shader.js"></script>
-    <script src="/app.js" type="module"></script>
+    <div id="paper-texture-overlay" aria-hidden="true" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; mix-blend-mode: multiply; z-index: 9999;"></div>
+    <script src="/cursor.js?v=20260710-ui-fixes" type="module"></script>
+    <script src="/shader.js?v=20260709-landing1" type="module"></script>
+    <script src="/app.js?v=20260710-ui-fixes" type="module"></script>
   </body>
 </html>

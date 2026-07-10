@@ -9,10 +9,11 @@ El sistema corre como un solo binario Rust: conexiones WebSocket concurrentes so
 ## Jurado en 60 segundos
 
 1. Abre la [aplicación pública](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app) y revisa el badge LIVE/DEMO/REST, P&L, mapa de rutas, wallets, eventos y panel GA.
-2. Abre `/api/preflight`: confirma `judgeReadiness.status=ready`, 9/9 checks y la rúbrica oficial de 5 criterios.
-3. Pulsa **Demo rentable + GA**: el sistema inyecta una dislocación sintética etiquetada, genera operaciones, PnL positivo, eventos `demo_rentable`, auditoría y evolución genética.
-4. Pulsa **Forzar rebalanceo**: demuestra gestión de wallets con movimiento interno auditado y costo explícito.
-5. Abre `/api/paquete-evaluacion`: verás scorecard, huella de auditoría, recomendaciones finales, backtest reproducible, evidencia SQLite y diferenciadores listos para revisión.
+2. Abre `/api/jurado`: concentra rúbrica, scorecard, cobertura finalista, checks, evidencia clave y links de auditoría.
+3. Abre `/api/preflight`: confirma `judgeReadiness.status=ready`, checks completos y la rúbrica oficial de 5 criterios.
+4. Pulsa **Demo rentable + GA**: el sistema inyecta una dislocación sintética etiquetada, genera operaciones, PnL positivo, eventos `demo_rentable`, auditoría y evolución genética.
+5. Pulsa **Forzar rebalanceo**: demuestra gestión de wallets con movimiento interno auditado y costo explícito.
+6. Abre `/api/paquete-evaluacion`: verás scorecard, huella de auditoría, recomendaciones finales, backtest reproducible, evidencia SQLite y diferenciadores listos para revisión.
 
 Validación automática equivalente:
 
@@ -81,6 +82,7 @@ Contrato HTTP:
 - **Rebalanceo inteligente de carteras simuladas** cada 100 ciclos con movimientos internos USD/BTC, umbrales configurables y bitácora de movimientos.
 - **Backtest reproducible integrado** vía API/UI para comparar estrategia base vs estrategia optimizada con los costos activos.
 - **Preflight operacional** (`/api/preflight`) con salud de feeds, configuración, riesgo, GA, archivos del dashboard y endpoints de auditoría.
+- **Jury Mode** (`/api/jurado`) como superficie única de evaluación: rúbrica oficial, scorecard, cobertura contra benchmark finalista, checks, evidencia clave y enlaces verificables.
 - **Endpoint compatible con LLMs y revisores automáticos** (`/api/resumen-llm`) con resumen narrativo, Markdown y métricas clave sin tener que interpretar HTML.
 - **Paquete de evaluación para jurado** (`/api/paquete-evaluacion`) con scorecard, guion de demo, evidencia auditable, backtest reproducible y huella de corrida.
 - **Tablero operativo en tiempo real** con mapa de rutas, panel forense de oportunidades, score EV, modo LIVE/DEMO/REST, timeline operativo, presets de estrategia, panel genético (fitness, diversidad, pesos, convergencia), ganancia/pérdida, latencia, oportunidades y ejecuciones.
@@ -190,6 +192,8 @@ src/server.rs                  API, WebSocket local y servidor estático
 src/types.rs                   contratos JSON del dominio
 internal/webui/web             interfaz web estática servida por el binario Rust
 ```
+
+Mapa de mantenimiento con responsabilidades por archivo: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 El servidor mantiene una tarea Tokio por cada feed de mercado WebSocket y un ciclo de análisis periódico independiente. La interfaz web recibe actualizaciones en tiempo real mediante una conexión WebSocket única en `/tiempo-real` y puede modificar parámetros en caliente consumiendo las APIs `/api/config`, `/api/exchanges`, `/api/ga/config` vía POST.
 
@@ -380,15 +384,20 @@ fly deploy
 GET  /                     tablero web embebido
 GET  /healthz              verificación de salud
 GET  /api/estado           captura JSON completa del estado (incluye estado genético)
+GET  /api/jurado           Jury Mode: rúbrica, scorecard, cobertura, checks y enlaces de auditoría
 GET  /api/preflight        checklist operativo de demo: feeds, riesgo, GA, UI y exportación
 GET  /api/resumen-llm      snapshot compacto para jueces, scripts y agentes LLM
+GET  /api/mcp/manifest     catálogo MCP-lite de herramientas para agentes LLM
+POST /api/mcp/call         invoca herramientas MCP-lite; mutaciones respetan ADMIN_TOKEN
 GET  /api/paquete-evaluacion scorecard, evidencia y guion reproducible para jurado
 GET  /api/latencias        ranking EWMA por exchange y sugerencia de región
-GET  /api/backtest         backtest Monte Carlo reproducible con costos actuales
+GET  /api/backtest         backtest Monte Carlo reproducible con costos actuales e IC 95%
+GET  /api/lab/sweep        Research Lab: sweep Conservador/Balanceado/Agresivo/GA Edge
 GET  /api/export/json      descarga reporte completo de auditoría en JSON
 GET  /api/export/csv       descarga bitácora unificada en CSV
 POST /api/config           actualizar parámetros de simulación
 POST /api/demo             disparar escenario adverso o demo rentable controlada
+POST /api/demo/final       prepara demo final: GA, mercado rentable, fill parcial y rebalanceo
 GET  /api/ga/estado        estado detallado del motor genético
 GET  /api/ga/config        configuración actual del GA
 POST /api/ga/config        actualizar configuración del GA (tamaño población, tasas, etc.)
@@ -425,7 +434,20 @@ El endpoint devuelve:
 - `metricasClave`: PnL, retorno, riesgo, drawdown, win rate, latencia, fallos y rebalanceos.
 - `mejorRuta`: ruta con mayor diferencial neto y razón de ejecución o descarte.
 - `ga`: generación, fitness, diversidad y parámetros optimizados.
+- `mlEdge`: EV, confianza, survival probability, fill probability, adverse selection y contribuciones por feature.
 - `persistencia`: backend SQLite, ruta y conteos de operaciones, oportunidades, eventos, auditorías y rebalanceos guardados.
+
+### Bridge MCP-lite para agentes
+
+```bash
+curl http://localhost:8080/api/mcp/manifest
+
+curl -X POST http://localhost:8080/api/mcp/call \
+  -H 'Content-Type: application/json' \
+  -d '{"tool":"summarize_for_llm"}'
+```
+
+El bridge expone herramientas read-only (`preflight`, `jury_mode`, `summarize_for_llm`, `evaluation_package`, `latency_ranking`, `backtest`, `research_lab_sweep`) y herramientas mutables de demo (`prepare_demo_final`, `evolve_ga`, `demo_scenario`). Si `ADMIN_TOKEN` está configurado, las mutables requieren `Authorization: Bearer <token>` o `X-Admin-Token`.
 
 ### Ejemplo de paquete para jurado
 
@@ -433,9 +455,19 @@ El endpoint devuelve:
 curl http://localhost:8080/api/paquete-evaluacion
 ```
 
-El endpoint devuelve un scorecard con criterios de demo segura, datos en tiempo real, motor ejecutable, explicabilidad, GA, riesgo, persistencia durable y backtest/export. También incluye `scriptDemo`, `evidencia`, `huellaAuditoria` y los endpoints que permiten reproducir la revisión.
+El endpoint devuelve un scorecard con criterios de demo segura, datos en tiempo real, motor ejecutable, explicabilidad, GA, ML Edge, riesgo, persistencia durable, Research Lab y backtest/export. También incluye `scriptDemo`, `evidencia`, `huellaAuditoria` y los endpoints que permiten reproducir la revisión.
 
 Para convertir ese scorecard en una prueba repetible:
+
+```bash
+curl -X POST http://localhost:8080/api/demo/final
+curl http://localhost:8080/api/lab/sweep
+curl http://localhost:8080/api/paquete-evaluacion
+```
+
+`/api/demo/final` ejecuta en un solo paso el flujo recomendado de jurado: evolución GA con replay si hace falta, demo rentable, fill parcial y rebalanceo forzado. `/api/lab/sweep` compara presets sobre el mismo replay determinístico y reporta PnL, drawdown, win rate, score e intervalo de confianza.
+
+También puedes correr el smoke completo:
 
 ```bash
 ./scripts/smoke-demo.sh

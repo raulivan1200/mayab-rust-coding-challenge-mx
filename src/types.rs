@@ -3,7 +3,7 @@
 //! Los nombres Rust se mantienen en `snake_case`; los nombres JSON usan el
 //! contrato camelCase esperado por el frontend mediante atributos Serde.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -209,6 +209,38 @@ pub struct AuditoriaDecision {
     pub tiempo: DateTime<Utc>,
 }
 
+/// Contribución de una feature al score ML/GA visible para auditoría.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FeatureMlEdge {
+    pub nombre: String,
+    pub peso: f64,
+    pub valor: f64,
+    pub contribucion: f64,
+}
+
+/// Resumen explicable del ranking aprendido por GA para el último candidato.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EstadoMlEdge {
+    pub activo: bool,
+    pub modelo: String,
+    pub version: String,
+    pub decision: String,
+    #[serde(rename = "scoreActual")]
+    pub score_actual: f64,
+    #[serde(rename = "confianza")]
+    pub confianza: f64,
+    #[serde(rename = "expectedValueUsd")]
+    pub expected_value_usd: f64,
+    #[serde(rename = "survivalProbability")]
+    pub survival_probability: f64,
+    #[serde(rename = "fillProbability")]
+    pub fill_probability: f64,
+    #[serde(rename = "adverseSelectionBps")]
+    pub adverse_selection_bps: f64,
+    pub features: Vec<FeatureMlEdge>,
+    pub explicacion: String,
+}
+
 /// Balance simulado por exchange.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Balance {
@@ -238,6 +270,12 @@ pub struct LatenciaExchange {
     pub min_ms: i64,
     #[serde(rename = "maxMs")]
     pub max_ms: i64,
+    #[serde(rename = "p50Ms")]
+    pub p50_ms: i64,
+    #[serde(rename = "p95Ms")]
+    pub p95_ms: i64,
+    #[serde(rename = "p99Ms")]
+    pub p99_ms: i64,
     pub eventos: u64,
     pub estado: String,
     #[serde(rename = "regionSugerida")]
@@ -278,6 +316,8 @@ pub struct Metricas {
     pub operaciones_fallidas: u64,
     #[serde(rename = "rebalanceosTotales")]
     pub rebalanceos_totales: usize,
+    #[serde(rename = "costoRebalanceoAcumuladoUsd")]
+    pub costo_rebalanceo_acumulado_usd: f64,
     #[serde(rename = "circuitBreakerActivo")]
     pub circuit_breaker_activo: bool,
     #[serde(rename = "modoConservador")]
@@ -329,6 +369,8 @@ pub struct MapaCostos {
     pub rebalance_umbral_pct: f64,
     #[serde(rename = "rebalanceMaxTransferPct")]
     pub rebalance_max_transfer_pct: f64,
+    #[serde(rename = "costoRebalanceoUsd", default)]
+    pub costo_rebalanceo_usd: f64,
     pub exchanges: HashMap<String, ExchangeConfig>,
 }
 
@@ -393,24 +435,26 @@ pub struct EstadoPublico {
     #[serde(rename = "generadoEn")]
     pub generado_en: DateTime<Utc>,
     pub cotizaciones: Vec<Cotizacion>,
-    pub oportunidades: Vec<Oportunidad>,
-    pub operaciones: Vec<Operacion>,
+    pub oportunidades: VecDeque<Oportunidad>,
+    pub operaciones: VecDeque<Operacion>,
     #[serde(rename = "eventosEjecucion")]
-    pub eventos_ejecucion: Vec<EventoEjecucion>,
+    pub eventos_ejecucion: VecDeque<EventoEjecucion>,
     #[serde(rename = "auditoriaDecisiones")]
-    pub auditoria_decisiones: Vec<AuditoriaDecision>,
-    pub rebalanceos: Vec<Rebalanceo>,
+    pub auditoria_decisiones: VecDeque<AuditoriaDecision>,
+    pub rebalanceos: VecDeque<Rebalanceo>,
     pub balances: Vec<Balance>,
     #[serde(rename = "latenciasExchange")]
     pub latencias_exchange: Vec<LatenciaExchange>,
     #[serde(rename = "seriePnl")]
-    pub serie_pnl: Vec<PuntoSerie>,
+    pub serie_pnl: VecDeque<PuntoSerie>,
     #[serde(rename = "serieDiferencial")]
-    pub serie_diferencial: Vec<PuntoSerie>,
+    pub serie_diferencial: VecDeque<PuntoSerie>,
     pub metricas: Metricas,
     pub configuracion: MapaCostos,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub genetico: Option<EstadoGenetico>,
+    #[serde(rename = "mlEdge", default, skip_serializing_if = "Option::is_none")]
+    pub ml_edge: Option<EstadoMlEdge>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persistencia: Option<EstadoPersistencia>,
     #[serde(rename = "exchangesActivos")]

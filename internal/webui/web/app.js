@@ -37,6 +37,10 @@ const dinero = new Intl.NumberFormat("es-MX", {
   currency: "USD",
   maximumFractionDigits: 2,
 });
+const dineroMetrica = new Intl.NumberFormat("es-MX", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
 const numero = new Intl.NumberFormat("es-MX", { maximumFractionDigits: 2 });
 const btc = new Intl.NumberFormat("es-MX", { maximumFractionDigits: 6 });
 
@@ -156,9 +160,11 @@ iniciarTema();
 conectar();
 cargarConfigGa();
 iniciarBacktest();
+iniciarResearchLab();
 iniciarPresets();
 iniciarDemo();
 iniciarAutoGa();
+iniciarHeaderColapsable();
 setInterval(verificarConexion, 900);
 
 function loopAnimacion(timestamp) {
@@ -187,7 +193,7 @@ async function conectar() {
   cambiarSocket("conectando");
 
   socket.addEventListener("open", () => cambiarSocket("en vivo", true));
-  
+
   socket.addEventListener("message", (evento) => {
     try {
       const inicio = debugNow();
@@ -212,10 +218,10 @@ async function conectar() {
     debugWarn("websocket cerrado; reconectando");
     setTimeout(conectar, 1200);
   });
-  
+
   socket.addEventListener("error", (err) => {
     cambiarSocket("sin enlace", false);
-    debugError("websocket error", err);
+    debugError("error de websocket", err);
   });
 }
 
@@ -240,15 +246,18 @@ function cambiarSocket(texto, ok) {
 function iniciarTema() {
   const toggle = $("themeToggle");
   if (!toggle) return;
-  
+
   const temaGuardado = localStorage.getItem("tema") || "dark";
   document.documentElement.setAttribute("data-theme", temaGuardado);
+  document.documentElement.style.colorScheme = temaGuardado;
   actualizarIconosTema(temaGuardado);
+  requestAnimationFrame(() => document.documentElement.classList.remove("theme-preload"));
 
   toggle.addEventListener("click", () => {
     const temaActual = document.documentElement.getAttribute("data-theme");
     const nuevoTema = temaActual === "dark" ? "light" : "dark";
     document.documentElement.setAttribute("data-theme", nuevoTema);
+    document.documentElement.style.colorScheme = nuevoTema;
     localStorage.setItem("tema", nuevoTema);
     actualizarIconosTema(nuevoTema);
     tieneCambios = true; // Forzar redibujado de canvases
@@ -258,8 +267,10 @@ function iniciarTema() {
 function actualizarIconosTema(tema) {
   const sun = document.querySelector(".icon-sun");
   const moon = document.querySelector(".icon-moon");
+  const toggle = $("themeToggle");
   const metaColor = $("themeMetaColor");
-  
+  const cambiaA = tema === "dark" ? "claro" : "oscuro";
+
   if (tema === "dark") {
     if (sun) sun.style.display = "block";
     if (moon) moon.style.display = "none";
@@ -267,23 +278,44 @@ function actualizarIconosTema(tema) {
   } else {
     if (sun) sun.style.display = "none";
     if (moon) moon.style.display = "block";
-    if (metaColor) metaColor.setAttribute("content", "#f3f0e8");
+    if (metaColor) metaColor.setAttribute("content", "#f4e9e1");
+  }
+
+  if (toggle) {
+    toggle.setAttribute("aria-label", `Cambiar a modo ${cambiaA}`);
+    toggle.setAttribute("title", `Cambiar a modo ${cambiaA}`);
   }
 }
 
 function aplicarAnimacionCambio(el, nuevoValor, viejaClave) {
   const viejoValor = metricasPrevias[viejaClave];
   if (nuevoValor === viejoValor) return;
-  
+
   el.classList.remove("pulse-verde", "pulse-rojo");
   void el.offsetWidth; // trigger reflow
-  
+
   if (nuevoValor > viejoValor) {
     el.classList.add("pulse-verde");
   } else if (nuevoValor < viejoValor) {
     el.classList.add("pulse-rojo");
   }
   metricasPrevias[viejaClave] = nuevoValor;
+}
+
+function renderDineroMetrica(el, valor) {
+  if (!el) return;
+  let amount = el.querySelector(".metric-amount");
+  let unit = el.querySelector(".metric-unit");
+  if (!amount || !unit) {
+    el.replaceChildren();
+    amount = document.createElement("span");
+    amount.className = "metric-amount";
+    unit = document.createElement("small");
+    unit.className = "metric-unit";
+    unit.textContent = "USD";
+    el.append(amount, unit);
+  }
+  amount.textContent = dineroMetrica.format(valor);
 }
 
 function renderizar(datos) {
@@ -322,7 +354,7 @@ function renderizar(datos) {
 
   const drawdownVal = datos.metricas.maxDrawdownUsd;
   const drawdownEl = $("maxDrawdown");
-  drawdownEl.textContent = dinero.format(drawdownVal);
+  renderDineroMetrica(drawdownEl, drawdownVal);
   aplicarAnimacionCambio(drawdownEl, drawdownVal, "maxDrawdown");
 
   const opsTotalesVal = datos.metricas.operacionesTotales;
@@ -347,7 +379,7 @@ function renderizar(datos) {
   // Labels generales
   $("riesgo").textContent = datos.metricas.estadoRiesgo;
   $("trabajadores").textContent = `${datos.metricas.trabajadores} trabajadores`;
-  $("mejorDiferencial").textContent = mejorDiferencial(datos);
+  actualizarMejorDiferencial(datos);
 
   // Banners y Badges
   const cbBanner = $("circuitBreakerBanner");
@@ -360,10 +392,12 @@ function renderizar(datos) {
   }
   actualizarModoOperacion(datos);
 
-  // Renderizado optimizado sin innerHTML
+  // Renderizado de paneles secundarios.
   renderMercado(datos);
   renderLatencias(datos);
-  renderJudgeReadiness();
+  renderJudgeReadiness(datos);
+  renderBenchmarkCobertura();
+  renderEdgePanel(datos);
   renderBalances(datos);
   renderConfig(datos);
   renderOportunidades(datos);
@@ -373,6 +407,7 @@ function renderizar(datos) {
   renderRebalanceos(datos);
   renderAuditoriaDecisiones(datos);
   renderGenetico(datos);
+  renderMlEdge(datos.mlEdge);
   renderResumenLlm(datos);
   actualizarInputsGaUnaVez(datos.genetico);
   renderExchanges(datos);
@@ -385,12 +420,22 @@ function actualizarModoOperacion(datos) {
   if (!badge) return;
   const usaFallback = (datos.cotizaciones || []).some((c) => c.ultimoMensaje === "rest_fallback");
   const ahora = Date.now();
-  const demoActivo = (datos.eventosEjecucion || []).some((e) => {
+  const eventos = datos.eventosEjecucion || [];
+  const demoActivo = eventos.some((e) => {
     const t = Date.parse(e.tiempo || "");
     return String(e.tipo || "").startsWith("demo") && Number.isFinite(t) && ahora - t < 60_000;
   });
+  const demoRentablePersistente =
+    (datos.metricas?.utilidadAcumuladaUsd || 0) > 0 &&
+    eventos.some((e) => String(e.tipo || "") === "demo_rentable");
   badge.className = "modo-operacion-badge";
-  if (demoActivo && usaFallback) {
+  if (demoRentablePersistente && usaFallback) {
+    badge.textContent = "DEMO RENTABLE + REST";
+    badge.classList.add("fallback");
+  } else if (demoRentablePersistente) {
+    badge.textContent = "DEMO RENTABLE";
+    badge.classList.add("demo");
+  } else if (demoActivo && usaFallback) {
     badge.textContent = "DEMO + REST";
     badge.classList.add("fallback");
   } else if (demoActivo) {
@@ -410,25 +455,28 @@ function actualizarDetallePnl(datos) {
 
   const operaciones = datos.metricas.operacionesTotales || 0;
   if (operaciones > 0) {
-    el.textContent = `Resultado acumulado de ${numero.format(operaciones)} operaciones simuladas después de costos.`;
+    const esDemoRentable = (datos.eventosEjecucion || []).some((e) => String(e.tipo || "") === "demo_rentable");
+    el.textContent = esDemoRentable
+      ? `Utilidad demo: ${numero.format(operaciones)} trades simulados con fees, slippage, latencia, fills parciales y rebalanceo incluidos.`
+      : `Resultado acumulado de ${numero.format(operaciones)} operaciones simuladas después de costos.`;
     return;
   }
 
   const oportunidades = datos.oportunidades || [];
   if (oportunidades.length === 0) {
-    el.textContent = "Esperando rutas con spread bruto positivo para simular ejecución.";
+    el.textContent = "Mercado real sin edge neto por ahora; la demo rentable mantiene visible el flujo ganador.";
     return;
   }
 
   const ejecutables = oportunidades.filter((o) => o.ejecutable);
   if (ejecutables.length > 0) {
     const mejor = ejecutables.sort((a, b) => b.utilidadUsd - a.utilidadUsd)[0];
-    el.textContent = `Hay rutas ejecutables; esperando confirmación del motor. Mejor estimada: ${dinero.format(mejor.utilidadUsd)}.`;
+    el.textContent = `Hay una ruta ejecutable en mercado vivo. Mejor utilidad estimada: ${dinero.format(mejor.utilidadUsd)}.`;
     return;
   }
 
   const mejor = [...oportunidades].sort((a, b) => b.diferencialNetoBps - a.diferencialNetoBps)[0];
-  el.textContent = `En cero porque no hay operaciones aceptadas; mejor neto ${formato(mejor.diferencialNetoBps, 2)} bps (${mejor.razon}).`;
+  el.textContent = `Aún sin trades aceptados en mercado vivo. Mejor neto actual: ${formato(mejor.diferencialNetoBps, 2)} bps (${mejor.razon}).`;
 }
 
 // Cargar inputs del formulario una vez
@@ -442,14 +490,21 @@ function actualizarInputsConfigUnaVez(c) {
   const minUtilidad = $("inputMinUtilidad");
   const staleMs = $("inputStaleMs");
   const latenciaRiesgo = $("inputLatenciaRiesgo");
+  const retiroAmortizado = $("inputRetiroAmortizado");
+  const usdtPremium = $("inputUsdtPremium");
   const circuitBreaker = $("inputCircuitBreaker");
+  const circuitVentana = $("inputCircuitVentana");
   const volatilidad = $("inputVolatilidad");
+  const volatilidadVentana = $("inputVolatilidadVentana");
   const probFallo = $("inputProbFallo");
   const probMovimiento = $("inputProbMovimiento");
   const movimientoBps = $("inputMovimientoBps");
   const rebalanceUmbral = $("inputRebalanceUmbral");
   const rebalanceTransfer = $("inputRebalanceTransfer");
-  
+  const costoRebalanceo = $("inputCostoRebalanceo");
+  const cruceUsdUsdt = $("inputCruceUsdUsdt");
+  const simularAdversidad = $("inputSimularAdversidad");
+
   if (maxBtc) maxBtc.value = c.maxOperacionBtc;
   if (minBps) minBps.value = c.minDiferencialNetoBps;
   if (deslizamiento) deslizamiento.value = c.deslizamientoBps;
@@ -457,13 +512,21 @@ function actualizarInputsConfigUnaVez(c) {
   if (minUtilidad) minUtilidad.value = c.minUtilidadUsd;
   if (staleMs) staleMs.value = c.staleMs;
   if (latenciaRiesgo) latenciaRiesgo.value = c.latenciaRiesgoBps;
+  if (retiroAmortizado) retiroAmortizado.value = c.retiroAmortizadoBps;
+  if (usdtPremium) usdtPremium.value = c.usdtUsdPremiumBps;
   if (circuitBreaker) circuitBreaker.value = c.circuitBreakerPerdidaUsd;
+  if (circuitVentana) circuitVentana.value = c.circuitBreakerVentanaMin;
   if (volatilidad) volatilidad.value = c.volatilidadUmbralBps;
+  if (volatilidadVentana) volatilidadVentana.value = c.volatilidadVentanaSeg;
   if (probFallo) probFallo.value = c.probFalloOrden;
   if (probMovimiento) probMovimiento.value = c.probMovimientoBrusco;
   if (movimientoBps) movimientoBps.value = c.movimientoBruscoBps;
   if (rebalanceUmbral) rebalanceUmbral.value = c.rebalanceUmbralPct;
   if (rebalanceTransfer) rebalanceTransfer.value = c.rebalanceMaxTransferPct;
+  if (costoRebalanceo) costoRebalanceo.value = c.costoRebalanceoUsd;
+  if (cruceUsdUsdt) cruceUsdUsdt.checked = Boolean(c.permitirCruceUsdUsdt);
+  if (simularAdversidad) simularAdversidad.checked = Boolean(c.simularAdversidad);
+  inicializarExchangeCostos(c.exchanges || {});
 
   const btn = $("btnAplicarConfig");
   if (btn) {
@@ -477,21 +540,76 @@ function actualizarInputsConfigUnaVez(c) {
 function construirPayloadConfig() {
   validarInputsConfig();
   return {
-    maxOperacionBtc: parseFloat($("inputMaxBtc")?.value),
-    minDiferencialNetoBps: parseFloat($("inputMinBps")?.value),
-    deslizamientoBps: parseFloat($("inputDeslizamiento")?.value),
-    enfriamientoMs: parseInt($("inputCooldown")?.value, 10),
-    minUtilidadUsd: parseFloat($("inputMinUtilidad")?.value),
-    staleMs: parseInt($("inputStaleMs")?.value, 10),
-    latenciaRiesgoBps: parseFloat($("inputLatenciaRiesgo")?.value),
-    circuitBreakerPerdidaUsd: parseFloat($("inputCircuitBreaker")?.value),
-    volatilidadUmbralBps: parseFloat($("inputVolatilidad")?.value),
-    probFalloOrden: parseFloat($("inputProbFallo")?.value),
-    probMovimientoBrusco: parseFloat($("inputProbMovimiento")?.value),
-    movimientoBruscoBps: parseFloat($("inputMovimientoBps")?.value),
-    rebalanceUmbralPct: parseFloat($("inputRebalanceUmbral")?.value),
-    rebalanceMaxTransferPct: parseFloat($("inputRebalanceTransfer")?.value),
+    maxOperacionBtc: leerNumero("inputMaxBtc"),
+    minDiferencialNetoBps: leerNumero("inputMinBps"),
+    deslizamientoBps: leerNumero("inputDeslizamiento"),
+    enfriamientoMs: leerEntero("inputCooldown"),
+    minUtilidadUsd: leerNumero("inputMinUtilidad"),
+    staleMs: leerEntero("inputStaleMs"),
+    latenciaRiesgoBps: leerNumero("inputLatenciaRiesgo"),
+    retiroAmortizadoBps: leerNumero("inputRetiroAmortizado"),
+    usdtUsdPremiumBps: leerNumero("inputUsdtPremium"),
+    circuitBreakerPerdidaUsd: leerNumero("inputCircuitBreaker"),
+    circuitBreakerVentanaMin: leerEntero("inputCircuitVentana"),
+    volatilidadUmbralBps: leerNumero("inputVolatilidad"),
+    volatilidadVentanaSeg: leerEntero("inputVolatilidadVentana"),
+    permitirCruceUsdUsdt: leerCheckbox("inputCruceUsdUsdt"),
+    simularAdversidad: leerCheckbox("inputSimularAdversidad"),
+    probFalloOrden: leerNumero("inputProbFallo"),
+    probMovimientoBrusco: leerNumero("inputProbMovimiento"),
+    movimientoBruscoBps: leerNumero("inputMovimientoBps"),
+    rebalanceUmbralPct: leerNumero("inputRebalanceUmbral"),
+    rebalanceMaxTransferPct: leerNumero("inputRebalanceTransfer"),
+    costoRebalanceoUsd: leerNumero("inputCostoRebalanceo"),
+    exchanges: construirPayloadExchanges(),
   };
+}
+
+function leerNumero(id) {
+  const valor = Number($(id)?.value);
+  return Number.isFinite(valor) ? valor : 0;
+}
+
+function leerEntero(id) {
+  return Math.trunc(leerNumero(id));
+}
+
+function leerCheckbox(id) {
+  return Boolean($(id)?.checked);
+}
+
+function inicializarExchangeCostos(exchanges) {
+  const tbody = $("exchangeCostos");
+  if (!tbody || tbody.children.length > 0) return;
+  Object.entries(exchanges)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .forEach(([nombre, cfg]) => {
+      const tr = document.createElement("tr");
+      tr.dataset.exchange = nombre;
+      tr.innerHTML = `
+        <td>${nombre}</td>
+        <td><input class="exchange-input" data-exchange-field="feeTaker" type="number" step="0.0001" min="0" max="0.02" value="${cfg.feeTaker ?? 0}" aria-label="Fee taker ${nombre}"></td>
+        <td><input class="exchange-input" data-exchange-field="retiroBtc" type="number" step="0.00001" min="0" max="0.01" value="${cfg.retiroBtc ?? 0}" aria-label="Retiro BTC ${nombre}"></td>
+        <td><input class="exchange-input" data-exchange-field="confiabilidad" type="number" step="0.01" min="0" max="1" value="${cfg.confiabilidad ?? 1}" aria-label="Confiabilidad ${nombre}"></td>
+      `;
+      tbody.appendChild(tr);
+    });
+}
+
+function construirPayloadExchanges() {
+  const tbody = $("exchangeCostos");
+  if (!tbody) return {};
+  const exchanges = {};
+  tbody.querySelectorAll("tr[data-exchange]").forEach((tr) => {
+    const nombre = tr.dataset.exchange;
+    const item = { nombre };
+    tr.querySelectorAll("[data-exchange-field]").forEach((input) => {
+      const field = input.dataset.exchangeField;
+      item[field] = Number(input.value);
+    });
+    exchanges[nombre] = item;
+  });
+  return exchanges;
 }
 
 const limitesConfig = {
@@ -502,13 +620,18 @@ const limitesConfig = {
   inputMinUtilidad: [0, 1000],
   inputStaleMs: [100, 30000],
   inputLatenciaRiesgo: [0, 20],
+  inputRetiroAmortizado: [0, 50],
+  inputUsdtPremium: [0, 100],
   inputCircuitBreaker: [0, 100000],
+  inputCircuitVentana: [1, 240],
   inputVolatilidad: [0, 1000],
+  inputVolatilidadVentana: [1, 3600],
   inputProbFallo: [0, 1],
   inputProbMovimiento: [0, 1],
   inputMovimientoBps: [0, 100],
   inputRebalanceUmbral: [0, 100],
   inputRebalanceTransfer: [0, 100],
+  inputCostoRebalanceo: [0, 1000],
 };
 
 function validarInputsConfig() {
@@ -516,6 +639,15 @@ function validarInputsConfig() {
   Object.entries(limitesConfig).forEach(([id, [min, max]]) => {
     const input = $(id);
     if (!input) return;
+    const value = Number(input.value);
+    const valido = Number.isFinite(value) && value >= min && value <= max;
+    input.classList.toggle("input-error", !valido);
+    input.title = valido ? "" : `Valor permitido: ${min} a ${max}`;
+    ok = ok && valido;
+  });
+  document.querySelectorAll(".exchange-input").forEach((input) => {
+    const min = Number(input.min || 0);
+    const max = Number(input.max || 1);
     const value = Number(input.value);
     const valido = Number.isFinite(value) && value >= min && value <= max;
     input.classList.toggle("input-error", !valido);
@@ -538,14 +670,16 @@ async function aplicarConfig(payload, mensajeOk) {
     });
     if (feedback) {
       if (res.ok) {
-        mostrarFeedback(feedback, `✓ ${mensajeOk}`, true);
-        setTimeout(() => { feedback.textContent = ""; }, 3000);
+        mostrarFeedback(feedback, mensajeOk, true);
+        setTimeout(() => {
+          feedback.textContent = "";
+        }, 3000);
       } else {
-        mostrarFeedback(feedback, `✗ ${await mensajeErrorApi(res, "Error al guardar")}`, false);
+        mostrarFeedback(feedback, `No se pudo guardar: ${await mensajeErrorApi(res, "error de API")}`, false);
       }
     }
   } catch (err) {
-    mostrarFeedback(feedback, "✗ Error de red", false);
+    mostrarFeedback(feedback, "Error de red al guardar configuración", false);
   }
 }
 
@@ -558,13 +692,20 @@ const presets = {
     inputMinUtilidad: 1.25,
     inputStaleMs: 4500,
     inputLatenciaRiesgo: 0.08,
+    inputRetiroAmortizado: 0.12,
+    inputUsdtPremium: 1.5,
     inputCircuitBreaker: 500,
+    inputCircuitVentana: 15,
     inputVolatilidad: 50,
+    inputVolatilidadVentana: 60,
     inputProbFallo: 0.015,
     inputProbMovimiento: 0.02,
     inputMovimientoBps: 7,
     inputRebalanceUmbral: 35,
     inputRebalanceTransfer: 35,
+    inputCostoRebalanceo: 5,
+    inputCruceUsdUsdt: false,
+    inputSimularAdversidad: true,
   },
   agresivo: {
     inputMaxBtc: 0.35,
@@ -574,13 +715,20 @@ const presets = {
     inputMinUtilidad: 0.5,
     inputStaleMs: 7000,
     inputLatenciaRiesgo: 0.04,
+    inputRetiroAmortizado: 0.08,
+    inputUsdtPremium: 1,
     inputCircuitBreaker: 900,
+    inputCircuitVentana: 20,
     inputVolatilidad: 90,
+    inputVolatilidadVentana: 45,
     inputProbFallo: 0.01,
     inputProbMovimiento: 0.015,
     inputMovimientoBps: 5,
     inputRebalanceUmbral: 45,
     inputRebalanceTransfer: 50,
+    inputCostoRebalanceo: 4,
+    inputCruceUsdUsdt: false,
+    inputSimularAdversidad: true,
   },
   seguro: {
     inputMaxBtc: 0.08,
@@ -590,13 +738,20 @@ const presets = {
     inputMinUtilidad: 4,
     inputStaleMs: 2200,
     inputLatenciaRiesgo: 0.22,
+    inputRetiroAmortizado: 0.18,
+    inputUsdtPremium: 2.5,
     inputCircuitBreaker: 220,
+    inputCircuitVentana: 10,
     inputVolatilidad: 28,
+    inputVolatilidadVentana: 90,
     inputProbFallo: 0.015,
     inputProbMovimiento: 0.02,
     inputMovimientoBps: 7,
     inputRebalanceUmbral: 25,
     inputRebalanceTransfer: 25,
+    inputCostoRebalanceo: 8,
+    inputCruceUsdUsdt: false,
+    inputSimularAdversidad: true,
   },
   estres: {
     inputMaxBtc: 0.18,
@@ -606,13 +761,20 @@ const presets = {
     inputMinUtilidad: 1.5,
     inputStaleMs: 2600,
     inputLatenciaRiesgo: 0.35,
+    inputRetiroAmortizado: 0.35,
+    inputUsdtPremium: 4,
     inputCircuitBreaker: 180,
+    inputCircuitVentana: 8,
     inputVolatilidad: 22,
+    inputVolatilidadVentana: 30,
     inputProbFallo: 0.14,
     inputProbMovimiento: 0.18,
     inputMovimientoBps: 18,
     inputRebalanceUmbral: 20,
     inputRebalanceTransfer: 25,
+    inputCostoRebalanceo: 12,
+    inputCruceUsdUsdt: false,
+    inputSimularAdversidad: true,
   },
 };
 
@@ -624,7 +786,9 @@ function iniciarPresets() {
       if (!preset) return;
       Object.entries(preset).forEach(([id, valor]) => {
         const input = $(id);
-        if (input) input.value = valor;
+        if (!input) return;
+        if (input.type === "checkbox") input.checked = Boolean(valor);
+        else input.value = valor;
       });
       document.querySelectorAll("[data-preset]").forEach((otro) => otro.classList.toggle("activo", otro === btn));
       await aplicarConfig(construirPayloadConfig(), `Preset ${btn.textContent.trim()} aplicado`);
@@ -633,6 +797,14 @@ function iniciarPresets() {
 }
 
 function iniciarDemo() {
+  const btnFinal = $("btnDemoFinal");
+  if (btnFinal) {
+    btnFinal.addEventListener("click", prepararDemoFinal);
+  }
+  // Trigger demo automatically on load
+  setTimeout(prepararDemoFinal, 1000);
+
+
   document.querySelectorAll("[data-demo]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const escenario = btn.dataset.demo;
@@ -651,21 +823,67 @@ function iniciarDemo() {
         const body = ok ? await res.json() : null;
         if (estado) estado.textContent = ok ? "evento enviado" : "rechazado";
         const detalle = body?.partialFill
-          ? `✓ Fill parcial: requested ${btc.format(body.requestedQtyBtc || 0)} BTC, filled ${btc.format(body.filledQtyBtc || 0)} BTC.`
+          ? `Fill parcial probado: solicitado ${btc.format(body.requestedQtyBtc || 0)} BTC, ejecutado ${btc.format(body.filledQtyBtc || 0)} BTC.`
           : body?.operacionesInsertadas
-          ? `✓ Demo rentable: ${body.operacionesInsertadas} operaciones insertadas; GA gen ${body.generacionGa}.`
-          : "✓ Escenario aplicado; revisa eventos, auditoría y métricas.";
+          ? `Profit inyectado: ${body.operacionesInsertadas} trades simulados; GA gen ${body.generacionGa}.`
+          : "Escenario aplicado. Revisa eventos, auditoría y métricas para ver la reacción del motor.";
         const error = ok ? "" : await mensajeErrorApi(res, "No se pudo aplicar escenario");
-        mostrarFeedback(feedback, ok ? detalle : `✗ ${error}`, ok);
+        mostrarFeedback(feedback, ok ? detalle : `No se pudo aplicar el escenario: ${error}`, ok);
       } catch (e) {
         if (estado) estado.textContent = "error";
-        mostrarFeedback(feedback, "✗ Error de red", false);
+        mostrarFeedback(feedback, "Error de red al aplicar el escenario", false);
       } finally {
         btn.disabled = false;
         btn.textContent = textoOriginal;
       }
     });
   });
+}
+
+async function prepararDemoFinal() {
+  const btn = $("btnDemoFinal");
+  const feedback = $("demoFeedback");
+  const estado = $("demoEstado");
+  const textoOriginal = btn?.textContent || "Cargar demo ganadora";
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Cargando...";
+  }
+  if (estado) estado.textContent = "armando evidencia";
+  mostrarFeedback(feedback, "Cargando corrida rentable, GA, fill parcial y rebalanceo...", true);
+
+  try {
+    const res = await fetch("/api/demo/final", {
+      method: "POST",
+      headers: headersMutacion({ "Content-Type": "application/json" }),
+    });
+    if (!res.ok) {
+      mostrarFeedback(feedback, `No se pudo cargar la demo ganadora: ${await mensajeErrorApi(res, "error de API")}`, false);
+      if (estado) estado.textContent = "rechazado";
+      return;
+    }
+    const body = await res.json();
+    if (estado) estado.textContent = "evidencia lista";
+    const pnl = body?.metricas?.utilidadAcumuladaUsd ?? 0;
+    const gen = body?.metricas ? body?.ga?.generacion : null;
+    mostrarFeedback(
+      feedback,
+      `Demo ganadora lista: PnL ${dinero.format(pnl)}, ML Edge ${body?.mlEdge?.version || "ok"}, GA ${gen ?? body?.mercadoRentable?.generacionGa ?? "activo"}.`,
+      true,
+    );
+    try {
+      const lab = await fetch("/api/lab/sweep");
+      if (lab.ok) renderLabSweep(await lab.json());
+    } catch (_) {}
+  } catch (e) {
+    if (estado) estado.textContent = "error";
+    mostrarFeedback(feedback, "Error de red al cargar la demo ganadora", false);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = textoOriginal;
+    }
+  }
 }
 
 let gaInicializada = false;
@@ -709,10 +927,10 @@ async function actualizarInputsGaUnaVez(g) {
             tasaCruce: parseFloat(cruce.value),
           }),
         });
-        const mensaje = res.ok ? "GA actualizado" : await mensajeErrorApi(res, "No se pudo actualizar GA");
-        mostrarFeedback(feedback, `${res.ok ? "✓" : "✗"} ${mensaje}`, res.ok);
+        const mensaje = res.ok ? "GA actualizado: nueva población lista para competir" : await mensajeErrorApi(res, "No se pudo actualizar GA");
+        mostrarFeedback(feedback, res.ok ? mensaje : `No se pudo actualizar GA: ${mensaje}`, res.ok);
       } catch (e) {
-        mostrarFeedback(feedback, "✗ Error de red", false);
+        mostrarFeedback(feedback, "Error de red al actualizar GA", false);
       } finally {
         btnAplicar.disabled = false;
         btnAplicar.textContent = "Aplicar GA";
@@ -761,9 +979,9 @@ async function evolucionarGa({ manual }) {
   gaAutoEnCurso = true;
 
   if (manual && btnEvolucionar) {
-      btnEvolucionar.disabled = true;
-      btnEvolucionar.textContent = "Evolucionando...";
-      mostrarFeedback(feedback, "Evolucionando población...", true);
+    btnEvolucionar.disabled = true;
+    btnEvolucionar.textContent = "Compitiendo...";
+    mostrarFeedback(feedback, "El GA está probando estrategias contra el replay...", true);
   }
 
   try {
@@ -773,12 +991,16 @@ async function evolucionarGa({ manual }) {
       body: JSON.stringify({ usarReplaySiVacio: true, muestras: 96 }),
     });
     if (!res.ok) {
-      if (manual) mostrarFeedback(feedback, `✗ ${await mensajeErrorApi(res, "No se pudo evolucionar")}`, false);
+      if (manual) mostrarFeedback(feedback, `No se pudo evolucionar GA: ${await mensajeErrorApi(res, "error de API")}`, false);
       return;
     }
 
     const resultado = await res.json();
-    const genetico = resultado.ga || await fetch("/api/ga/estado").then((estado) => estado.ok ? estado.json() : null);
+    const genetico =
+      resultado.ga ||
+      (await fetch("/api/ga/estado").then((estado) =>
+        estado.ok ? estado.json() : null,
+      ));
     if (!genetico) return;
     renderGenetico({ genetico });
     if (ultimoEstado) ultimoEstado.genetico = genetico;
@@ -788,89 +1010,87 @@ async function evolucionarGa({ manual }) {
     const fuente = resultado.fuente === "replay_sintetico" ? "replay sintético" : "historial real";
     const prefijo = genAntes === null ? `Gen ${genDespues}` : `Gen ${genAntes} -> ${genDespues}`;
     const detalle = muestras > 0
-      ? `${muestras} operaciones evaluadas (${fuente}); campeón vs retador actualizado`
+      ? `${muestras} operaciones evaluadas (${fuente}); delta y campeón retenido actualizados`
       : "sin operaciones para aprender; población sigue explorando";
-    mostrarFeedback(feedback, `${manual ? "✓" : "Auto"} ${prefijo}: ${detalle}`, true);
+    mostrarFeedback(feedback, `${manual ? "GA" : "Auto GA"} ${prefijo}: ${detalle}`, true);
     marcarCambio($("gaGeneracion"));
     marcarCambio($("gaPesos"));
   } catch (e) {
-    if (manual) mostrarFeedback(feedback, "✗ Error de red", false);
+    if (manual) mostrarFeedback(feedback, "Error de red al evolucionar GA", false);
   } finally {
     gaAutoEnCurso = false;
     if (manual && btnEvolucionar) {
-        btnEvolucionar.disabled = false;
-        btnEvolucionar.textContent = "Evolucionar Ahora";
+      btnEvolucionar.disabled = false;
+      btnEvolucionar.textContent = "Evolucionar ahora";
     }
   }
 }
 
+/**
+ * @description Actualiza el panel de mercado, mostrando las cotizaciones (bid/ask), spreads
+ * y la fuente de datos (WS/REST) para cada exchange activo.
+ * @param {Object} datos - El estado público actual.
+ */
 function renderMercado(datos) {
   const container = $("exchangeLista");
   if (!container) return;
-  
+
   const diferenciales = datos.cotizaciones.map((c) => c.ask - c.bid).filter((s) => s > 0);
   const maxDiferencial = Math.max(...diferenciales, 1);
 
-  // Limpiar eficientemente
-  container.textContent = "";
-  
-  datos.cotizaciones.forEach((c) => {
+  datos.cotizaciones.forEach((c, index) => {
+    let art = container.children[index];
+    if (!art) {
+      art = document.createElement("article");
+      art.className = "exchange";
+      art.innerHTML = `
+        <header>
+          <h3></h3>
+          <span class="latencia-chip"></span>
+        </header>
+        <div class="precios">
+          <div class="precio bid"><span>Compra</span><strong></strong></div>
+          <div class="precio ask"><span>Venta</span><strong></strong></div>
+        </div>
+        <div class="barra-diferencial" aria-label="Diferencial"><div class="fill"></div></div>
+        <div class="exchange-meta">
+          <span class="edad"></span>
+          <span class="fuente"></span>
+        </div>
+      `;
+      container.appendChild(art);
+    }
+
     const recibida = Date.parse(c.recibidaEn || "");
     const generado = Date.parse(datos.generadoEn || "");
-    const edadMs = Number.isFinite(recibida) && Number.isFinite(generado)
-      ? Math.max(0, generado - recibida)
-      : 0;
+    const edadMs = Number.isFinite(recibida) && Number.isFinite(generado) ? Math.max(0, generado - recibida) : 0;
     const fuente = c.ultimoMensaje === "rest_fallback" ? "REST fallback" : "WebSocket";
-    const art = document.createElement("article");
-    art.className = "exchange";
-
-    const header = document.createElement("header");
-    const h3 = document.createElement("h3");
-    h3.textContent = c.exchange;
-    const latencia = document.createElement("span");
-    latencia.className = "latencia-chip";
-    latencia.textContent = `${c.latenciaMs || 0} ms`;
-    header.appendChild(h3);
-    header.appendChild(latencia);
-
-    const precios = document.createElement("div");
-    precios.className = "precios";
-
-    const divBid = document.createElement("div");
-    divBid.className = "precio bid";
-    divBid.innerHTML = `<span>Compra</span><strong>${dinero.format(c.bid)}</strong>`;
-
-    const divAsk = document.createElement("div");
-    divAsk.className = "precio ask";
-    divAsk.innerHTML = `<span>Venta</span><strong>${dinero.format(c.ask)}</strong>`;
-
-    precios.appendChild(divBid);
-    precios.appendChild(divAsk);
-
-    const bar = document.createElement("div");
-    bar.className = "barra-diferencial";
-    bar.setAttribute("aria-label", "Diferencial");
-    const fill = document.createElement("div");
+    const latenciaMs = Number(c.latenciaMs || 0);
     const diferencial = Math.max(c.ask - c.bid, 0);
-    fill.style.width = `${Math.min(100, (diferencial / maxDiferencial) * 100)}%`;
-    bar.appendChild(fill);
 
-    const meta = document.createElement("div");
-    meta.className = "exchange-meta";
-    meta.innerHTML = `
-      <span>Book age <strong>${numero.format(edadMs)} ms</strong></span>
-      <span>${escapeHtml(fuente)}</span>
-    `;
+    const h3 = art.querySelector("header h3");
+    if (h3.textContent !== c.exchange) h3.textContent = c.exchange;
 
-    art.appendChild(header);
-    art.appendChild(precios);
-    art.appendChild(bar);
-    art.appendChild(meta);
-    container.appendChild(art);
+    const latChip = art.querySelector("header .latencia-chip");
+    const nuevaClase = `latencia-chip ${latenciaMs > 850 ? "alta" : latenciaMs > 420 ? "media" : "buena"}`;
+    if (latChip.className !== nuevaClase) latChip.className = nuevaClase;
+    latChip.textContent = `${c.latenciaMs || 0} ms`;
+
+    art.querySelector(".precio.bid strong").textContent = dinero.format(c.bid);
+    art.querySelector(".precio.ask strong").textContent = dinero.format(c.ask);
+
+    art.querySelector(".barra-diferencial div.fill").style.width = `${Math.min(100, (diferencial / maxDiferencial) * 100)}%`;
+
+    art.querySelector(".exchange-meta .edad").innerHTML = `Edad del libro <strong>${numero.format(edadMs)} ms</strong>`;
+    art.querySelector(".exchange-meta .fuente").textContent = fuente;
   });
+
+  while (container.children.length > datos.cotizaciones.length) {
+    container.removeChild(container.lastChild);
+  }
 }
 
-async function renderJudgeReadiness() {
+async function renderJudgeReadiness(datos) {
   const container = $("judgeReadiness");
   if (!container) return;
   const ahora = Date.now();
@@ -878,7 +1098,7 @@ async function renderJudgeReadiness() {
     if (!preflightEnCurso) {
       preflightEnCurso = true;
       fetch("/api/preflight")
-        .then((res) => res.ok ? res.json() : null)
+        .then((res) => (res.ok ? res.json() : null))
         .then((json) => {
           if (json) {
             preflightCache = json;
@@ -888,62 +1108,273 @@ async function renderJudgeReadiness() {
         .catch(() => {})
         .finally(() => {
           preflightEnCurso = false;
-          renderJudgeReadiness();
         });
     }
   }
+
   const readiness = preflightCache?.judgeReadiness;
   if (!readiness) {
-    container.textContent = "Calculando readiness del jurado...";
+    const ops = datos?.metricas?.operaciones || 0;
+    const auditorias = (datos?.auditoriaDecisiones || []).length;
+    container.innerHTML = `
+      <div class="judge-score">
+        <strong>...</strong>
+        <span>calculando</span>
+      </div>
+      <p>Calculando evidencia para jurado. Estado local: ${numero.format(ops)} trades y ${numero.format(auditorias)} decisiones auditadas.</p>
+    `;
     return;
   }
+
   const checks = readiness.checks || [];
-  const faltantes = checks.filter((c) => !c.ok).map((c) => c.name);
+  const byName = Object.fromEntries(checks.map((c) => [c.name, c.ok === true]));
+  const faltantes = checks.filter((c) => !c.ok).map((c) => etiquetaCheck(c.name));
+  const cb = datos?.metricas?.circuitBreakerActivo ? "ACTIVO" : "inactivo";
+  const modCon = datos?.metricas?.modoConservador ? "ON" : "OFF";
+  const cbUsd = dinero.format(datos?.configuracion?.circuitBreakerPerdidaUsd || 0);
+  const card = (titulo, ok, texto) => `
+    <div class="judge-card ${ok ? "ok" : "bad"}">
+      <strong>${escapeHtml(titulo)}</strong>
+      <p>${escapeHtml(texto)}</p>
+      <span class="${ok ? "chip-ok" : "chip-bad"}">${ok ? "Ok" : "Revisar"}</span>
+    </div>
+  `;
+
   container.innerHTML = `
     <div class="judge-score">
-      <strong>${readiness.passed}/${readiness.total}</strong>
-      <span>${escapeHtml(readiness.status || "review")}</span>
+      <strong>${numero.format(readiness.passed || 0)}/${numero.format(readiness.total || checks.length || 0)}</strong>
+      <span>${escapeHtml(estadoReadiness(readiness.status))}</span>
     </div>
-    <div class="judge-checks">
-      ${checks.map((c) => `<span class="${c.ok ? "ok" : "bad"}">${escapeHtml(c.name)}</span>`).join("")}
+    <div class="judge-cards">
+      ${card("Control de estrategia", byName.netProfitCalculation && byName.feesSlippageLatency && byName.exports, "Umbrales, costos, riesgo, exchanges, GA y exports se pueden revisar o mover desde UI/API.")}
+      ${card("Robustez bajo estrés", byName.riskGuards && byName.safeDemoMode, `Circuit breaker: ${cb} (${cbUsd}). Conservador: ${modCon}. La sala de pruebas deja evidencia visible.`)}
+      ${card("Inventario operativo", byName.walletAccounting && byName.partialFillSupport, "Balances por exchange, fill parcial y rebalanceo con costo explícito.")}
+      ${card("Decisión explicable", byName.decisionInspector && byName.mlEdgeExplainable, "Cada ruta muestra score, pesos GA, EV, costos y razón de aceptación o descarte.")}
+      ${card("Mercado conectado", byName.realTimeOrderBooks, "Order books públicos frescos, latencia por exchange y fallback REST visible.")}
     </div>
-    <p>${faltantes.length ? `Pendiente: ${escapeHtml(faltantes.join(", "))}` : "Checklist completo: datos live, utilidad neta, fills parciales, wallets, auditoría, riesgo, demo segura y exports."}</p>
+    <p>${faltantes.length ? `Falta reforzar: ${escapeHtml(faltantes.join(", "))}` : "Listo para enseñar: utilidad neta, mercado vivo, fills parciales, wallets, auditoría, riesgo, GA y exports."}</p>
   `;
+}
+
+function renderBenchmarkCobertura() {
+  const container = $("benchmarkCobertura");
+  if (!container) return;
+  const cobertura = preflightCache?.judgeReadiness?.coberturaFinalista;
+  if (!cobertura) {
+    container.innerHTML = `
+      <div class="benchmark-summary">
+        <strong>...</strong>
+        <span>calculando cobertura</span>
+      </div>
+    `;
+    return;
+  }
+
+  const dims = cobertura.dimensiones || [];
+  const status = cobertura.status === "completo" ? "completo" : "accionable";
+  container.innerHTML = `
+    <div class="benchmark-summary ${status}">
+      <strong>${numero.format(cobertura.cubiertas || 0)}/${numero.format(cobertura.total || dims.length || 0)}</strong>
+      <span>${escapeHtml(status)}</span>
+      <small>${escapeHtml(cobertura.lectura || "")}</small>
+    </div>
+    <div class="benchmark-items">
+      ${dims
+        .slice(0, 8)
+        .map(
+          (item) => `
+            <article class="${item.ok ? "ok" : "bad"}">
+              <span>${item.ok ? "Ok" : "Revisar"}</span>
+              <strong>${escapeHtml(etiquetaBenchmark(item.nombre))}</strong>
+              <p>${escapeHtml(item.evidencia || "")}</p>
+              <small>${escapeHtml(item.dondeVerificar || "")}</small>
+            </article>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function estadoReadiness(status) {
+  const labels = {
+    ready: "listo",
+    review: "revisar",
+  };
+  return labels[status] || status || "revisar";
+}
+
+function etiquetaCheck(nombre) {
+  const labels = {
+    realTimeOrderBooks: "libros de órdenes en vivo",
+    netProfitCalculation: "utilidad neta",
+    feesSlippageLatency: "costos/latencia",
+    partialFillSupport: "fill parcial",
+    walletAccounting: "carteras",
+    decisionInspector: "inspector de decisiones",
+    mlEdgeExplainable: "ML Edge",
+    riskGuards: "guardas de riesgo",
+    safeDemoMode: "demo segura",
+    exports: "exports",
+  };
+  return labels[nombre] || nombre || "validación";
+}
+
+function etiquetaBenchmark(nombre) {
+  const labels = {
+    parametrizacion_profunda: "Parametrización",
+    robustez_adversa: "Robustez adversa",
+    wallets_rebalanceo: "Wallets y rebalanceo",
+    ui_visualizacion_jurado: "UI de jurado",
+    metricas_latency_replay: "Métricas y replay",
+    documentacion_tests_deploy: "Docs, tests y deploy",
+    auditoria_durable_exports: "Auditoría y exports",
+    ia_explicable_ga: "IA explicable + GA",
+  };
+  return labels[nombre] || nombre || "Cobertura";
+}
+
+function renderEdgePanel(datos) {
+  const edge = datos?.mlEdge;
+  const features = $("edgeFeatures");
+  if (!edge) {
+    setText("edgeEstado", "esperando auditoría");
+    setText("edgeExplicacion", "Falta una decisión auditada. Carga la demo ganadora o espera una oportunidad del mercado para explicar el edge.");
+    setText("edgeEv", dinero.format(0));
+    setText("edgeConfianza", "0.0%");
+    setText("edgeSurvival", "0.0%");
+    setText("edgeFill", "0.0%");
+    setText("edgeAdverse", "0.00 bps");
+    actualizarEdgePlano(null);
+    if (features) features.textContent = "";
+    return;
+  }
+
+  const estado = $("edgeEstado");
+  if (estado) {
+    estado.textContent = `${edge.modelo || "Mayab Edge"} · ${edge.decision || "sin decisión"}`;
+    estado.classList.toggle("ok", edge.activo === true);
+  }
+  setText("edgeExplicacion", edge.explicacion || "Score explicable calculado desde la última decisión auditada.");
+  setText("edgeEv", dinero.format(edge.expectedValueUsd || 0));
+  setText("edgeConfianza", `${formato((edge.confianza || 0) * 100, 1)}%`);
+  setText("edgeSurvival", `${formato((edge.survivalProbability || 0) * 100, 1)}%`);
+  setText("edgeFill", `${formato((edge.fillProbability || 0) * 100, 1)}%`);
+  setText("edgeAdverse", `${formato(edge.adverseSelectionBps || 0, 2)} bps`);
+  actualizarEdgePlano(edge);
+
+  if (!features) return;
+  features.textContent = "";
+  (edge.features || []).forEach((f) => {
+    const row = document.createElement("div");
+    row.className = "edge-feature";
+    const pct = Math.max(0, Math.min(100, (f.contribucion || 0) * 100));
+    row.innerHTML = `
+      <span>${escapeHtml(nombreFeature(f.nombre))}</span>
+      <div class="edge-track"><div style="width:${pct}%"></div></div>
+      <strong>${formato((f.valor || 0) * 100, 0)}% × ${formato((f.peso || 0) * 100, 0)}%</strong>
+    `;
+    features.appendChild(row);
+  });
+}
+
+function actualizarEdgePlano(edge) {
+  const plot = { left: 54, top: 24, width: 266, height: 180 };
+  const conf = limitar01(edge?.confianza || 0);
+  const survival = limitar01(edge?.survivalProbability || 0);
+  const fill = limitar01(edge?.fillProbability || 0);
+  const ev = Number(edge?.expectedValueUsd || 0);
+  const adverse = Math.max(0, Number(edge?.adverseSelectionBps || 0));
+  const evNorm = clamp(ev / 25, -1, 1);
+  const adverseNorm = -clamp(adverse / 20, 0, 1);
+  const x = (valor) => plot.left + limitar01(valor) * plot.width;
+  const y = (valor) => plot.top + (1 - (clamp(valor, -1, 1) + 1) / 2) * plot.height;
+  const puntos = [
+    ["edgePointEv", "edgeLabelEv", x(conf), y(evNorm), `EV ${dinero.format(ev)}`],
+    ["edgePointConfianza", "edgeLabelConfianza", x(conf), y(0.18), `Conf ${formato(conf * 100, 0)}%`],
+    ["edgePointSurvival", "edgeLabelSurvival", x(survival), y(0.52), `Sup ${formato(survival * 100, 0)}%`],
+    ["edgePointFill", "edgeLabelFill", x(fill), y(0.76), `Fill ${formato(fill * 100, 0)}%`],
+    ["edgePointAdverse", "edgeLabelAdverse", x(1 - clamp(adverse / 20, 0, 1)), y(adverseNorm), `Adv ${formato(adverse, 1)}bps`],
+  ];
+
+  puntos.forEach(([circleId, labelId, cx, cy, label]) => {
+    const circle = $(circleId);
+    const text = $(labelId);
+    if (!circle || !text) return;
+    circle.setAttribute("cx", cx.toFixed(1));
+    circle.setAttribute("cy", cy.toFixed(1));
+    text.setAttribute("x", Math.min(cx + 9, 280).toFixed(1));
+    text.setAttribute("y", Math.max(cy - 8, 18).toFixed(1));
+    text.textContent = label;
+  });
+}
+
+function limitar01(valor) {
+  return clamp(Number(valor) || 0, 0, 1);
+}
+
+function clamp(valor, min, max) {
+  return Math.min(max, Math.max(min, valor));
+}
+
+function nombreFeature(nombre) {
+  const labels = {
+    utilidad_neta: "Utilidad neta",
+    frescura_book: "Frescura book",
+    liquidez_fill: "Liquidez / fill",
+    confiabilidad_ruta: "Confiabilidad",
+    z_score_spread: "Z-score spread",
+  };
+  return labels[nombre] || nombre || "variable";
 }
 
 function renderLatencias(datos) {
   const container = $("latenciaRanking");
   if (!container) return;
-  container.textContent = "";
 
   const latencias = [...(datos.latenciasExchange || [])]
     .sort((a, b) => (a.promedioMs || 0) - (b.promedioMs || 0))
     .slice(0, 6);
+
   if (latencias.length === 0) {
-    const vacio = document.createElement("p");
-    vacio.className = "mini-empty";
-    vacio.textContent = "Esperando timestamps de feeds WebSocket.";
-    container.appendChild(vacio);
+    if (container.children.length !== 1 || container.children[0].className !== "mini-empty") {
+      container.innerHTML = '<p class="mini-empty">Esperando timestamps de feeds WebSocket.</p>';
+    }
     return;
   }
 
-  latencias.forEach((lat) => {
-    const row = document.createElement("div");
-    row.className = "latencia-row";
+  // Quitar el mensaje vacío si hay elementos
+  if (container.children.length === 1 && container.children[0].className === "mini-empty") {
+    container.innerHTML = "";
+  }
+
+  latencias.forEach((lat, index) => {
+    let row = container.children[index];
+    if (!row) {
+      row = document.createElement("div");
+      row.className = "latencia-row";
+      row.innerHTML = '<strong class="latencia-exchange"></strong><span class="latencia-prom"></span><small class="latencia-percentiles"></small>';
+      container.appendChild(row);
+    }
+
     const estado = (lat.estado || "").includes("alta") ? "mala" : "buena";
-    row.innerHTML = `
-      <strong>${escapeHtml(lat.exchange)}</strong>
-      <span class="${estado}">${formato(lat.promedioMs || 0, 0)} ms</span>
-      <small>${escapeHtml(lat.regionSugerida || "iad/us-east")}</small>
-    `;
-    container.appendChild(row);
+
+    row.querySelector(".latencia-exchange").textContent = lat.exchange;
+    const span = row.querySelector(".latencia-prom");
+    span.className = `latencia-prom ${estado}`;
+    span.textContent = `prom ${formato(lat.promedioMs || 0, 0)}ms`;
+    row.querySelector(".latencia-percentiles").innerHTML = `<span class="latencia-label">p50</span> <strong class="latencia-valor">${formato(lat.p50Ms || 0, 0)}ms</strong> <span class="latencia-separador">|</span> <span class="latencia-label">p99</span> <strong class="latencia-valor ${estado}">${formato(lat.p99Ms || 0, 0)}ms</strong>`;
   });
+
+  while (container.children.length > latencias.length) {
+    container.removeChild(container.lastChild);
+  }
 }
 
 function iniciarBacktest() {
   const btn = $("btnBacktest");
   if (!btn) return;
-  btn.onclick = async () => {
+  const hacerBacktest = async () => {
     btn.disabled = true;
     btn.textContent = "Ejecutando...";
     try {
@@ -958,6 +1389,30 @@ function iniciarBacktest() {
       btn.textContent = "Ejecutar";
     }
   };
+  btn.onclick = hacerBacktest;
+  // Trigger automatically on load
+  setTimeout(hacerBacktest, 500);
+}
+
+function iniciarResearchLab() {
+  const btn = $("btnLabSweep");
+  if (!btn) return;
+  const hacerSweep = async () => {
+    btn.disabled = true;
+    btn.textContent = "Comparando...";
+    try {
+      const res = await fetch("/api/lab/sweep");
+      if (res.ok) renderLabSweep(await res.json());
+    } catch (e) {
+      debugError("Error ejecutando research lab", e);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Comparar";
+    }
+  };
+  btn.onclick = hacerSweep;
+  // Trigger automatically on load
+  setTimeout(hacerSweep, 500);
 }
 
 function renderBacktest(datos) {
@@ -969,13 +1424,42 @@ function renderBacktest(datos) {
     ["Optimizada", datos.optimizada],
   ].forEach(([nombre, r]) => {
     const tr = document.createElement("tr");
-    [nombre, numero.format(r.tradesEjecutados), dinero.format(r.pnlUsd), `${formato(r.winRate * 100, 1)}%`, dinero.format(r.maxDrawdownUsd), `${formato(r.spreadNetoMedioBps, 2)} bps`]
+    [nombre, numero.format(r.tradesEjecutados), dinero.format(r.pnlUsd), `${formato(r.winRate * 100, 1)}%`, dinero.format(r.maxDrawdownUsd), `±${dinero.format(r.intervaloConfianza95Usd || 0)}`, formato(r.profitFactor || 0, 2)]
       .forEach((valor, i) => {
         const td = document.createElement("td");
         td.textContent = valor;
         if (i === 2) td.className = r.pnlUsd >= 0 ? "positivo" : "negativo";
         tr.appendChild(td);
       });
+    tbody.appendChild(tr);
+  });
+}
+
+function renderLabSweep(datos) {
+  const tbody = $("labSweepResultados");
+  if (!tbody) return;
+  tbody.textContent = "";
+  setText("labLectura", datos?.lectura || "Sweep reproducible cargado.");
+  const ganador = datos?.ganador;
+  (datos?.resultados || []).forEach((row) => {
+    const r = row.resultado || {};
+    const tr = document.createElement("tr");
+    if (row.preset === ganador) tr.className = "fila-seleccionada";
+    [
+      row.preset || "preset",
+      `${formato(row.umbralBps || 0, 2)} bps`,
+      `${formato(row.maxOperacionBtc || 0, 3)} BTC`,
+      numero.format(r.tradesEjecutados || 0),
+      dinero.format(r.pnlUsd || 0),
+      dinero.format(r.maxDrawdownUsd || 0),
+      `${formato((r.winRate || 0) * 100, 1)}%`,
+      formato(row.scoreLab || 0, 2),
+    ].forEach((valor, i) => {
+      const td = document.createElement("td");
+      td.textContent = valor;
+      if (i === 4) td.className = (r.pnlUsd || 0) >= 0 ? "positivo" : "negativo";
+      tr.appendChild(td);
+    });
     tbody.appendChild(tr);
   });
 }
@@ -997,6 +1481,11 @@ function renderBalances(datos) {
     div.appendChild(span);
     container.appendChild(div);
   });
+
+  const divCost = document.createElement("div");
+  divCost.className = "balance balance-total";
+  divCost.innerHTML = `<strong>Costos Reb. (acum)</strong><span style="color:var(--rojo)">${dinero.format(datos?.metricas?.costoRebalanceoAcumuladoUsd || 0)}</span>`;
+  container.appendChild(divCost);
 }
 
 function renderConfig(datos) {
@@ -1010,6 +1499,14 @@ function renderConfig(datos) {
     { label: "Diferencial mínimo", val: `${formato(c.minDiferencialNetoBps, 2)} bps` },
     { label: "Deslizamiento", val: `${formato(c.deslizamientoBps, 2)} bps` },
     { label: "Enfriamiento", val: `${c.enfriamientoMs} ms` },
+    { label: "Latencia riesgo", val: `${formato(c.latenciaRiesgoBps, 2)} bps` },
+    { label: "Retiro amort.", val: `${formato(c.retiroAmortizadoBps, 2)} bps` },
+    { label: "Basis USDT/USD", val: `${formato(c.usdtUsdPremiumBps, 2)} bps` },
+    { label: "Circuit breaker", val: `${dinero.format(c.circuitBreakerPerdidaUsd)} / ${c.circuitBreakerVentanaMin} min` },
+    { label: "Volatilidad", val: `${formato(c.volatilidadUmbralBps, 1)} bps / ${c.volatilidadVentanaSeg}s` },
+    { label: "Adversidad", val: c.simularAdversidad ? "activa" : "apagada" },
+    { label: "Cruce USD/USDT", val: c.permitirCruceUsdUsdt ? "permitido" : "separado" },
+    { label: "Rebalanceo", val: `${formato(c.rebalanceUmbralPct, 0)}% · ${dinero.format(c.costoRebalanceoUsd || 0)}` },
   ];
 
   items.forEach((item) => {
@@ -1024,6 +1521,11 @@ function renderConfig(datos) {
   });
 }
 
+/**
+ * @description Renderiza la tabla de oportunidades detectadas, ordenándolas por score
+ * y permitiendo la visualización detallada al hacer clic.
+ * @param {Object} datos - El estado público actual.
+ */
 function renderOportunidades(datos) {
   const tbody = $("oportunidades");
   if (!tbody) return;
@@ -1096,8 +1598,8 @@ function renderDetalleOportunidad(datos) {
   if (!seleccionada) {
     panel.innerHTML = `
       <span class="ceja">Forense</span>
-      <strong>Esperando oportunidad</strong>
-      <p>Cuando el motor detecte una ruta, aquí aparecerá el desglose neto de costos, liquidez, latencia y decisión.</p>
+      <strong>Selecciona una decisión</strong>
+      <p>La fila elegida mostrará utilidad neta, costos, liquidez, latencia, inventario y el motivo exacto del motor.</p>
     `;
     return;
   }
@@ -1126,7 +1628,7 @@ function renderDetalleOportunidad(datos) {
       <div><span>Latencia</span><strong>${seleccionada.latenciaMaxMs} ms</strong></div>
       <div><span>Z-Score</span><strong>${formato(seleccionada.zScore, 2)}</strong></div>
       <div><span>Score EV</span><strong>${score ? formato(score, 3) : "sin score"}</strong></div>
-      <div><span>Código</span><strong>${escapeHtml(decisionCode)}</strong></div>
+      <div class="decision-code-cell"><span>Código</span><span class="decision-code-badge ${esDecisionOk(decisionCode) ? 'ok' : 'bad'}">${escapeHtml(decisionCode)}</span></div>
       <div><span>Actual</span><strong>${Number.isFinite(decisionActual) ? formato(decisionActual, 2) : "—"}</strong></div>
       <div><span>Umbral</span><strong>${Number.isFinite(decisionThreshold) ? formato(decisionThreshold, 2) : "—"}</strong></div>
     </div>
@@ -1140,6 +1642,10 @@ function renderDetalleOportunidad(datos) {
     </div>
     <p class="decision-reason">${escapeHtml(decisionReason)}</p>
   `;
+}
+
+function esDecisionOk(code) {
+  return /^(ACCEPT|DEMO_PROFITABLE|PARTIAL_FILL)/.test(String(code || ""));
 }
 
 function renderOperaciones(datos) {
@@ -1185,7 +1691,7 @@ function renderEventosEjecucion(datos) {
 
     const tdTipo = document.createElement("td");
     const chip = document.createElement("span");
-    chip.className = e.severidad === "alta" ? "chip-no" : e.severidad === "media" ? "chip-warn" : "chip-ok";
+    chip.className = e.severidad === "alta" ? "chip-bad" : e.severidad === "media" ? "chip-warn" : "chip-ok";
     chip.textContent = e.tipo;
     tdTipo.appendChild(chip);
 
@@ -1284,7 +1790,7 @@ function renderGenetico(datos) {
 
   const genEl = $("gaGeneracion");
   if (genEl) genEl.textContent = `Gen ${g.generacion} · ${g.poblacion} ind.`;
-  setText("gaEstado", g.activo ? "Optimizando con historial real" : "Listo para evolucionar");
+  setText("gaEstado", g.activo ? "Optimizando estrategia" : "Listo para competir");
   setText("gaMuestras", `${numero.format(g.operacionesEvaluadas || 0)} ops · ${numero.format(g.fallosEvaluados || 0)} fallos`);
   setText("gaUmbral", `${formato(g.umbralOptimizado, 2)} bps`);
   setText("gaMaxBtc", `${formato(g.maxOperacionOptimizadaBtc, 3)} BTC`);
@@ -1296,7 +1802,7 @@ function renderGenetico(datos) {
 
   setText("gaMejorFitness", formato(g.mejorFitness, 2));
   setText("gaFitnessPromedio", formato(g.fitnessPromedio, 2));
-  setText("gaDuelo", `Campeón ${formato(g.mejorFitness, 2)} vs Retador ${formato(g.retadorFitness ?? g.fitnessPromedio, 2)}`);
+  actualizarDueloGa(g);
   setText("gaDiversidad", `${formato(g.diversidad * 100, 1)}%`);
   setText("gaTasaMutacion", `${formato(g.tasaMutacion * 100, 1)}%`);
   setText("gaConvergencia", `${formato((1 - g.diversidad) * 100, 1)}%`);
@@ -1326,6 +1832,85 @@ function renderGenetico(datos) {
   dibujarGa(g);
 }
 
+function actualizarDueloGa(g) {
+  const el = $("gaDuelo");
+  if (!el) return;
+  const campeon = Number(g.mejorFitness || 0);
+  const retador = Number(g.retadorFitness ?? g.fitnessPromedio ?? 0);
+  const delta = campeon - retador;
+  const empateTecnico = Math.abs(delta) < 0.005;
+
+  if (empateTecnico) {
+    el.textContent = `Empate técnico ${formato(campeon, 2)} · campeón retenido`;
+    el.title = "Mismo fitness visible; el GA conserva el campeón actual por elitismo hasta que un retador lo supere.";
+  } else if (delta > 0) {
+    el.textContent = `Campeón +${formato(delta, 2)} · ${formato(campeon, 2)} vs ${formato(retador, 2)}`;
+    el.title = "El campeón tiene mayor fitness que el segundo mejor individuo.";
+  } else {
+    el.textContent = `Retador supera +${formato(Math.abs(delta), 2)} · pendiente de promoción`;
+    el.title = "El retador aparece por encima del campeón visible; se promoverá al ordenar la siguiente generación.";
+  }
+}
+
+function renderMlEdge(ml) {
+  setText("mlEv", dinero.format(ml?.expectedValueUsd || 0));
+  setText("mlConfianza", `${formato((ml?.confianza || 0) * 100, 1)}%`);
+  setText("mlSurvival", `${formato((ml?.survivalProbability || 0) * 100, 1)}%`);
+  setText("mlFill", `${formato((ml?.fillProbability || 0) * 100, 1)}%`);
+  const expEl = $("mlExplicacion");
+  if (expEl) {
+    if (ml?.explicacion) {
+      const parts = ml.explicacion.split("; ");
+      const main = parts[0] || "";
+      const dec = parts[1] || "";
+
+      const metrics = main.split(": ");
+      const title = metrics[0] || "";
+      const statsStr = metrics[1] || "";
+      const statsArr = statsStr.split(/, | y /).filter(s => s.trim() !== "");
+
+      expEl.innerHTML = `
+        <div class="ml-explicacion-bloque">
+          <strong>${title}</strong>
+          <ul>
+            ${statsArr.map(s => `<li>${s}</li>`).join("")}
+          </ul>
+          ${dec ? `<p>${dec}</p>` : ""}
+        </div>
+      `;
+    } else {
+      expEl.textContent = "Carga la demo ganadora o selecciona una ruta para calcular ML Edge.";
+    }
+  }
+  const container = $("mlFeatures");
+  if (!container) return;
+  container.textContent = "";
+  const variables = ml?.features || [];
+  if (variables.length === 0) {
+    const vacio = document.createElement("p");
+    vacio.className = "mini-empty";
+    vacio.textContent = "Sin variables calculadas todavía.";
+    container.appendChild(vacio);
+    return;
+  }
+
+  const max = Math.max(...variables.map((f) => Math.abs(f.contribucion || 0)), 0.01);
+  variables.forEach((variable) => {
+    const row = document.createElement("div");
+    row.className = "ml-feature";
+    const ancho = Math.min(100, (Math.abs(variable.contribucion || 0) / max) * 100);
+    row.innerHTML = `
+      <div>
+        <strong>${escapeHtml(nombreFeature(variable.nombre))}</strong>
+        <span>peso ${formato((variable.peso || 0) * 100, 0)}% · valor ${formato((variable.valor || 0) * 100, 0)}%</span>
+      </div>
+      <div class="ml-feature-track"><div style="width:${ancho}%"></div></div>
+      <em>${formato(variable.contribucion || 0, 3)}</em>
+    `;
+    container.appendChild(row);
+  });
+}
+
 function registrarPulsoGa(g) {
   const ultimo = gaHistorial[gaHistorial.length - 1];
   if (ultimo && ultimo.generacion === g.generacion && ultimo.mejor === g.mejorFitness) return;
@@ -1346,27 +1931,34 @@ function renderResumenLlm(datos) {
   const mejor = [...(datos.oportunidades || [])].sort((a, b) => b.diferencialNetoBps - a.diferencialNetoBps)[0];
   const ejecutable = (datos.oportunidades || []).find((o) => o.ejecutable);
   const g = datos.genetico;
+  const esDemoRentable = (datos.eventosEjecucion || []).some((e) => String(e.tipo || "") === "demo_rentable");
+  const modo = esDemoRentable
+    ? "Demo rentable auditada: PnL positivo precargado para mostrar el flujo completo; no ejecuta órdenes reales."
+    : "Mercado vivo: esperando edge real o una prueba controlada.";
   const ruta = mejor
     ? `${mejor.compraEn} -> ${mejor.ventaEn} con ${formato(mejor.diferencialNetoBps, 2)} bps netos`
     : "sin rutas suficientes";
   const accion = ejecutable
-    ? `hay ruta ejecutable ${ejecutable.compraEn} -> ${ejecutable.ventaEn} por ${dinero.format(ejecutable.utilidadUsd)}`
-    : "no hay ruta ejecutable en este ciclo";
+    ? `ruta viva aceptable ${ejecutable.compraEn} -> ${ejecutable.ventaEn} por ${dinero.format(ejecutable.utilidadUsd)}`
+    : "sin ruta viva que supere costos y riesgo en este ciclo";
   const ga = g
     ? `GA gen ${g.generacion}, fitness ${formato(g.mejorFitness, 2)}, diversidad ${formato(g.diversidad * 100, 1)}%, umbral ${formato(g.umbralOptimizado, 2)} bps`
     : "GA sin estado";
+  const ml = datos.mlEdge
+    ? `EV ${dinero.format(datos.mlEdge.expectedValueUsd || 0)}, confianza ${formato((datos.mlEdge.confianza || 0) * 100, 1)}%, decisión ${datos.mlEdge.decision || "sin código"}.`
+    : "Esperando decisión auditada.";
   const persistencia = datos.persistencia?.activa
-    ? `SQLite activo: ${numero.format(datos.persistencia.operaciones || 0)} ops, ${numero.format(datos.persistencia.oportunidades || 0)} oportunidades y ${numero.format(datos.persistencia.auditorias || 0)} auditorías persistidas.`
-    : "SQLite de auditoría no disponible.";
-  el.textContent = [
-    `PnL ${dinero.format(datos.metricas.utilidadAcumuladaUsd)}.`,
-    `Riesgo: ${datos.metricas.estadoRiesgo}.`,
-    `Mejor ruta observada: ${ruta}.`,
-    `Decisión actual: ${accion}.`,
-    ga,
-    persistencia,
-    `Latencia promedio ${formato(datos.metricas.latenciaPromedioMs, 0)} ms y ${numero.format(datos.metricas.eventosMercado)} eventos procesados.`
-  ].join(" ");
+    ? `Auditoría SQLite activa: ${numero.format(datos.persistencia.operaciones || 0)} trades, ${numero.format(datos.persistencia.oportunidades || 0)} oportunidades y ${numero.format(datos.persistencia.auditorias || 0)} decisiones.`
+    : "Auditoría SQLite no disponible.";
+  const modoEl = $("llm-modo"); if (modoEl) modoEl.textContent = modo;
+  const pnlEl = $("llm-pnl"); if (pnlEl) pnlEl.textContent = dinero.format(datos.metricas.utilidadAcumuladaUsd);
+  const riesgoEl = $("llm-riesgo"); if (riesgoEl) riesgoEl.textContent = datos.metricas.estadoRiesgo;
+  const rutaEl = $("llm-ruta"); if (rutaEl) rutaEl.textContent = ruta;
+  const decisionEl = $("llm-decision"); if (decisionEl) decisionEl.textContent = accion;
+  const gaEl = $("llm-ga"); if (gaEl) gaEl.textContent = ga;
+  const mlEl = $("llm-ml"); if (mlEl) mlEl.textContent = ml;
+  const sistemaEl = $("llm-sistema"); if (sistemaEl) sistemaEl.textContent = persistencia;
+  const latenciaEl = $("llm-latencia"); if (latenciaEl) latenciaEl.textContent = `${formato(datos.metricas.latenciaPromedioMs, 0)} ms · ${numero.format(datos.metricas.eventosMercado)} eventos`;
 }
 
 function renderExchanges(datos) {
@@ -1433,6 +2025,12 @@ function detectarNotificaciones(datos) {
   datos.oportunidades.forEach((o) => {
     if (o.ejecutable && o.utilidadUsd > 50 && !opsNotificadas.has(o.id)) {
       opsNotificadas.add(o.id);
+      if (opsNotificadas.size > 200) {
+        const iter = opsNotificadas.values();
+        for (let i = 0; i < 50; i++) {
+          opsNotificadas.delete(iter.next().value);
+        }
+      }
       lanzarNotificacion(o);
     }
   });
@@ -1444,31 +2042,50 @@ function lanzarNotificacion(o) {
 
   const div = document.createElement("div");
   div.className = "notificacion";
-  
+
   const title = document.createElement("strong");
   title.style.color = "var(--verde)";
-  title.textContent = "⚡ ¡Oportunidad de Arbitraje!";
-  
-  const route = document.createElement("span");
-  route.innerHTML = `Ruta: <strong>${escapeHtml(o.compraEn)} -> ${escapeHtml(o.ventaEn)}</strong>`;
-  
-  const profit = document.createElement("span");
-  profit.innerHTML = `Utilidad estimada: <strong>${dinero.format(o.utilidadUsd)}</strong> (${formato(o.diferencialNetoBps, 2)} bps)`;
+  title.textContent = "Oportunidad aceptable";
 
+  const route = document.createElement("span");
+  route.innerHTML = `Comprar en <strong>${escapeHtml(o.compraEn)}</strong> y vender en <strong>${escapeHtml(o.ventaEn)}</strong>`;
+
+  const profit = document.createElement("span");
+  profit.innerHTML = `Utilidad neta estimada: <strong>${dinero.format(o.utilidadUsd)}</strong> (${formato(o.diferencialNetoBps, 2)} bps)`;
+
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "btn-cerrar-notif";
+  closeBtn.innerHTML = "&times;";
+  closeBtn.onclick = () => {
+    div.style.animation = "slideOutRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards";
+    setTimeout(() => { if (div.parentNode) div.remove(); }, 300);
+  };
+
+  div.appendChild(closeBtn);
   div.appendChild(title);
   div.appendChild(route);
   div.appendChild(profit);
   container.appendChild(div);
+  while (container.children.length > 3) {
+    container.firstElementChild?.remove();
+  }
 
   // Auto-dismiss
   setTimeout(() => {
-    div.style.animation = "slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) reverse forwards";
-    setTimeout(() => {
-      div.remove();
-    }, 300);
-  }, 4000);
+    if (div.parentNode) {
+      div.style.animation = "slideOutRight 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards";
+      setTimeout(() => {
+        if (div.parentNode) div.remove();
+      }, 300);
+    }
+  }, 8000);
 }
 
+/**
+ * @description Dibuja el mapa de rutas de arbitraje en un canvas 2D usando curvas Bézier.
+ * Las rutas ejecutables se muestran en verde y las descartadas en rojo oscuro.
+ * @param {Object} datos - El estado público actual.
+ */
 function dibujarMapa(datos) {
   const canvas = $("canvasMapa");
   if (!canvas) return;
@@ -1478,9 +2095,9 @@ function dibujarMapa(datos) {
   ctx.clearRect(0, 0, w, h);
 
   const temaOscuro = document.documentElement.getAttribute("data-theme") === "dark";
-  const colorTinta = temaOscuro ? "#f4f0e6" : "#11110f";
-  const colorFondo = temaOscuro ? "#191813" : "#fffaf0";
-  const colorMuted = temaOscuro ? "#b8b0a0" : "#625d52";
+  const colorTinta = temaOscuro ? "#f4f0e6" : "#141414";
+  const colorFondo = temaOscuro ? "#111111" : "#f2efe9";
+  const colorMuted = temaOscuro ? "#888888" : "#666666";
 
   fondoArquitectonico(ctx, w, h, temaOscuro);
 
@@ -1516,12 +2133,27 @@ function dibujarMapa(datos) {
     if (i < 5 && o.ejecutable) {
       ctx.fillStyle = "#dfff43";
       const t = (Date.now() / 900 + i * 0.18) % 1;
+
+      const cp1x = a.x + dy * 0.14;
+      const cp1y = a.y - dx * 0.14;
+      const cp2x = b.x + dy * 0.14;
+      const cp2y = b.y - dx * 0.14;
+
+      const mt = 1 - t;
+      const mt2 = mt * mt;
+      const mt3 = mt2 * mt;
+      const t2 = t * t;
+      const t3 = t2 * t;
+
+      const x = mt3 * a.x + 3 * mt2 * t * cp1x + 3 * mt * t2 * cp2x + t3 * b.x;
+      const y = mt3 * a.y + 3 * mt2 * t * cp1y + 3 * mt * t2 * cp2y + t3 * b.y;
+
       ctx.beginPath();
-      // Interpolación sobre curva bezier simple
-      const x = a.x + (b.x - a.x) * t;
-      const y = a.y + (b.y - a.y) * t;
-      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.shadowColor = "#dfff43";
+      ctx.shadowBlur = 6;
+      ctx.arc(x, y, 4.5, 0, Math.PI * 2);
       ctx.fill();
+      ctx.shadowBlur = 0;
     }
   });
 
@@ -1545,6 +2177,11 @@ function dibujarMapa(datos) {
   });
 }
 
+/**
+ * @description Dibuja la serie temporal de PnL (Ganancias/Pérdidas) acumuladas y spread
+ * diferencial en el canvas correspondiente.
+ * @param {Object} datos - El estado público actual.
+ */
 function dibujarSeries(datos) {
   const canvas = $("canvasSeries");
   if (!canvas) return;
@@ -1554,13 +2191,12 @@ function dibujarSeries(datos) {
   ctx.clearRect(0, 0, w, h);
 
   const temaOscuro = document.documentElement.getAttribute("data-theme") === "dark";
-  const colorTinta = temaOscuro ? "#f4f0e6" : "#11110f";
+  const colorTinta = temaOscuro ? "#f4f0e6" : "#141414";
+  const pnlColor = temaOscuro ? "#4ade80" : "#16a34a";
+  const difColor = temaOscuro ? "#60a5fa" : "#0284c7";
 
   fondoArquitectonico(ctx, w, h, temaOscuro);
-  
-  const pnlColor = temaOscuro ? "#26d07c" : "#0c8a55";
-  const difColor = temaOscuro ? "#4eb3ff" : "#1769aa";
-  
+
   dibujarLinea(ctx, datos.seriePnl.map((p) => p.valor), pnlColor, w, h, 0.58);
   dibujarLinea(ctx, datos.serieDiferencial.map((p) => p.valor), difColor, w, h, 0.34);
 
@@ -1568,8 +2204,8 @@ function dibujarSeries(datos) {
   ctx.fillStyle = colorTinta;
   ctx.font = "800 14px Archivo, sans-serif";
   ctx.textAlign = "left";
-  ctx.fillText("Ganancia/pérdida acumulada (USD)", 24, 30);
-  
+  ctx.fillText("Utilidad neta acumulada (USD)", 24, 30);
+
   ctx.fillStyle = difColor;
   ctx.fillText("Diferencial neto (bps)", 24, 52);
 }
@@ -1583,9 +2219,9 @@ function dibujarGa(g) {
   ctx.clearRect(0, 0, w, h);
 
   const temaOscuro = document.documentElement.getAttribute("data-theme") === "dark";
-  ctx.fillStyle = temaOscuro ? "#090a08" : "#fff7e6";
+  ctx.fillStyle = temaOscuro ? "#171717" : "#f9f7f2";
   ctx.fillRect(0, 0, w, h);
-  ctx.strokeStyle = temaOscuro ? "rgba(247,147,26,0.18)" : "rgba(217,120,5,0.25)";
+  ctx.strokeStyle = temaOscuro ? "#333333" : "#dcd7cc";
   ctx.lineWidth = 1;
   for (let x = 20; x < w; x += 46) {
     ctx.beginPath();
@@ -1625,10 +2261,15 @@ function dibujarGa(g) {
   });
 
   const ultimo = datos[datos.length - 1];
-  ctx.fillStyle = temaOscuro ? "#fff7df" : "#12100b";
-  ctx.font = "900 13px Archivo, sans-serif";
+  const ultimoRetador = ultimo.retador ?? ultimo.promedio;
+  const ultimoDelta = ultimo.mejor - ultimoRetador;
+  const resumenDuelo = Math.abs(ultimoDelta) < 0.005
+    ? `empate técnico ${formato(ultimo.mejor, 2)}`
+    : `delta ${ultimoDelta >= 0 ? "+" : ""}${formato(ultimoDelta, 2)}`;
+  ctx.fillStyle = temaOscuro ? "#f4f0e6" : "#141414";
+  ctx.font = "900 13px Aeonik Pro, sans-serif";
   ctx.textAlign = "left";
-  ctx.fillText(`Auto Gen ${ultimo.generacion} · campeón ${formato(ultimo.mejor, 2)} · retador ${formato(ultimo.retador ?? ultimo.promedio, 2)}`, 22, 24);
+  ctx.fillText(`Auto Gen ${ultimo.generacion} · ${resumenDuelo}`, 22, 24);
   ctx.fillStyle = "#f8c547";
   ctx.fillText("campeón", 22, h - 14);
   ctx.fillStyle = "#fb7185";
@@ -1664,24 +2305,50 @@ function dibujarLinea(ctx, valores, color, w, h, base) {
   if (valores.length < 2) return;
   const min = Math.min(...valores, 0);
   const max = Math.max(...valores, 1);
-  const rango = Math.max(max - min, 1);
+  const absMax = Math.max(Math.abs(min), Math.abs(max));
+  const max_amp = Math.max(absMax, 1);
+
+  ctx.globalAlpha = 0.1;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(28, h * base);
+  valores.forEach((valor, i) => {
+    const x = 28 + (i / (valores.length - 1)) * (w - 56);
+    const y = h * base - (valor / max_amp) * (h * 0.24);
+    ctx.lineTo(x, y);
+  });
+  ctx.lineTo(28 + (w - 56), h * base);
+  ctx.fill();
+  ctx.globalAlpha = 1.0;
+
+  // Stroke line
   ctx.strokeStyle = color;
-  ctx.lineWidth = 3;
+  ctx.lineWidth = 4;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
   ctx.beginPath();
   valores.forEach((valor, i) => {
     const x = 28 + (i / (valores.length - 1)) * (w - 56);
-    const y = h * base - ((valor - min) / rango) * h * 0.24;
+    const y = h * base - (valor / max_amp) * (h * 0.24);
     if (i === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   });
   ctx.stroke();
+
+  // End point
+  const lastX = 28 + w - 56;
+  const lastY = h * base - (valores[valores.length - 1] / max_amp) * (h * 0.24);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(lastX, lastY, 6, 0, Math.PI * 2);
+  ctx.fill();
 }
 
 function fondoArquitectonico(ctx, w, h, temaOscuro) {
-  ctx.fillStyle = temaOscuro ? "#191813" : "#fffaf0";
+  ctx.fillStyle = temaOscuro ? "#171717" : "#f9f7f2";
   ctx.fillRect(0, 0, w, h);
-  
-  ctx.strokeStyle = temaOscuro ? "#413d34" : "#cfc4ad";
+
+  ctx.strokeStyle = temaOscuro ? "#333333" : "#dcd7cc";
   ctx.lineWidth = 1;
   for (let x = 0; x < w; x += 52) {
     ctx.beginPath();
@@ -1715,9 +2382,27 @@ function prepararCanvas(canvas) {
   return ctx;
 }
 
-function mejorDiferencial(datos) {
-  const mejor = datos.oportunidades.reduce((acc, o) => Math.max(acc, o.diferencialNetoBps), 0);
-  return `${formato(mejor, 2)} bps`;
+function actualizarMejorDiferencial(datos) {
+  const el = $("mejorDiferencial");
+  if (!el) return;
+  const oportunidades = datos.oportunidades || [];
+
+  const countEl = $("conteoRutas");
+  if (countEl) {
+    countEl.textContent = `${oportunidades.length} RUTAS`;
+  }
+
+  if (oportunidades.length === 0) {
+    el.textContent = "sin rutas";
+    el.className = "mapa-bps neutro";
+    return;
+  }
+  const mejor = oportunidades.reduce(
+    (acc, o) => Math.max(acc, Number(o.diferencialNetoBps || 0)),
+    Number.NEGATIVE_INFINITY,
+  );
+  el.textContent = `${formato(mejor, 2)} bps`;
+  el.className = `mapa-bps ${mejor >= 0 ? "positivo" : "negativo"}`;
 }
 
 function formato(valor, decimales) {
@@ -1725,4 +2410,142 @@ function formato(valor, decimales) {
     minimumFractionDigits: decimales,
     maximumFractionDigits: decimales,
   });
+}
+
+// Navegación de pestañas (Tabs)
+document.addEventListener("DOMContentLoaded", () => {
+  const overview = document.getElementById("tab-overview");
+  const pantalla = document.querySelector(".pantalla");
+  iniciarLanding();
+
+  document.querySelectorAll(".tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const pantalla = document.querySelector(".pantalla");
+      const scrollActual = pantalla ? pantalla.scrollTop : 0;
+
+      document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("activo"));
+      document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("activo"));
+
+      btn.classList.add("activo");
+      const targetId = btn.getAttribute("data-tab");
+      const targetContent = document.getElementById(targetId);
+      if (targetContent) {
+        targetContent.classList.add("activo");
+
+        if (pantalla) {
+          pantalla.scrollTop = scrollActual;
+        }
+
+        actualizarHeaderColapsable();
+
+        // Forzar resize para que los canvas recalcule su bounding rect (ya que display: none devuelve width/height 0)
+        requestAnimationFrame(() => {
+          window.dispatchEvent(new Event("resize"));
+        });
+      }
+    });
+  });
+
+  if (overview) {
+    overview.addEventListener("scroll", actualizarHeaderColapsable, { passive: true });
+  }
+  if (pantalla) {
+    pantalla.addEventListener("scroll", actualizarVisibilidadNotificaciones, { passive: true });
+  }
+  actualizarHeaderColapsable();
+  actualizarVisibilidadNotificaciones();
+});
+
+function iniciarLanding() {
+  const elementsToReveal = document.querySelectorAll('.panel, .ga-panel, .metricas article, .landing-card, .llm-strip, .barra-superior, .tabs-nav');
+  const ordenPorGrupo = new Map();
+  elementsToReveal.forEach(el => {
+    if (!el.classList.contains('reveal-card')) {
+      el.classList.add('reveal-card');
+    }
+    const grupo = el.parentElement;
+    const orden = ordenPorGrupo.get(grupo) || 0;
+    el.style.setProperty("--reveal-delay", `${Math.min(orden * 85, 340)}ms`);
+    ordenPorGrupo.set(grupo, orden + 1);
+  });
+
+  const cards = document.querySelectorAll(".reveal-card");
+  const ctas = document.querySelectorAll('a[href="#dashboard"]');
+  ctas.forEach((cta) => {
+    cta.addEventListener("click", (event) => {
+      event.preventDefault();
+      irAlDashboard();
+    });
+  });
+
+  if (location.hash === "#dashboard") {
+    requestAnimationFrame(() => irAlDashboard(false));
+  }
+
+  if (!cards.length) return;
+  if (!("IntersectionObserver" in window)) {
+    cards.forEach((card) => card.classList.add("is-visible"));
+    return;
+  }
+
+  const observer = new IntersectionObserver(
+    (entries) => {
+      entries
+        .filter((entry) => entry.isIntersecting)
+        .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)
+        .forEach((entry) => {
+          entry.target.classList.add("is-visible");
+          observer.unobserve(entry.target);
+        });
+    },
+    { root: document.querySelector(".pantalla"), threshold: 0.18, rootMargin: "0px 0px -8% 0px" },
+  );
+
+  cards.forEach((card) => observer.observe(card));
+}
+
+function irAlDashboard(suave = true) {
+  const pantalla = document.querySelector(".pantalla");
+  const target = document.getElementById("dashboard");
+  const overviewBtn = document.querySelector('.tab-btn[data-tab="tab-overview"]');
+  if (!pantalla || !target) return;
+
+  if (overviewBtn && !overviewBtn.classList.contains("activo")) {
+    overviewBtn.click();
+  }
+  actualizarHeaderColapsable();
+  pantalla.scrollTo({
+    top: Math.max(0, target.offsetTop - 18),
+    behavior: suave ? "smooth" : "auto",
+  });
+  history.replaceState(null, "", "#dashboard");
+}
+
+function iniciarHeaderColapsable() {
+  if (document.readyState === "loading") return;
+  actualizarHeaderColapsable();
+}
+
+function actualizarVisibilidadNotificaciones() {
+  const pantalla = document.querySelector(".pantalla");
+  const dashboard = document.getElementById("dashboard");
+  const container = $("notificaciones");
+  if (!pantalla || !dashboard || !container) return;
+  const dashboardVisible = pantalla.scrollTop >= Math.max(0, dashboard.offsetTop - 80);
+  container.classList.toggle("is-visible", dashboardVisible);
+}
+
+function actualizarHeaderColapsable() {
+  const pantalla = document.querySelector(".pantalla");
+  const header = document.querySelector(".barra-superior");
+  const overview = document.getElementById("tab-overview");
+  const activo = document.querySelector(".tab-content.activo");
+  if (!pantalla || !header) return;
+
+  const esOverview = activo?.id === "tab-overview";
+  header.style.display = esOverview ? "" : "none";
+  pantalla.classList.toggle("header-fuera-tab", !esOverview);
+
+  const scrollTop = esOverview && overview ? overview.scrollTop : 0;
+  pantalla.classList.toggle("header-colapsado", esOverview && scrollTop > 42);
 }

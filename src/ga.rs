@@ -415,12 +415,14 @@ impl EstadoGa {
             self.mutar_fino(&mut vecino, self.temperatura_annealing);
             vecino.fitness = fitness_genoma(&vecino, base);
             let delta = vecino.fitness - genoma.fitness;
-            let aceptar = delta >= 0.0
-                || self.rng.gen_bool(
-                    (delta / self.temperatura_annealing.max(0.01))
-                        .exp()
-                        .clamp(0.0, 1.0),
-                );
+            let prob = if delta >= 0.0 {
+                1.0
+            } else if delta.is_nan() || self.temperatura_annealing.is_nan() {
+                0.0
+            } else {
+                (delta / self.temperatura_annealing.max(0.01)).exp()
+            };
+            let aceptar = delta >= 0.0 || self.rng.gen_bool(prob.clamp(0.0, 1.0));
             if aceptar {
                 *genoma = vecino;
             }
