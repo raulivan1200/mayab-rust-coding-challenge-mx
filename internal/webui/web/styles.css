@@ -285,10 +285,16 @@ button {
   font-weight: 800;
   cursor: pointer;
   box-shadow: 0 12px 30px rgba(0, 0, 0, .28);
+  transition: transform 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
 }
 
 .dictionary-fab img { width: 24px; height: 24px; filter: brightness(0); }
-.dictionary-fab:is(:hover, :focus-visible) { transform: translateY(-8px); }
+.dictionary-fab:is(:hover, :focus-visible) {
+  transform: translateY(-5px) scale(1.02);
+  background: color-mix(in srgb, var(--yellow) 84%, white);
+  box-shadow: 0 18px 38px rgba(0, 0, 0, .34);
+}
+.dictionary-fab:active { transform: translateY(-1px) scale(.98); }
 .dictionary-backdrop { position: fixed; inset: 0; z-index: 2147483011; background: rgba(0, 0, 0, .62); backdrop-filter: blur(4px); }
 .dictionary-panel {
   position: fixed;
@@ -305,7 +311,9 @@ button {
 .dictionary-header { display: flex; align-items: center; justify-content: space-between; padding: 22px 24px; border-bottom: var(--border-soft); background: var(--blue); color: #fff; }
 .dictionary-header .ceja { color: rgba(255,255,255,.72); margin: 0 0 4px; }
 .dictionary-header h2 { margin: 0; font-family: var(--font-display); font-size: clamp(1.8rem, 4vw, 3rem); }
-.dictionary-close { width: 44px; height: 44px; border: 1px solid rgba(255,255,255,.35); border-radius: 50%; background: transparent; color: #fff; font-size: 2rem; line-height: 1; cursor: pointer; }
+.dictionary-close { width: 44px; height: 44px; border: 1px solid rgba(255,255,255,.35); border-radius: 50%; background: transparent; color: #fff; font-size: 2rem; line-height: 1; cursor: pointer; transition: transform 160ms ease, background-color 160ms ease, border-color 160ms ease; }
+.dictionary-close:is(:hover, :focus-visible) { transform: rotate(8deg) scale(1.06); border-color: #fff; background-color: rgba(255,255,255,.16); }
+.dictionary-close:active { transform: scale(.94); }
 .dictionary-body { height: calc(100% - 102px); overflow: auto; padding: 24px; }
 .dictionary-intro { padding: 20px; border-left: 5px solid var(--yellow); background: color-mix(in srgb, var(--yellow) 12%, var(--paper)); }
 .dictionary-intro h3, .dictionary-credits h3 { margin: 0 0 8px; font-size: 1.25rem; }
@@ -317,7 +325,12 @@ button {
 .dictionary-table th, .dictionary-table td { padding: 13px 14px; border-bottom: var(--border-soft); vertical-align: top; line-height: 1.45; }
 .dictionary-table thead th { position: sticky; top: 0; background: var(--ink); color: var(--bg); font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; }
 .dictionary-table tbody th { width: 30%; color: var(--blue); }
-.dictionary-table tbody tr:hover { background: color-mix(in srgb, var(--blue) 7%, transparent); }
+.dictionary-table tbody tr { transition: background-color 150ms ease, box-shadow 150ms ease; }
+.dictionary-table tbody tr:is(:hover, :focus-within) {
+  background: color-mix(in srgb, var(--blue) 9%, var(--paper));
+  box-shadow: inset 4px 0 0 var(--blue);
+}
+.dictionary-table tbody tr:is(:hover, :focus-within) th { color: color-mix(in srgb, var(--blue) 78%, var(--ink)); }
 .dictionary-empty { padding: 28px; text-align: center; color: var(--muted); }
 .dictionary-credits { margin-top: 28px; padding: 22px; background: var(--ink); color: var(--bg); }
 .dictionary-credits .ceja { color: var(--yellow); }
@@ -452,6 +465,27 @@ button {
   .grid-tile.hovered {
     transition: none;
   }
+}
+
+/* Microinteracción juguetona sólo para dispositivos con hover real. Mantenerla
+   fuera de touch evita el hover "pegado" y el scroll entrecortado en móvil. */
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  :where(a[href], button, [role="button"], tr[tabindex]):not(:disabled):hover {
+    animation: clickable-wiggle 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    will-change: transform;
+  }
+
+  :where(a[href], button, [role="button"], tr[tabindex]):not(:disabled):active {
+    animation: none;
+    transform: scale(0.97);
+  }
+}
+
+@keyframes clickable-wiggle {
+  0% { transform: scale(1) rotate(0deg); }
+  38% { transform: scale(1.035) rotate(-2.5deg); }
+  68% { transform: scale(1.025) rotate(2.5deg); }
+  100% { transform: scale(1.025) rotate(0deg); }
 }
 
 .topline {
@@ -5413,7 +5447,8 @@ body::after {
     border-radius: 50%;
     background: transparent;
     pointer-events: none;
-    z-index: 999999;
+    /* Debe permanecer encima de overlays que ocultan el cursor nativo. */
+    z-index: 2147483647;
     will-change: transform;
     backface-visibility: hidden;
     user-select: none;
@@ -5456,6 +5491,14 @@ body::after {
     .custom-cursor img {
       transition: none;
     }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dictionary-fab,
+  .dictionary-close,
+  .dictionary-table tbody tr {
+    transition: none;
   }
 }
 

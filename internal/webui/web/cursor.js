@@ -48,14 +48,19 @@ function initCursor() {
     cursor.classList.toggle('is-clickable', Boolean(event.target.closest?.(interactiveSelector)));
   }, { passive: true });
 
-  document.addEventListener('pointerdown', () => cursor.classList.add('is-pressed'), { passive: true });
+  document.addEventListener('pointerdown', (event) => {
+    if (event.pointerType !== 'touch') cursor.classList.add('is-pressed');
+  }, { passive: true });
   document.addEventListener('pointerup', () => cursor.classList.remove('is-pressed'), { passive: true });
+  window.addEventListener('blur', hideCursor);
 
   // Handle visibility transitions
-  document.addEventListener('mouseleave', () => {
+  document.addEventListener('mouseleave', hideCursor);
+
+  function hideCursor() {
     cursor.hidden = true;
     cursor.classList.remove('is-clickable', 'is-pressed');
-  });
+  }
 
   document.addEventListener('mouseenter', () => {
     if (hasMoved) cursor.hidden = false;

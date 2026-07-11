@@ -2573,6 +2573,23 @@ document.addEventListener("DOMContentLoaded", () => {
   const overview = document.getElementById("tab-overview");
   const pantalla = document.querySelector(".pantalla");
   const scrollPorTab = new Map();
+  const scrollGuardado = sessionStorage.getItem("mayabScrollPorTab");
+  if (scrollGuardado) {
+    try {
+      Object.entries(JSON.parse(scrollGuardado)).forEach(([tab, posicion]) => {
+        if (Number.isFinite(posicion)) scrollPorTab.set(tab, posicion);
+      });
+    } catch (_) {
+      sessionStorage.removeItem("mayabScrollPorTab");
+    }
+  }
+
+  const guardarScroll = () => {
+    const tabActivo = document.querySelector(".tab-content.activo")?.id;
+    if (!pantalla || !tabActivo) return;
+    scrollPorTab.set(tabActivo, pantalla.scrollTop);
+    sessionStorage.setItem("mayabScrollPorTab", JSON.stringify(Object.fromEntries(scrollPorTab)));
+  };
   iniciarLanding();
   iniciarAjusteMetricas();
   iniciarDiccionario();
@@ -2601,8 +2618,9 @@ document.addEventListener("DOMContentLoaded", () => {
         // Forzar resize para que los canvas recalcule su bounding rect (ya que display: none devuelve width/height 0)
         requestAnimationFrame(() => {
           if (pantalla) {
-            const dashboardTop = Math.max(0, (document.getElementById("dashboard")?.offsetTop || 0) - 18);
-            pantalla.scrollTop = scrollPorTab.get(targetId) ?? dashboardTop;
+            // Una pestaña nueva conserva el punto visual actual. Si ya se visitó,
+            // recupera su posición propia (también después de recargar la página).
+            pantalla.scrollTop = scrollPorTab.get(targetId) ?? scrollActual;
           }
           window.dispatchEvent(new Event("resize"));
           window.dispatchEvent(new CustomEvent("mayab:tab-visible"));
@@ -2617,7 +2635,9 @@ document.addEventListener("DOMContentLoaded", () => {
       const tab = document.querySelector(`.tab-btn[data-tab="${target}"]`);
       if (!tab) return;
       tab.click();
-      document.getElementById("dashboard")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      // Usar el contenedor que realmente hace scroll evita dos animaciones
+      // compitiendo entre sí, especialmente en Safari/Chrome móvil.
+      requestAnimationFrame(() => irAlDashboard());
     });
   });
 
@@ -2635,6 +2655,8 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   if (pantalla) {
     pantalla.addEventListener("scroll", actualizarVisibilidadNotificaciones, { passive: true });
+    pantalla.addEventListener("scrollend", guardarScroll, { passive: true });
+    window.addEventListener("pagehide", guardarScroll, { passive: true });
   }
   actualizarHeaderColapsable();
   actualizarVisibilidadNotificaciones();
