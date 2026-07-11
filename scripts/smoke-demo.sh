@@ -62,7 +62,32 @@ json_post "/api/demo" '{"escenario":"liquidez_insuficiente"}' "$TMP_DIR/demo-liq
 json_post "/api/demo" '{"escenario":"circuit_breaker"}' "$TMP_DIR/demo-circuit.json"
 json_get "/api/estado" "$TMP_DIR/estado-adverso.json"
 json_post "/api/demo/final" '{}' "$TMP_DIR/demo-restaurada.json"
-json_get "/api/preflight" "$TMP_DIR/preflight-final.json"
+
+# Los feeds públicos pueden atravesar una reconexión breve justo después de los
+# escenarios adversos. Esperar evidencia fresca evita dejar la demo en un estado
+# transitorio sin esconder un fallo persistente.
+for _ in $(seq 1 30); do
+  if json_get "/api/preflight" "$TMP_DIR/preflight-final.json" 2>/dev/null \
+    && python3 - "$TMP_DIR/preflight-final.json" <<'PY'
+import json
+import sys
+
+preflight = json.load(open(sys.argv[1]))
+readiness = preflight.get("judgeReadiness") or {}
+checks = readiness.get("checks") or []
+ok = (
+    preflight.get("listo") is True
+    and readiness.get("status") == "ready"
+    and checks
+    and all(check.get("ok") is True for check in checks)
+)
+sys.exit(0 if ok else 1)
+PY
+  then
+    break
+  fi
+  sleep 1
+done
 
 python3 - "$TMP_DIR" <<'PY'
 import json

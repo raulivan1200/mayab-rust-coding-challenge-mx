@@ -269,7 +269,9 @@ button {
 .dictionary-fab {
   position: fixed;
   left: max(18px, env(safe-area-inset-left));
-  bottom: max(18px, env(safe-area-inset-bottom));
+  top: calc(90vh - 52px);
+  top: calc(90dvh - 52px);
+  bottom: auto;
   z-index: 2147483010;
   display: flex;
   align-items: center;
@@ -286,7 +288,7 @@ button {
 }
 
 .dictionary-fab img { width: 24px; height: 24px; filter: brightness(0); }
-.dictionary-fab:hover { transform: translateY(-2px); }
+.dictionary-fab:is(:hover, :focus-visible) { transform: translateY(-8px); }
 .dictionary-backdrop { position: fixed; inset: 0; z-index: 2147483011; background: rgba(0, 0, 0, .62); backdrop-filter: blur(4px); }
 .dictionary-panel {
   position: fixed;
@@ -4969,7 +4971,7 @@ body::after {
 
 /* Hover de botones: un barrido vertical simple inspirado en el ejemplo. */
 :is(
-  button:not(.btn-cerrar-notif),
+  button:not(.btn-cerrar-notif):not(.dictionary-fab),
   .btn-link,
   .tab-btn,
   .btn-primario,
