@@ -34,6 +34,34 @@ json_post() {
     -o "$out"
 }
 
+wait_preflight_ready() {
+  out="$1"
+  attempts="${2:-45}"
+  for _ in $(seq 1 "$attempts"); do
+    if json_get "/api/preflight" "$out" 2>/dev/null \
+      && python3 - "$out" <<'PY'
+import json
+import sys
+
+preflight = json.load(open(sys.argv[1]))
+readiness = preflight.get("judgeReadiness") or {}
+checks = readiness.get("checks") or []
+ok = (
+    preflight.get("listo") is True
+    and readiness.get("status") == "ready"
+    and checks
+    and all(check.get("ok") is True for check in checks)
+)
+sys.exit(0 if ok else 1)
+PY
+    then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 require_cmd curl
 require_cmd python3
 
@@ -48,6 +76,7 @@ json_post "/api/ga/evolucionar" '{"usarReplaySiVacio":true,"muestras":96}' "$TMP
 json_post "/api/demo" '{"escenario":"mercado_rentable"}' "$TMP_DIR/demo-rentable.json"
 json_post "/api/demo" '{"escenario":"rebalanceo"}' "$TMP_DIR/demo-rebalanceo.json"
 json_post "/api/demo/final" '{}' "$TMP_DIR/demo-final.json"
+wait_preflight_ready "$TMP_DIR/preflight-demo.json" 60 || true
 json_get "/api/estado" "$TMP_DIR/estado.json"
 json_get "/api/jurado" "$TMP_DIR/jurado.json"
 json_get "/api/paquete-evaluacion" "$TMP_DIR/paquete.json"
@@ -63,31 +92,10 @@ json_post "/api/demo" '{"escenario":"circuit_breaker"}' "$TMP_DIR/demo-circuit.j
 json_get "/api/estado" "$TMP_DIR/estado-adverso.json"
 json_post "/api/demo/final" '{}' "$TMP_DIR/demo-restaurada.json"
 
-# Los feeds públicos pueden atravesar una reconexión breve justo después de los
-# escenarios adversos. Esperar evidencia fresca evita dejar la demo en un estado
-# transitorio sin esconder un fallo persistente.
-for _ in $(seq 1 30); do
-  if json_get "/api/preflight" "$TMP_DIR/preflight-final.json" 2>/dev/null \
-    && python3 - "$TMP_DIR/preflight-final.json" <<'PY'
-import json
-import sys
-
-preflight = json.load(open(sys.argv[1]))
-readiness = preflight.get("judgeReadiness") or {}
-checks = readiness.get("checks") or []
-ok = (
-    preflight.get("listo") is True
-    and readiness.get("status") == "ready"
-    and checks
-    and all(check.get("ok") is True for check in checks)
-)
-sys.exit(0 if ok else 1)
-PY
-  then
-    break
-  fi
-  sleep 1
-done
+# Los feeds públicos pueden tardar en conectar al arrancar o atravesar una
+# reconexión breve después de los escenarios adversos. Esperar evidencia fresca
+# evita falsos negativos sin esconder un fallo persistente.
+wait_preflight_ready "$TMP_DIR/preflight-final.json" 60 || true
 
 python3 - "$TMP_DIR" <<'PY'
 import json
