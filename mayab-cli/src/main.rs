@@ -5,7 +5,7 @@
 //! optimización genética, API Axum y dashboard estático. No firma órdenes reales,
 //! no custodia fondos y no maneja secretos de exchanges.
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, process::Command, sync::Arc};
 
 use anyhow::Context;
 use tokio::signal;
@@ -14,6 +14,25 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 #[cfg(feature = "timescaledb")]
 use mayab_arbitrage::persistencia_timescale;
 use mayab_arbitrage::{auditoria, config, mercado, motor, persistencia, server};
+
+fn abrir_dashboard_local(url: &str) {
+    if !cfg!(debug_assertions)
+        || std::env::var("MAYAB_OPEN_BROWSER").is_ok_and(|valor| valor == "0" || valor == "false")
+    {
+        return;
+    }
+
+    #[cfg(target_os = "macos")]
+    let resultado = Command::new("open").arg(url).spawn();
+    #[cfg(target_os = "windows")]
+    let resultado = Command::new("cmd").args(["/C", "start", "", url]).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let resultado = Command::new("xdg-open").arg(url).spawn();
+
+    if let Err(error) = resultado {
+        tracing::debug!(%error, %url, "no se pudo abrir el navegador automaticamente");
+    }
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -96,7 +115,9 @@ async fn main() -> anyhow::Result<()> {
         .parse()
         .context("puerto invalido")?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!(url = %format!("http://localhost:{}", cfg.port), "servidor iniciado");
+    let dashboard_url = format!("http://localhost:{}", cfg.port);
+    tracing::info!(url = %dashboard_url, "servidor iniciado");
+    abrir_dashboard_local(&dashboard_url);
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async {

@@ -273,6 +273,10 @@ cargo fetch --locked
 cargo run
 ```
 
+`cargo run` levanta el servidor en `http://localhost:8080` y abre el dashboard
+automáticamente en el navegador. Para arrancarlo sin abrir una ventana (por
+ejemplo, desde una terminal remota), usa `MAYAB_OPEN_BROWSER=0 cargo run`.
+
 Comprueba que el backend y los feeds estén disponibles:
 
 ```bash
