@@ -2735,7 +2735,7 @@ fn construir_modo_jurado(estado: &EstadoPublico) -> serde_json::Value {
             "scorecardCuantitativa": {
                 "exchangesPublicos": 10,
                 "pruebasRustLineaBaseVerificadas": 116,
-                "pruebasRustObjetivoArbolActual": 186,
+                "pruebasRustObjetivoArbolActual": 190,
                 "pruebasObjetivoVerificadas": false,
                 "semillasPareadasBacktest": 24,
                 "remuestrasBootstrap": 10000,
