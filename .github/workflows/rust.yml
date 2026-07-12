@@ -56,6 +56,9 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --all-targets --locked
 
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - name: Test isolated sandbox executor
         run: |
           cargo test --workspace --all-targets --locked --features testnet-execution
@@ -71,12 +74,19 @@ jobs:
         env:
           AUDITORIA_DB_PATH: "${{ runner.temp }}/mayab-ci.sqlite"
           DEMO_RENTABLE_INICIAL: "true"
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN || 'ci-smoke-token' }}
         run: |
           PORT=8080 \
           RUST_LOG=error \
-          target/release/mayab-arbitrage &
+          target/release/mayab-arbitrage > "$RUNNER_TEMP/mayab-smoke.log" 2>&1 &
           app_pid=$!
-          trap 'kill "$app_pid" 2>/dev/null || true' EXIT
+          trap 'kill "$app_pid" 2>/dev/null || true; tail -200 "$RUNNER_TEMP/mayab-smoke.log" || true' EXIT
+          sleep 1
+          if ! kill -0 "$app_pid" 2>/dev/null; then
+            echo "App murió al iniciar" >&2
+            tail -200 "$RUNNER_TEMP/mayab-smoke.log" || true
+            exit 1
+          fi
           for _ in $(seq 1 40); do
             if curl -fsS http://127.0.0.1:8080/healthz >/dev/null; then
               break

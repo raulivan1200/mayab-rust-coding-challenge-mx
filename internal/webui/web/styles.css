@@ -269,15 +269,16 @@ button {
 .dictionary-fab {
   position: fixed;
   left: max(18px, env(safe-area-inset-left));
-  top: calc(90vh - 114px);
-  top: calc(90dvh - 114px);
+  top: calc(90dvh - 160px);
   bottom: auto;
   z-index: 2147483010;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 9px;
+  width: 54px;
   min-height: 52px;
-  padding: 0 18px;
+  padding: 0;
   border: 1px solid color-mix(in srgb, var(--ink) 24%, transparent);
   border-radius: var(--r-pill);
   background: var(--yellow);
@@ -288,6 +289,9 @@ button {
   transition: transform 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
   isolation: isolate;
   overflow: hidden;
+}
+.dictionary-fab span {
+  display: none;
 }
 
 .dictionary-fab::before {
@@ -316,7 +320,6 @@ button {
 }
 .dictionary-fab:active img { filter: brightness(0) invert(1); }
 .tutorial-fab {
-  top: calc(90vh - 52px);
   top: calc(90dvh - 52px);
   background: var(--blue);
   color: #fff;
@@ -380,8 +383,6 @@ button {
 .dictionary-credits .ceja { color: var(--yellow); }
 
 @media (max-width: 640px) {
-  .dictionary-fab { width: 54px; padding: 0; justify-content: center; }
-  .dictionary-fab span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   .dictionary-panel { inset: 8px; width: auto; }
   .dictionary-header, .dictionary-body { padding-left: 16px; padding-right: 16px; }
   .dictionary-table th, .dictionary-table td { padding: 11px 9px; }
@@ -1400,9 +1401,8 @@ h2 {
   transition: box-shadow 400ms cubic-bezier(0.16, 1, 0.3, 1), border-color 400ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 .panel:hover, .ga-panel:hover {
-  border-color: var(--ink);
+  border-color: color-mix(in srgb, var(--ink) 18%, var(--line));
 }
-
 .metricas article {
   min-height: 84px;
   padding: 13px;
@@ -1491,7 +1491,7 @@ h2 {
   min-width: 0;
 }
 .panel:hover, .ga-panel:hover {
-  border-color: var(--ink);
+  border-color: color-mix(in srgb, var(--ink) 18%, var(--line));
 }
 
 .panel-titulo {
@@ -1830,7 +1830,7 @@ h2 {
   max-width: 100%;
   display: block;
   border: var(--border-card);
-  background: #f4f0e6;
+  background: var(--paper);
 }
 
 .mapa canvas {
@@ -7818,8 +7818,8 @@ a,
 
 @media (hover: hover) and (pointer: fine) {
   :is(.panel, .ga-panel, .metricas article, .exchange, .ruta, .landing-card):hover {
-    border-color: transparent;
-    background-color: color-mix(in srgb, var(--paper) 92%, var(--yellow));
+    border-color: color-mix(in srgb, var(--ink) 18%, var(--line));
+    background-color: color-mix(in srgb, var(--paper) 99%, var(--acento) 1%);
     box-shadow: none;
     transform: none;
   }
