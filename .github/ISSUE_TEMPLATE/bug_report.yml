@@ -1,0 +1,50 @@
+name: Bug report
+description: Report a reproducible defect in the safe simulation, API, or dashboard.
+title: "bug: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: Never include API keys, tokens, wallet credentials, or private market data.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [Market feeds, Arbitrage engine, GA or backtest, HTTP API, Dashboard, CI or deployment, Documentation]
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Include the exact command, endpoint, request body, and deterministic seed when applicable.
+      placeholder: "1. cargo run\n2. POST /api/demo ...\n3. Observe ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and evidence
+      description: Add sanitized logs, response JSON, or screenshots.
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: Commit or release
+      placeholder: "git rev-parse --short HEAD"
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed secrets and understand this project does not place real orders.
+          required: true

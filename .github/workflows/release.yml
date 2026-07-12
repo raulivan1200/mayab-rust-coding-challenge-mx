@@ -27,8 +27,20 @@ jobs:
       - run: cargo build -p mayab-arbitrage --release --locked
       - name: Package binary
         run: tar -C target/release -czf "${{ matrix.artifact }}.tar.gz" mayab-arbitrage
+      - name: Generate checksum
+        shell: bash
+        run: shasum -a 256 "${{ matrix.artifact }}.tar.gz" > "${{ matrix.artifact }}.tar.gz.sha256"
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: ${{ matrix.artifact }}.cdx.json
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}.tar.gz
+          path: |
+            ${{ matrix.artifact }}.tar.gz
+            ${{ matrix.artifact }}.tar.gz.sha256
+            ${{ matrix.artifact }}.cdx.json
           if-no-files-found: error
