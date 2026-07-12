@@ -1219,7 +1219,7 @@ impl Motor {
         let state = self.state.read().await;
         let costos = state.costos.clone();
         let precio_ref = precio_referencia(state.cotizaciones.values());
-        let mut cfg = state.ga.config.clone();
+        let cfg = state.ga.config;
 
         // Estrategias a comparar
         let estrategias = vec![
@@ -1229,7 +1229,6 @@ impl Motor {
                     tamano_poblacion: 10,
                     tasa_mutacion: 0.0,
                     tasa_cruce: 0.0,
-                    ..cfg.clone()
                 },
             ),
             (
@@ -1238,7 +1237,6 @@ impl Motor {
                     tamano_poblacion: 10,
                     tasa_mutacion: 0.0,
                     tasa_cruce: 0.0,
-                    ..cfg.clone()
                 },
             ),
             (
@@ -1247,7 +1245,6 @@ impl Motor {
                     tamano_poblacion: 10,
                     tasa_mutacion: 0.0,
                     tasa_cruce: 0.0,
-                    ..cfg.clone()
                 },
             ),
             (
@@ -1256,7 +1253,6 @@ impl Motor {
                     tamano_poblacion: 10,
                     tasa_mutacion: 0.15,
                     tasa_cruce: 0.72,
-                    ..cfg.clone()
                 },
             ),
             (
@@ -1265,7 +1261,6 @@ impl Motor {
                     tamano_poblacion: 10,
                     tasa_mutacion: 0.15,
                     tasa_cruce: 0.72,
-                    ..cfg.clone()
                 },
             ),
             (
@@ -1274,7 +1269,6 @@ impl Motor {
                     tamano_poblacion: 10,
                     tasa_mutacion: 0.15,
                     tasa_cruce: 0.72,
-                    ..cfg.clone()
                 },
             ),
             ("GA híbrido completo (Campeón)", cfg),
@@ -1283,14 +1277,13 @@ impl Motor {
         let semillas_holdout: Vec<u64> = (401..=424).collect();
         let mut resultados = Vec::new();
 
-        for (nombre, mut ga_cfg) in estrategias {
+        for (nombre, ga_cfg) in estrategias {
             let mut pnls = Vec::new();
             for &s in &semillas_holdout {
-                let mut replay = operaciones_sinteticas_ga(&costos, 24, precio_ref, s, Utc::now());
+                let replay = operaciones_sinteticas_ga(&costos, 24, precio_ref, s, Utc::now());
                 let mut ga = crate::ga::EstadoGa::default();
-                ga.config = ga_cfg.clone();
-                ga.evolucionar(&mut replay.operaciones[..], replay.fallos);
-                let ops = ga.estrategia();
+                ga.config = ga_cfg;
+                ga.evolucionar(&replay.operaciones[..], replay.fallos);
                 let pnl: f64 = replay
                     .operaciones
                     .iter()
