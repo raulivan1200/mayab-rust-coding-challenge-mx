@@ -801,6 +801,11 @@ button {
     display: grid;
   }
 
+  /* Separa el selector hamburguesa del contenido cuando el menú está cerrado. */
+  .tabs-nav:not(.mobile-open) + .tab-content {
+    margin-top: 20px;
+  }
+
   .tabs-nav .tab-btn {
     width: 100%;
     min-height: 46px;
@@ -1019,10 +1024,11 @@ h2 {
 }
 
 .estado-live {
-  min-width: 0;
+  min-width: 188px;
+  flex: 0 0 auto;
   height: 100%;
-  min-height: 44px;
-  padding: 0 14px;
+  min-height: 52px;
+  padding: 7px 14px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1036,9 +1042,34 @@ h2 {
   text-transform: uppercase;
 }
 
+.estado-live-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  line-height: 1;
+}
+
+.estado-live-copy strong,
+.estado-live-copy small {
+  display: block;
+  white-space: nowrap;
+}
+
+.estado-live-copy small {
+  font-family: var(--font-ui);
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: none;
+  opacity: 0.76;
+}
+
 .pulso {
+  display: block;
+  flex: 0 0 10px;
   width: 10px;
   height: 10px;
+  min-width: 10px;
+  min-height: 10px;
   border: 2px solid currentColor;
   border-radius: 50%;
   background: var(--ambar);
@@ -1056,6 +1087,17 @@ h2 {
 @keyframes respirar {
   50% {
     transform: scale(1.25);
+  }
+}
+
+@media (max-width: 640px) {
+  .estado-live {
+    min-width: 168px;
+    padding-inline: 12px;
+  }
+
+  .estado-live-copy strong {
+    font-size: 0.7rem;
   }
 }
 
@@ -5869,6 +5911,14 @@ body::after {
   --button-hover-fill: var(--green);
 }
 
+/* La pestaña seleccionada conserva el mismo color que muestra al hacer hover. */
+.tabs-nav .tab-btn.activo {
+  --button-rest-bg: var(--button-hover-fill);
+  background-color: var(--button-hover-fill);
+  border-color: var(--button-hover-fill);
+  color: var(--button-hover-ink);
+}
+
 .demo-actions .btn-secundario:nth-child(6) {
   --button-hover-fill: var(--orange);
   --button-hover-ink: #11110f;
@@ -6302,10 +6352,11 @@ strong.metric-value {
   max-width: 100%;
   display: flex;
   align-items: flex-end;
+  flex-wrap: wrap;
   gap: 0.18em;
   font-size: var(--metric-font-size, clamp(2rem, 16cqi, 5.25rem));
   line-height: 0.9;
-  white-space: nowrap;
+  white-space: normal;
   word-break: normal;
   overflow: visible;
 }
@@ -6327,6 +6378,27 @@ strong.metric-value {
   letter-spacing: 0.06em;
   line-height: 1;
   color: inherit;
+}
+
+
+/* En tarjetas estrechas la unidad baja completa a un segundo renglón. */
+@container (max-width: 230px) {
+  .metric-value .metric-unit {
+    flex-basis: 100%;
+    margin: 0.16rem 0 0;
+  }
+}
+
+/* Los accesos de ayuda deben permanecer dentro del viewport también en prod. */
+.dictionary-fab {
+  left: max(18px, env(safe-area-inset-left));
+  top: auto;
+  bottom: max(18px, env(safe-area-inset-bottom));
+}
+
+.tutorial-fab {
+  top: auto;
+  bottom: calc(max(18px, env(safe-area-inset-bottom)) + 62px);
 }
 
 .reveal-card {
@@ -7192,8 +7264,8 @@ a,
 
   .llm-lista li:hover { padding-left: 0; }
 
-  /* Tinta por area. El gradiente nace con altura cero en el borde inferior y
-     sube con una curva elastica corta, como una impresion sobre papel. */
+  /* Tinta sólida por área. El color sube desde el borde inferior sin efectos
+     de cristal, transparencias ni aclarados. */
   .tab-btn[data-tab="tab-overview"],
   #tab-overview :is(.btn-link, .btn-primario, .btn-secundario, .preset-btn, .switch-btn) {
     --section-button-fill: var(--yellow);
@@ -7224,6 +7296,21 @@ a,
     --section-button-ink: #ffffff;
   }
 
+  #tab-overview .judge-panel .btn-link:nth-of-type(1) {
+    --section-button-fill: var(--blue);
+    --section-button-ink: #ffffff;
+  }
+
+  #tab-overview .judge-panel .btn-link:nth-of-type(2) {
+    --section-button-fill: var(--orange);
+    --section-button-ink: #111111;
+  }
+
+  #tab-overview .benchmark-panel .btn-link {
+    --section-button-fill: var(--purple);
+    --section-button-ink: #111111;
+  }
+
   :is(
     .tab-btn[data-tab],
     .tab-content .btn-link,
@@ -7252,12 +7339,7 @@ a,
     z-index: -1;
     inset: -1px;
     pointer-events: none;
-    background:
-      linear-gradient(
-        to top,
-        var(--section-button-fill, var(--blue)) 0 76%,
-        color-mix(in srgb, var(--section-button-fill, var(--blue)) 76%, white) 100%
-      );
+    background: var(--section-button-fill, var(--blue));
     transform: scaleY(0);
     transform-origin: center bottom;
     transition: transform 260ms cubic-bezier(0.4, 0, 1, 1);
@@ -7668,5 +7750,41 @@ a,
   .heatmap-panel * {
     scroll-behavior: auto;
     transition: none !important;
+  }
+}
+
+/* Interacción unificada: las superficies no ganan un halo o borde blanco al
+   pasar el cursor. Los botones conservan la tinta sólida de su sección y todas
+   las tarjetas usan el mismo cambio discreto de fondo. Esta regla se mantiene
+   al final para cerrar la cascada histórica del dashboard. */
+[data-theme="dark"] {
+  --border-card: 1px solid transparent;
+}
+
+:is(.panel, .ga-panel, .metricas article, .exchange, .ruta, .landing-card) {
+  transition:
+    background-color 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    color 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  :is(.panel, .ga-panel, .metricas article, .exchange, .ruta, .landing-card):hover {
+    border-color: transparent;
+    background-color: color-mix(in srgb, var(--paper) 92%, var(--yellow));
+    box-shadow: none;
+    transform: none;
+  }
+
+  :is(
+    .tab-btn[data-tab],
+    .tab-content .btn-link,
+    .tab-content .btn-primario,
+    .tab-content .btn-secundario,
+    .tab-content .preset-btn,
+    .tab-content .switch-btn
+  ):not(:disabled):is(:hover, :focus-visible) {
+    border-color: transparent;
+    box-shadow: none;
   }
 }

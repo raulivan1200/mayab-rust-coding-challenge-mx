@@ -3,6 +3,7 @@ let tieneCambios = false;
 let oportunidadSeleccionadaId = null;
 const gaHistorial = [];
 let gaAutoEnCurso = false;
+let gaAutoSolicitada = false;
 const ID_PESTANA = `tab-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const DEBUG_ACTIVO =
   new URLSearchParams(location.search).has("debug") ||
@@ -21,6 +22,29 @@ let preflightCache = null;
 let preflightEnCurso = false;
 let wsReconnectMs = 600;
 const WS_RECONNECT_MAX = 15_000;
+
+// Fuente única para el copy editorial de la interfaz. Los estados que cambian
+// en runtime también salen de aquí para evitar variantes dispersas.
+const UI_COPY = Object.freeze({
+  landingKicker: "10 exchanges · 90 rutas · inteligencia evolutiva",
+  landingTitle: "Las oportunidades duran milisegundos. Mayab fue construido para no parpadear.",
+  landingBody: "Mayab escucha el mercado, compara cada ruta y obliga a cada oportunidad a sobrevivir costos, liquidez, latencia, inventario y riesgo antes de decidir.",
+  landingPrimaryCta: "Ver a Mayab decidir",
+  landingSecondaryCta: "Inspeccionar la evidencia completa",
+  proofMarket: "10 exchanges en tiempo real",
+  proofCosts: "Cada costo cuenta",
+  proofSafety: "Capital real: cero",
+  socket: Object.freeze({
+    connecting: "Conectando mercado",
+    connected: "Canal conectado",
+    realtime: "Tiempo real",
+    reconnecting: "Recuperando señal",
+    offline: "Sin conexión",
+    stale: "Señal pausada",
+    waiting: "esperando la primera señal",
+    now: "datos actualizados ahora",
+  }),
+});
 
 const metricasPrevias = {
   pnl: 0,
@@ -50,6 +74,15 @@ const dineroMetrica = new Intl.NumberFormat("es-MX", {
 });
 const numero = new Intl.NumberFormat("es-MX", { maximumFractionDigits: 2 });
 const btc = new Intl.NumberFormat("es-MX", { maximumFractionDigits: 6 });
+
+function aplicarCopyEditorial() {
+  document.querySelectorAll("[data-ui-copy]").forEach((el) => {
+    const clave = el.dataset.uiCopy;
+    if (typeof UI_COPY[clave] === "string") el.textContent = UI_COPY[clave];
+  });
+}
+
+aplicarCopyEditorial();
 
 function mostrarFeedback(el, mensaje, ok = true) {
   if (!el) return;
@@ -305,6 +338,7 @@ iniciarDemo();
 iniciarHeaderColapsable();
 iniciarTutorial();
 setInterval(verificarConexion, 900);
+setInterval(actualizarTiempoSocket, 1000);
 
 function loopAnimacion(timestamp) {
   if (tieneCambios && ultimoEstado) {
@@ -330,10 +364,10 @@ requestAnimationFrame(loopAnimacion);
 async function conectar() {
   const protocolo = location.protocol === "https:" ? "wss" : "ws";
   const socket = new WebSocket(`${protocolo}://${location.host}/tiempo-real`);
-  cambiarSocket("conectando");
+  cambiarSocket(UI_COPY.socket.connecting);
 
   socket.addEventListener("open", () => {
-    cambiarSocket("dashboard conectado", true);
+    cambiarSocket(UI_COPY.socket.connected, true);
     wsReiniciarBackoff();
   });
 
@@ -349,8 +383,9 @@ async function conectar() {
       wsReiniciarBackoff();
       ultimoEstado = datos;
       estado.ultimoMensaje = Date.now();
-      cambiarSocket("en vivo", true);
+      cambiarSocket(UI_COPY.socket.realtime, true);
       tieneCambios = true;
+      asegurarGaVisible(datos);
       detectarNotificaciones(datos);
     } catch (err) {
       debugError("Error parseando WebSocket:", err);
@@ -358,7 +393,7 @@ async function conectar() {
   });
 
   socket.addEventListener("close", () => {
-    cambiarSocket("reconectando");
+    cambiarSocket(UI_COPY.socket.reconnecting);
     debugWarn("websocket cerrado; reconectando en %dms", wsReconnectMs);
     const ms = wsReconnectMs;
     wsReconnectMs = Math.min(Math.round(wsReconnectMs * 1.8), WS_RECONNECT_MAX);
@@ -366,9 +401,19 @@ async function conectar() {
   });
 
   socket.addEventListener("error", (err) => {
-    cambiarSocket("sin enlace", false);
+    cambiarSocket(UI_COPY.socket.offline, false);
     debugError("error de websocket", err);
   });
+}
+
+function asegurarGaVisible(datos) {
+  if (gaAutoSolicitada || gaAutoEnCurso || !datos?.genetico) return;
+  gaAutoSolicitada = true;
+  // Una evolución por carga de página: funciona aunque la instancia de Cloud
+  // Run lleve horas encendida y no exige descubrir ningún control manual.
+  window.setTimeout(() => {
+    evolucionarGa().catch((err) => debugWarn("No se pudo preparar GA automáticamente", err));
+  }, 350);
 }
 
 function wsReiniciarBackoff() {
@@ -382,7 +427,18 @@ const estado = {
 function verificarConexion() {
   if (!estado.ultimoMensaje) return;
   const viejo = Date.now() - estado.ultimoMensaje > 2400;
-  if (viejo) cambiarSocket("sin datos", false);
+  if (viejo) cambiarSocket(UI_COPY.socket.stale, false);
+}
+
+function actualizarTiempoSocket() {
+  const el = $("estadoSocketTiempo");
+  if (!el) return;
+  if (!estado.ultimoMensaje) {
+    el.textContent = UI_COPY.socket.waiting;
+    return;
+  }
+  const segundos = Math.max(0, Math.floor((Date.now() - estado.ultimoMensaje) / 1000));
+  el.textContent = segundos < 2 ? UI_COPY.socket.now : `última señal hace ${segundos} s`;
 }
 
 function cambiarSocket(texto, ok) {
@@ -390,7 +446,8 @@ function cambiarSocket(texto, ok) {
   if (!el) return;
   el.classList.toggle("ok", ok === true);
   el.classList.toggle("error", ok === false);
-  el.lastChild.nodeValue = ` ${texto}`;
+  setText("estadoSocketTexto", texto);
+  actualizarTiempoSocket();
   window.dispatchEvent(new CustomEvent("mayab:socket", { detail: { texto, ok } }));
 }
 
@@ -1737,9 +1794,12 @@ function renderPipeline(pipeline) {
 function iniciarBacktest() {
   const btn = $("btnBacktest");
   if (!btn) return;
+  let cargaEnCurso = false;
   const hacerBacktest = async () => {
+    if (cargaEnCurso) return;
+    cargaEnCurso = true;
     btn.disabled = true;
-    btn.textContent = "Ejecutando...";
+    btn.textContent = "Actualizando...";
     try {
       const res = await fetch("/api/backtest");
       if (res.ok) {
@@ -1748,30 +1808,39 @@ function iniciarBacktest() {
     } catch (e) {
       debugError("Error ejecutando backtest", e);
     } finally {
+      cargaEnCurso = false;
       btn.disabled = false;
-      btn.textContent = "Ejecutar";
+      btn.textContent = "Actualizar";
     }
   };
   btn.onclick = hacerBacktest;
+  // La evidencia aparece desde la primera visita; el botón queda únicamente
+  // para repetir la corrida bajo demanda.
+  hacerBacktest();
 }
 
 function iniciarResearchLab() {
   const btn = $("btnLabSweep");
   if (!btn) return;
+  let cargaEnCurso = false;
   const hacerSweep = async () => {
+    if (cargaEnCurso) return;
+    cargaEnCurso = true;
     btn.disabled = true;
-    btn.textContent = "Comparando...";
+    btn.textContent = "Actualizando...";
     try {
       const res = await fetch("/api/lab/sweep");
       if (res.ok) renderLabSweep(await res.json());
     } catch (e) {
       debugError("Error ejecutando research lab", e);
     } finally {
+      cargaEnCurso = false;
       btn.disabled = false;
-      btn.textContent = "Comparar";
+      btn.textContent = "Actualizar";
     }
   };
   btn.onclick = hacerSweep;
+  hacerSweep();
 }
 
 function renderBacktest(datos) {
@@ -1799,10 +1868,12 @@ function renderBacktest(datos) {
     const optimizada = validacion.optimizada || {};
     const delta = Number(validacion.deltaPnlMedianoUsd || 0);
     evidencia.classList.toggle("evidence-positive", delta >= 0);
+    const holdout = datos?.validacionFueraMuestra || {};
     evidencia.innerHTML = `
-      <strong>${escapeHtml(validacion.ganadorMediana === "optimizada" ? "El campeón GA gana por mediana" : "El baseline gana por mediana")}</strong>
-      <span>${numero.format(base.corridas || 0)} semillas · Δ mediano ${dinero.format(delta)} · GA positivo en ${numero.format(optimizada.corridasPnlPositivo || 0)}/${numero.format(optimizada.corridas || 0)} corridas</span>
-      <small>${escapeHtml(validacion.lectura || "Comparación reproducible multisemilla.")}</small>
+      <strong>${escapeHtml(holdout.gaGana ? "El campeón GA gana fuera de muestra" : "El baseline gana fuera de muestra")}</strong>
+      <span>${numero.format((holdout.semillasHoldoutNoVistas || []).length)} semillas holdout · campeón congelado · Δ GA ${dinero.format(holdout.deltaGaVsMejorBaselineMedianoUsd || 0)}</span>
+      <small>${escapeHtml(holdout.lectura || validacion.lectura || "Comparación reproducible multisemilla.")}</small>
+      <small>Control: ${numero.format(base.corridas || 0)} semillas · Δ mediano previo ${dinero.format(delta)} · GA positivo en ${numero.format(optimizada.corridasPnlPositivo || 0)}/${numero.format(optimizada.corridas || 0)} corridas.</small>
     `;
   }
   aplicarFiltroTabla(tbody.closest("table"));
@@ -3044,7 +3115,7 @@ function dibujarGa(g) {
     ctx.fillStyle = temaOscuro ? "#f4f0e6" : "#141414";
     ctx.font = "900 13px Inter, sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText("Esperando evaluación de Pareto", w / 2, h / 2);
+    ctx.fillText("Preparando evaluación de Pareto…", w / 2, h / 2);
     return;
   }
 

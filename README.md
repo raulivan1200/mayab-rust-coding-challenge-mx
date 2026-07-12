@@ -2,6 +2,19 @@
 
 [Aplicación pública en Cloud Run](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app)
 
+![Tests](https://img.shields.io/badge/tests-72%20passing-16a34a)
+![Rust](https://img.shields.io/badge/Rust-2021-b7410e)
+![Modo](https://img.shields.io/badge/ejecuci%C3%B3n-100%25%20simulada-2563eb)
+
+| Criterio de evaluación | Evidencia verificable | Acceso directo |
+|---|---|---|
+| Parámetros y decisión | Costos, umbrales, score y códigos estables por ruta | [Preflight](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app/api/preflight) |
+| Escenarios adversos | Fill parcial, fallo de pierna 2, unwind y circuit breaker | `POST /api/demo/caos` |
+| Wallets y rebalanceo | Inventario prefondado, costos y trazas auditables | `POST /api/demo/final` |
+| Interfaz | Dashboard responsive con modo, frescura y explicación | [Abrir dashboard](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app) |
+| Rigor cuantitativo | Campeón congelado y holdout de 24 semillas contra 3 baselines | [`GET /api/backtest`](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app/api/backtest) |
+| Reproducibilidad | 72 tests, replay determinista, exports y huella de corrida | [`GET /api/paquete-evaluacion`](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app/api/paquete-evaluacion) |
+
 Mayab Arbitraje BTC es un sistema inteligente de arbitraje de Bitcoin en tiempo real con optimización evolutiva mediante **algoritmo genético single-objetivo con metaheurísticas híbridas** (elitismo, recocido simulado, evolución diferencial, reinicio adaptativo). Monitorea libros de órdenes de criptomonedas en 10 exchanges simultáneamente, detecta oportunidades de arbitraje tradicional y triangular, simula ejecuciones con costos realistas, y **evoluciona automáticamente su estrategia de selección** usando un motor genético que optimiza pesos, umbrales y tolerancias.
 
 El sistema corre como un solo binario Rust: conexiones WebSocket concurrentes sobre Tokio, motor de decisión, simulador de carteras, optimización genética ligera, API Axum e interfaz web servida por el mismo proceso. Esa arquitectura reduce latencia operativa, simplifica el despliegue y permite demostrar el sistema en vivo sin una cadena pesada de servicios.

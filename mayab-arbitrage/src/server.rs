@@ -108,6 +108,10 @@ pub fn router(motor: Arc<Motor>, token_admin: Option<String>) -> Router {
             contar_peticiones,
         ))
         .layer(CompressionLayer::new())
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache, must-revalidate"),
+        ))
         .layer(SetResponseHeaderLayer::if_not_present(
             header::X_CONTENT_TYPE_OPTIONS,
             HeaderValue::from_static("nosniff"),
@@ -2593,6 +2597,7 @@ fn backtest_reproducible(estado: &EstadoPublico) -> serde_json::Value {
     let semillas = (101_u64..=124).collect::<Vec<_>>();
     let validacion_base = resumen_multisemilla(cfg, umbral_base, max_btc_base, &semillas);
     let validacion_ga = resumen_multisemilla(cfg, umbral_ga, max_btc_ga, &semillas);
+    let validacion_fuera_muestra = validacion_fuera_muestra(cfg, umbral_ga, max_btc_ga, fuente_ga);
     let base_mediana = validacion_base["pnlMedianoUsd"].as_f64().unwrap_or(0.0);
     let ga_mediana = validacion_ga["pnlMedianoUsd"].as_f64().unwrap_or(0.0);
     json!({
@@ -2619,6 +2624,7 @@ fn backtest_reproducible(estado: &EstadoPublico) -> serde_json::Value {
             "ganadorMediana": if ga_mediana >= base_mediana { "optimizada" } else { "base" },
             "lectura": "La mediana de 24 corridas reduce la dependencia de una semilla favorable; el resultado se reporta aunque el GA no gane."
         },
+        "validacionFueraMuestra": validacion_fuera_muestra,
         "comparacion": {
             "deltaPnlUsd": delta_pnl,
             "deltaDrawdownUsd": delta_drawdown,
@@ -2626,6 +2632,71 @@ fn backtest_reproducible(estado: &EstadoPublico) -> serde_json::Value {
             "criterio": "Mismo seed y costos vigentes; baseline estatico predefinido contra el campeon GA publicado."
         },
         "nota": "Replay Monte Carlo sintetico y deterministico sobre BTC con costos actuales, cinco exchanges, dispersion entre libros y movimiento adverso posterior a la decision; no demuestra rentabilidad real."
+    })
+}
+
+/// Holdout cronologico y reproducible. El campeón publicado se congela antes
+/// de tocar las semillas 401..424; este reporte no reajusta ningún parámetro.
+/// Las semillas 301..312 documentan la partición de calibración, pero no se
+/// usan para escoger retrospectivamente al ganador mostrado.
+fn validacion_fuera_muestra(
+    cfg: &MapaCostos,
+    umbral_ga: f64,
+    max_btc_ga: f64,
+    fuente_ga: &str,
+) -> serde_json::Value {
+    let calibracion = (301_u64..=312).collect::<Vec<_>>();
+    let holdout = (401_u64..=424).collect::<Vec<_>>();
+    let estrategias = [
+        ("campeon_ga_congelado", umbral_ga, max_btc_ga),
+        ("fija_conservadora", 1.60, 0.08),
+        ("fija_balanceada", 0.65, 0.18),
+        (
+            "solo_spread_neto",
+            cfg.min_diferencial_neto_bps,
+            cfg.max_operacion_btc,
+        ),
+    ];
+    let resultados = estrategias
+        .into_iter()
+        .map(|(nombre, umbral, max_btc)| {
+            json!({
+                "estrategia": nombre,
+                "parametros": { "umbralBps": umbral, "maxOperacionBtc": max_btc },
+                "holdout": resumen_multisemilla(cfg, umbral, max_btc, &holdout),
+            })
+        })
+        .collect::<Vec<_>>();
+    let ga_mediana = resultados[0]["holdout"]["pnlMedianoUsd"]
+        .as_f64()
+        .unwrap_or(0.0);
+    let (ganador, mejor_mediana) = resultados
+        .iter()
+        .map(|r| {
+            (
+                r["estrategia"].as_str().unwrap_or("desconocida"),
+                r["holdout"]["pnlMedianoUsd"].as_f64().unwrap_or(0.0),
+            )
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .unwrap_or(("sin_ganador", 0.0));
+
+    json!({
+        "metodo": "holdout_cronologico_sin_reentrenamiento",
+        "fuenteCampeon": fuente_ga,
+        "campeonCongelado": true,
+        "semillasCalibracion": calibracion,
+        "semillasHoldoutNoVistas": holdout,
+        "resultados": resultados,
+        "ganador": ganador,
+        "gaGana": ganador == "campeon_ga_congelado",
+        "deltaGaVsMejorBaselineMedianoUsd": ga_mediana - if ganador == "campeon_ga_congelado" { resultados.iter().skip(1).map(|r| r["holdout"]["pnlMedianoUsd"].as_f64().unwrap_or(0.0)).max_by(f64::total_cmp).unwrap_or(0.0) } else { mejor_mediana },
+        "lectura": if ganador == "campeon_ga_congelado" {
+            "El campeón congelado supera los baselines en la mediana del holdout."
+        } else {
+            "El campeón congelado NO supera al mejor baseline en este holdout; la derrota se conserva como evidencia contra cherry-picking."
+        },
+        "limitacion": "Replay Monte Carlo sintético: valida generalización interna y reproducibilidad, no rentabilidad sobre mercado real."
     })
 }
 
@@ -3054,6 +3125,22 @@ mod tests {
             Some("base" | "optimizada")
         ));
         assert_eq!(backtest["validacionMultisemilla"]["base"]["corridas"], 24);
+        assert_eq!(
+            backtest["validacionFueraMuestra"]["metodo"],
+            "holdout_cronologico_sin_reentrenamiento"
+        );
+        assert_eq!(
+            backtest["validacionFueraMuestra"]["resultados"]
+                .as_array()
+                .map(Vec::len),
+            Some(4)
+        );
+        assert_eq!(
+            backtest["validacionFueraMuestra"]["semillasHoldoutNoVistas"]
+                .as_array()
+                .map(Vec::len),
+            Some(24)
+        );
 
         assert_eq!(lab["tipo"], "research_lab_sweep");
         assert_eq!(lab["resultados"].as_array().map(Vec::len), Some(4));

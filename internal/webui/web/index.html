@@ -26,7 +26,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="/styles.css?v=20260711-responsive-dashboard" />
+    <link rel="stylesheet" href="/styles.css?v=20260711-live-controls" />
   </head>
   <body>
     <noscript>
@@ -44,22 +44,20 @@
 
         <div id="landing-top" class="landing-hero">
           <div class="landing-copy reveal-card">
-            <p class="landing-kicker">Mercado real · ejecución simulada · evidencia auditable</p>
-            <h1>Arbitraje BTC que no te pide creer: te deja comprobar.</h1>
-            <p>
-              Mayab convierte feeds públicos de múltiples exchanges en decisiones explicables. Cada oportunidad muestra costos, liquidez, latencia, inventario y riesgo antes de simular una ejecución. La demo reproducible permite evaluar el flujo completo sin depender de que el mercado coopere.
-            </p>
+            <p class="landing-kicker" data-ui-copy="landingKicker">10 exchanges · 90 rutas · inteligencia evolutiva</p>
+            <h1 data-ui-copy="landingTitle">Las oportunidades duran milisegundos. Mayab fue construido para no parpadear.</h1>
+            <p data-ui-copy="landingBody">Mayab escucha el mercado, compara cada ruta y obliga a cada oportunidad a sobrevivir costos, liquidez, latencia, inventario y riesgo antes de decidir.</p>
             <div class="landing-actions">
               <a class="landing-cta" href="#dashboard">
-                Explorar demo en vivo
+                <span data-ui-copy="landingPrimaryCta">Ver a Mayab decidir</span>
                 <span class="material-icon material-icon-arrow" aria-hidden="true"></span>
               </a>
-              <a class="landing-cta landing-cta-secondary" href="/api/paquete-evaluacion" target="_blank" rel="noopener" title="Abre el reporte JSON con score técnico, métricas, auditoría y cobertura de evaluación">Abrir reporte técnico completo</a>
+              <a class="landing-cta landing-cta-secondary" href="/api/paquete-evaluacion" target="_blank" rel="noopener" title="Abre el reporte JSON con score técnico, métricas, auditoría y cobertura de evaluación" data-ui-copy="landingSecondaryCta">Inspeccionar la evidencia completa</a>
             </div>
             <div class="landing-proof" aria-label="Principios de la demo">
-              <span><strong>01</strong> Datos públicos en vivo</span>
-              <span><strong>02</strong> Costos incluidos</span>
-              <span><strong>03</strong> Sin dinero real</span>
+              <span><strong>01</strong> <span data-ui-copy="proofMarket">10 exchanges en tiempo real</span></span>
+              <span><strong>02</strong> <span data-ui-copy="proofCosts">Cada costo cuenta</span></span>
+              <span><strong>03</strong> <span data-ui-copy="proofSafety">Capital real: cero</span></span>
             </div>
           </div>
 
@@ -156,9 +154,12 @@
               <span class="theme-icon icon-sun" aria-hidden="true"></span>
               <span class="theme-icon icon-moon" aria-hidden="true"></span>
             </button>
-            <div class="estado-live" id="estadoSocket">
+            <div class="estado-live" id="estadoSocket" role="status" aria-live="polite">
               <span class="pulso"></span>
-              conectando
+              <span class="estado-live-copy">
+                <strong id="estadoSocketTexto">CONECTANDO MERCADO</strong>
+                <small id="estadoSocketTiempo">esperando la primera señal</small>
+              </span>
             </div>
           </div>
         </div>
@@ -804,9 +805,9 @@
             <p class="ceja">Replay</p>
             <h2>Backtest que se puede repetir</h2>
           </div>
-          <button id="btnBacktest" class="btn-primario btn-inline btc-icon-button">Ejecutar</button>
+          <button id="btnBacktest" class="btn-primario btn-inline btc-icon-button">Cargando…</button>
         </div>
-        <p class="panel-ayuda">Corre el mismo set sintético con estrategia base vs estrategia optimizada para comparar PnL, drawdown, win rate y spread.</p>
+        <p class="panel-ayuda">Congela el campeón y lo evalúa en un holdout no visto contra estrategias fijas conservadora, balanceada y solo-spread. Si pierde, el resultado también se muestra.</p>
         <div class="tabla-scroll">
           <table>
             <thead>
@@ -834,7 +835,7 @@
             <p class="ceja">Research Lab</p>
             <h2>Sweep de presets</h2>
           </div>
-          <button id="btnLabSweep" class="btn-primario btn-inline">Comparar</button>
+          <button id="btnLabSweep" class="btn-primario btn-inline">Cargando…</button>
         </div>
         <p id="labLectura" class="panel-ayuda">Compara Conservador, Balanceado, Agresivo y GA Edge sobre el mismo replay determinístico. La comparación usa las mismas condiciones para todos.</p>
         <div class="tabla-scroll">
@@ -1093,6 +1094,6 @@
     <div id="paper-texture-overlay" aria-hidden="true"></div>
     <script src="/favicon.js?v=20260710-svg-profit" type="module"></script>
     <script src="/shader.js?v=20260710-grid-perf" type="module"></script>
-    <script src="/app.js?v=20260711-responsive-dashboard" type="module"></script>
+    <script src="/app.js?v=20260711-auto-evidence" type="module"></script>
   </body>
 </html>
