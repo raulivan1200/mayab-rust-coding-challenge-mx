@@ -11,10 +11,8 @@
 /tmp
 /dist
 /data
-/docs
 /benches
 /tests
-/scripts
 *.aux
 *.log
 *.out
