@@ -202,7 +202,7 @@ jobs:
         run: |
           set -euo pipefail
           for _ in $(seq 1 30); do
-            if curl -fsS "${BASE_URL}/healthz" | grep -q '"ok":true'; then
+            if curl -fsS "${BASE_URL}/api/healthz" | grep -q '"ok":true'; then
               echo "healthz OK"
               exit 0
             fi
