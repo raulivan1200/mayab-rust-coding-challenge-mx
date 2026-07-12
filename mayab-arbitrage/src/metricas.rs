@@ -164,12 +164,44 @@ impl Metricas {
                 u8::from(p.activa)
             ));
         }
+
+        // Diagnostico por feed con cardinalidad acotada: exchange y par salen
+        // del catalogo configurado, nunca de payloads o errores arbitrarios.
+        // Estos contadores hacen visibles los falsos positivos evitados por
+        // gaps/checksums y permiten medir MTTR/staleness durante una demo.
+        out.push_str("# HELP mayab_feed_connected Conexion utilizable del feed.\n# TYPE mayab_feed_connected gauge\n");
+        out.push_str("# HELP mayab_feed_latency_ms Latencia EWMA observada por feed.\n# TYPE mayab_feed_latency_ms gauge\n");
+        out.push_str("# HELP mayab_feed_invalidated_ms Tiempo que el libro lleva invalidado.\n# TYPE mayab_feed_invalidated_ms gauge\n");
+        out.push_str("# HELP mayab_feed_resyncs_total Resincronizaciones acumuladas del libro.\n# TYPE mayab_feed_resyncs_total counter\n");
+        out.push_str("# HELP mayab_feed_sequence_gaps_total Gaps de secuencia detectados.\n# TYPE mayab_feed_sequence_gaps_total counter\n");
+        out.push_str("# HELP mayab_feed_checksum_failures_total Checksums invalidos detectados.\n# TYPE mayab_feed_checksum_failures_total counter\n");
+        for quote in &estado.cotizaciones {
+            let exchange = prometheus_label(&quote.exchange);
+            let par = prometheus_label(&quote.par);
+            let labels = format!("exchange=\"{exchange}\",par=\"{par}\"");
+            out.push_str(&format!(
+                "mayab_feed_connected{{{labels}}} {}\nmayab_feed_latency_ms{{{labels}}} {}\nmayab_feed_invalidated_ms{{{labels}}} {}\nmayab_feed_resyncs_total{{{labels}}} {}\nmayab_feed_sequence_gaps_total{{{labels}}} {}\nmayab_feed_checksum_failures_total{{{labels}}} {}\n",
+                u8::from(quote.conectado),
+                quote.latencia_ms,
+                quote.invalidated_ms,
+                quote.resyncs,
+                quote.sequence_gaps,
+                quote.checksum_failures,
+            ));
+        }
         out
     }
 
     pub fn ahora() -> Instant {
         Instant::now()
     }
+}
+
+fn prometheus_label(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
 }
 
 #[cfg(test)]

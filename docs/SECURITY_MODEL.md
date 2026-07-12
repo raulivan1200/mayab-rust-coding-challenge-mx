@@ -9,6 +9,7 @@ Mayab consumes public market data and simulates trades. It has no exchange crede
 - Exchange frames and HTTP clients are untrusted input.
 - Read endpoints expose public demo state; mutable endpoints change shared simulated state only.
 - `ADMIN_TOKEN`, when configured, protects mutations through `Authorization: Bearer` or `X-Admin-Token`. Never put it in a URL or commit it.
+- `MAYAB_JUDGE_MODE=true` is an explicit evaluation-only exception: it makes only `/api/demo/reset`, `/api/demo/final`, and `/api/demo/caos` public. These deterministic routes mutate simulated in-memory state and remain rate-limited; configuration, exchange toggles, arbitrary wallet/risk changes, GA controls, capture, and MCP mutations still require `ADMIN_TOKEN`.
 - Browser Origin checks are defense in depth, not authentication.
 - `/metrics` can reveal operational detail and should be ingress-restricted in production.
 

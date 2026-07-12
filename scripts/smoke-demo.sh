@@ -219,7 +219,7 @@ rubrica = paquete.get("rubricaOficialComite") or []
 if len(rubrica) != 5:
     errors.append("/api/paquete-evaluacion no incluye 5 criterios oficiales")
 campos_rubrica = {
-    "criterio", "pesoPct", "puntaje", "preguntaComite",
+    "criterio", "pesoPct", "estado", "preguntaComite",
     "evidenciaActual", "siguienteMovimientoDemo",
 }
 for item in rubrica:
@@ -314,7 +314,7 @@ print(f"- readiness inicial: {readiness.get('status')} ({readiness.get('passed')
 print(f"- operaciones: {metricas.get('operaciones')} | PnL: {metricas.get('utilidadAcumuladaUsd'):.2f} USD")
 print(f"- GA generacion: {genetico.get('generacion')} | activo: {genetico.get('activo')}")
 print(f"- rebalanceos: {metricas.get('rebalanceosTotales')}")
-print(f"- paquete: {paquete.get('puntajeTotal'):.2f} | huella: {paquete.get('huellaAuditoria')}")
+print(f"- paquete verificable | huella: {paquete.get('huellaAuditoria')}")
 print(f"- lab ganador: {lab.get('ganador')} | export CSV bytes: {len(export_csv)}")
 print(f"- estado final: {readiness_final.get('status')} ({readiness_final.get('passed')}/{readiness_final.get('total')})")
 PY

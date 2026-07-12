@@ -113,6 +113,20 @@ impl AuditoriaEnCola {
             }
         }
     }
+
+    /// Espera de forma acotada a que el worker procese las escrituras ya
+    /// aceptadas. Es útil antes de sellar exports o apagar una demo; nunca
+    /// bloquea indefinidamente si el backend está degradado.
+    pub fn esperar_drenado(&self, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        while self.pendientes.load(Ordering::Acquire) > 0 {
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        true
+    }
 }
 
 impl Auditoria for AuditoriaEnCola {
@@ -149,5 +163,171 @@ impl Auditoria for AuditoriaEnCola {
     }
     fn resumen_agregado(&self) -> serde_json::Value {
         self.backend.resumen_agregado()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            mpsc, Condvar, Mutex,
+        },
+        thread,
+        time::{Duration, Instant},
+    };
+
+    use super::*;
+
+    struct BackendControlado {
+        entered: mpsc::SyncSender<()>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+        writes: AtomicUsize,
+        fail: AtomicBool,
+    }
+
+    impl BackendControlado {
+        fn wait_if_blocked(&self) -> Result<()> {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            let _ = self.entered.try_send(());
+            let (lock, wake) = &*self.release;
+            let mut released = lock.lock().expect("release lock poisoned");
+            while !*released {
+                released = wake.wait(released).expect("release wait poisoned");
+            }
+            if self.fail.load(Ordering::SeqCst) {
+                Err(anyhow!("backend failure fixture"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl Auditoria for BackendControlado {
+        fn registrar_operacion(&self, _: &Operacion) -> Result<()> {
+            self.wait_if_blocked()
+        }
+        fn registrar_evento(&self, _: &EventoEjecucion) -> Result<()> {
+            self.wait_if_blocked()
+        }
+        fn registrar_rebalanceo(&self, _: &Rebalanceo) -> Result<()> {
+            self.wait_if_blocked()
+        }
+        fn registrar_oportunidades(&self, _: &[Oportunidad]) -> Result<()> {
+            self.wait_if_blocked()
+        }
+        fn registrar_auditorias(&self, _: &[AuditoriaDecision]) -> Result<()> {
+            self.wait_if_blocked()
+        }
+        fn estado(&self) -> EstadoPersistencia {
+            EstadoPersistencia::inactiva("test://controlled")
+        }
+        fn total_pnl(&self) -> f64 {
+            42.5
+        }
+        fn win_rate(&self) -> f64 {
+            0.625
+        }
+        fn ultimas_operaciones(&self, _: usize) -> Vec<Operacion> {
+            Vec::new()
+        }
+        fn resumen_agregado(&self) -> serde_json::Value {
+            serde_json::json!({"fixture": true})
+        }
+    }
+
+    fn backend(
+        initially_released: bool,
+        fail: bool,
+    ) -> (Arc<BackendControlado>, mpsc::Receiver<()>) {
+        let (entered, receiver) = mpsc::sync_channel(8);
+        (
+            Arc::new(BackendControlado {
+                entered,
+                release: Arc::new((Mutex::new(initially_released), Condvar::new())),
+                writes: AtomicUsize::new(0),
+                fail: AtomicBool::new(fail),
+            }),
+            receiver,
+        )
+    }
+
+    fn release(backend: &BackendControlado) {
+        let (lock, wake) = &*backend.release;
+        *lock.lock().expect("release lock poisoned") = true;
+        wake.notify_all();
+    }
+
+    fn wait_pending(queue: &AuditoriaEnCola, expected: usize) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while queue.estado().queue_pending != expected && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(queue.estado().queue_pending, expected);
+    }
+
+    #[test]
+    fn queue_normalizes_zero_capacity_and_delegates_read_models() {
+        let (backend, _) = backend(true, false);
+        let queue = AuditoriaEnCola::nueva(backend, 0);
+        assert_eq!(queue.estado().queue_capacity, 1);
+        assert_eq!(queue.total_pnl(), 42.5);
+        assert_eq!(queue.win_rate(), 0.625);
+        assert_eq!(
+            queue.resumen_agregado(),
+            serde_json::json!({"fixture": true})
+        );
+    }
+
+    #[test]
+    fn full_queue_fails_fast_and_exposes_dropped_counter() {
+        let (backend, entered) = backend(false, false);
+        let queue = AuditoriaEnCola::nueva(backend.clone(), 1);
+        queue.registrar_auditorias(&[]).unwrap();
+        entered.recv_timeout(Duration::from_secs(1)).unwrap();
+        queue.registrar_auditorias(&[]).unwrap();
+        let error = queue.registrar_auditorias(&[]).unwrap_err();
+        assert!(error.to_string().contains("cola de persistencia llena"));
+        assert_eq!(queue.estado().queue_dropped, 1);
+        assert_eq!(queue.estado().queue_pending, 2);
+        release(&backend);
+        wait_pending(&queue, 0);
+        assert_eq!(backend.writes.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn backend_failure_still_decrements_pending_without_deadlock() {
+        let (backend, entered) = backend(false, true);
+        let queue = AuditoriaEnCola::nueva(backend.clone(), 2);
+        queue.registrar_auditorias(&[]).unwrap();
+        entered.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(queue.estado().queue_pending, 1);
+        release(&backend);
+        wait_pending(&queue, 0);
+        assert_eq!(backend.writes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn bounded_flush_times_out_then_succeeds_after_release() {
+        let (backend, entered) = backend(false, false);
+        let queue = AuditoriaEnCola::nueva(backend.clone(), 1);
+        queue.registrar_auditorias(&[]).unwrap();
+        entered.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(!queue.esperar_drenado(Duration::from_millis(5)));
+        release(&backend);
+        assert!(queue.esperar_drenado(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn successful_worker_drains_multiple_write_kinds() {
+        let (backend, entered) = backend(false, false);
+        let queue = AuditoriaEnCola::nueva(backend.clone(), 4);
+        queue.registrar_oportunidades(&[]).unwrap();
+        entered.recv_timeout(Duration::from_secs(1)).unwrap();
+        queue.registrar_auditorias(&[]).unwrap();
+        release(&backend);
+        wait_pending(&queue, 0);
+        assert_eq!(backend.writes.load(Ordering::SeqCst), 2);
+        assert_eq!(queue.estado().queue_dropped, 0);
     }
 }

@@ -17,7 +17,8 @@ module.exports = defineConfig({
       ...process.env,
       RUST_LOG: "error",
       AUDITORIA_DB_PATH: "/tmp/mayab-playwright.sqlite",
-      DEMO_RENTABLE_INICIAL: "true",
+      DEMO_RENTABLE_INICIAL: "false",
+      ENABLED_EXCHANGES: "Binance,Kraken",
     },
   },
 });

@@ -15,8 +15,24 @@ name = "capture-tape"
 path = "src/capture_tape.rs"
 
 [[bin]]
+name = "capture-corpus"
+path = "src/capture_corpus.rs"
+
+[[bin]]
 name = "verify-tape"
 path = "src/verify_tape.rs"
+
+[[bin]]
+name = "verify-corpus"
+path = "src/verify_corpus.rs"
+
+[[bin]]
+name = "scan-corpus"
+path = "src/scan_corpus.rs"
+
+[[bin]]
+name = "verify-corpus-seal"
+path = "src/verify_corpus_seal.rs"
 
 [[bin]]
 name = "mayab-testnet-executor"
@@ -28,7 +44,7 @@ mayab-arbitrage = { version = "0.1.0", path = "../mayab-arbitrage" }
 anyhow = "1.0"
 axum = "0.7"
 dotenvy = "0.15"
-rustls = { version = "0.23", features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }

@@ -5,7 +5,7 @@
 //! B calibra parámetros de ejecución y C sólo se lee después de congelarlos.
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fmt::Write as _,
     fs,
     path::{Path, PathBuf},
@@ -23,7 +23,8 @@ use crate::{
     config::Config,
     ga::EstadoGa,
     motor::calcular_costos_canonicos,
-    types::{CostosOperacion, Cotizacion, MapaCostos, Operacion},
+    tape::{EventKind, TapeEvent as PublicTapeEvent, TapeSource, EVENTS_FILE, MANIFEST_FILE},
+    types::{CostosOperacion, Cotizacion, MapaCostos, NivelOrden, Operacion},
 };
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -137,7 +138,34 @@ pub struct Metrics {
 struct StrategyReport {
     strategy: Strategy,
     calibration_score: f64,
+    holdout_funnel: StrategyFunnel,
     holdout: Metrics,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QuantitativeFunnel {
+    raw_quotes: u64,
+    valid_quotes: u64,
+    comparable_candidates: u64,
+    gross_dislocations: u64,
+    net_dislocations: u64,
+    liquid_net_dislocations: u64,
+    invalid_quotes_by_cause: HashMap<String, u64>,
+    gross_per_million_quotes: f64,
+    net_per_million_quotes: f64,
+    liquid_net_per_million_quotes: f64,
+    definition: &'static str,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StrategyFunnel {
+    holdout_candidates: u64,
+    gross_dislocations: u64,
+    net_dislocations: u64,
+    paper_orders_filled: u64,
+    conversion_from_net: f64,
 }
 
 #[derive(Serialize)]
@@ -149,6 +177,7 @@ struct Report {
     source: String,
     split: Split,
     event_counts: [usize; 3],
+    quantitative_funnel: QuantitativeFunnel,
     partition_hashes: [String; 3],
     config_hash: String,
     engine_version: String,
@@ -156,6 +185,11 @@ struct Report {
     ga_training: GaTraining,
     calibration: Calibration,
     results: Vec<StrategyReport>,
+    preregistered_champion: String,
+    selection_policy: String,
+    champion_won_holdout: bool,
+    ex_post_holdout_winner: String,
+    #[serde(rename = "holdoutWinner", skip_serializing_if = "String::is_empty")]
     holdout_winner: String,
     caveats: Vec<String>,
 }
@@ -190,6 +224,7 @@ pub fn evaluate_tape(cfg: &EvaluationConfig) -> Result<OutputPaths> {
     let quotes = load_quotes(&cfg.tape)?;
     let costs = Config::from_env().costos;
     let events = materialize_events(&quotes, &costs);
+    let quantitative_funnel = quantitative_funnel(&quotes, &events);
     if events.len() < 10 {
         bail!(
             "la cinta produjo {} eventos comparables; se requieren al menos 10",
@@ -219,20 +254,28 @@ pub fn evaluate_tape(cfg: &EvaluationConfig) -> Result<OutputPaths> {
         .iter()
         .map(|s| objective(&run(s, b)))
         .collect::<Vec<_>>();
+    let preregistered_champion = select_by_calibration(&strategies, &calibration_scores)
+        .context("no se pudo seleccionar campeón con calibración B")?;
     let results = strategies
         .into_iter()
         .zip(calibration_scores)
-        .map(|(strategy, calibration_score)| StrategyReport {
-            holdout: run(&strategy, c),
-            strategy,
-            calibration_score,
+        .map(|(strategy, calibration_score)| {
+            let holdout = run(&strategy, c);
+            let holdout_funnel = strategy_funnel(c, &holdout);
+            StrategyReport {
+                holdout,
+                holdout_funnel,
+                strategy,
+                calibration_score,
+            }
         })
         .collect::<Vec<_>>();
-    let winner = results
+    let ex_post_winner = results
         .iter()
         .max_by(|x, y| x.holdout.pnl_net_usd.total_cmp(&y.holdout.pnl_net_usd))
         .map(|x| x.strategy.name.clone())
         .unwrap_or_default();
+    let champion_won_holdout = preregistered_champion == ex_post_winner;
     let report = Report {
         schema_version: 1,
         generated_at: Utc::now(),
@@ -240,6 +283,7 @@ pub fn evaluate_tape(cfg: &EvaluationConfig) -> Result<OutputPaths> {
         source: cfg.tape.display().to_string(),
         split: cfg.split,
         event_counts: [a.len(), b.len(), c.len()],
+        quantitative_funnel,
         partition_hashes: [hash_events(a), hash_events(b), hash_events(c)],
         config_hash: hash_config(&costs),
         engine_version: env!("CARGO_PKG_VERSION").into(),
@@ -264,7 +308,11 @@ pub fn evaluate_tape(cfg: &EvaluationConfig) -> Result<OutputPaths> {
             selected_before_holdout: true,
         },
         results,
-        holdout_winner: winner,
+        preregistered_champion,
+        selection_policy: "máximo objetivo en calibración B; congelado antes de ejecutar C".into(),
+        champion_won_holdout,
+        ex_post_holdout_winner: ex_post_winner.clone(),
+        holdout_winner: ex_post_winner,
         caveats: vec![
             "Evaluación simulada; no demuestra rentabilidad real.".into(),
             "Se conservan todas las estrategias, ventanas negativas y derrotas del campeón GA."
@@ -284,7 +332,108 @@ pub fn evaluate_tape(cfg: &EvaluationConfig) -> Result<OutputPaths> {
     Ok(paths)
 }
 
+fn select_by_calibration(strategies: &[Strategy], scores: &[f64]) -> Option<String> {
+    strategies
+        .iter()
+        .zip(scores)
+        .filter(|(_, score)| score.is_finite())
+        .max_by(
+            |(left_strategy, left_score), (right_strategy, right_score)| {
+                left_score
+                    .total_cmp(right_score)
+                    .then_with(|| right_strategy.name.cmp(&left_strategy.name))
+            },
+        )
+        .map(|(strategy, _)| strategy.name.clone())
+}
+
+fn quantitative_funnel(quotes: &[Cotizacion], events: &[TapeEvent]) -> QuantitativeFunnel {
+    let mut invalid_quotes_by_cause = HashMap::<String, u64>::new();
+    let mut valid_quotes = 0_u64;
+    for quote in quotes {
+        let cause = if quote.exchange.trim().is_empty() || quote.par.trim().is_empty() {
+            Some("identidad_vacia")
+        } else if !quote.bid.is_finite() || !quote.ask.is_finite() {
+            Some("precio_no_finito")
+        } else if quote.bid <= 0.0 || quote.ask <= 0.0 || quote.bid >= quote.ask {
+            Some("bbo_invalido")
+        } else if !quote.bid_cantidad.is_finite()
+            || !quote.ask_cantidad.is_finite()
+            || quote.bid_cantidad < 0.0
+            || quote.ask_cantidad < 0.0
+        {
+            Some("cantidad_invalida")
+        } else {
+            None
+        };
+        if let Some(cause) = cause {
+            *invalid_quotes_by_cause.entry(cause.into()).or_default() += 1;
+        } else {
+            valid_quotes += 1;
+        }
+    }
+    let gross_dislocations = events.iter().filter(|event| event.gross_bps > 0.0).count() as u64;
+    let net_dislocations = events
+        .iter()
+        .filter(|event| event.gross_bps - event.base_cost_bps > 0.0)
+        .count() as u64;
+    let liquid_net_dislocations = events
+        .iter()
+        .filter(|event| event.gross_bps - event.base_cost_bps > 0.0 && event.available_btc > 0.0)
+        .count() as u64;
+    let raw_quotes = quotes.len() as u64;
+    let per_million = |count: u64| count as f64 / raw_quotes.max(1) as f64 * 1_000_000.0;
+    QuantitativeFunnel {
+        raw_quotes,
+        valid_quotes,
+        comparable_candidates: events.len() as u64,
+        gross_dislocations,
+        net_dislocations,
+        liquid_net_dislocations,
+        invalid_quotes_by_cause,
+        gross_per_million_quotes: per_million(gross_dislocations),
+        net_per_million_quotes: per_million(net_dislocations),
+        liquid_net_per_million_quotes: per_million(liquid_net_dislocations),
+        definition: "por actualización se conserva el mejor candidato cross-venue; gross: bid>ask; net: gross supera costos canónicos; liquid_net: net y cantidad disponible positiva",
+    }
+}
+
+fn strategy_funnel(events: &[TapeEvent], metrics: &Metrics) -> StrategyFunnel {
+    let gross_dislocations = events.iter().filter(|event| event.gross_bps > 0.0).count() as u64;
+    let net_dislocations = events
+        .iter()
+        .filter(|event| event.gross_bps - event.base_cost_bps > 0.0)
+        .count() as u64;
+    StrategyFunnel {
+        holdout_candidates: events.len() as u64,
+        gross_dislocations,
+        net_dislocations,
+        paper_orders_filled: metrics.filled_orders,
+        conversion_from_net: metrics.filled_orders as f64 / net_dislocations.max(1) as f64,
+    }
+}
+
 fn load_quotes(path: &Path) -> Result<Vec<Cotizacion>> {
+    if path.is_dir() && path.join(MANIFEST_FILE).is_file() {
+        crate::tape::verify(path).context("el tape público no supera verify-tape")?;
+        return load_public_tape_quotes(&path.join(EVENTS_FILE));
+    }
+    if path.is_dir()
+        && fs::read_dir(path)?
+            .filter_map(std::result::Result::ok)
+            .any(|entry| crate::tape::is_corpus_shard(&entry.path()))
+    {
+        let corpus = crate::tape::verify_corpus(path)
+            .context("el corpus público no supera verify-corpus")?;
+        let mut quotes = Vec::new();
+        for tape in corpus.tapes {
+            quotes.extend(load_public_tape_quotes(
+                &path.join(tape.relative_path).join(EVENTS_FILE),
+            )?);
+        }
+        quotes.sort_by_key(|quote| (quote.evento_unix_ms, quote.secuencia));
+        return Ok(quotes);
+    }
     let mut files = Vec::new();
     if path.is_file() {
         files.push(path.to_path_buf());
@@ -339,6 +488,92 @@ fn load_quotes(path: &Path) -> Result<Vec<Cotizacion>> {
     }
     out.sort_by_key(|q| (q.evento_unix_ms, q.secuencia));
     Ok(out)
+}
+
+fn load_public_tape_quotes(events_path: &Path) -> Result<Vec<Cotizacion>> {
+    type Sides = (BTreeMap<i64, f64>, BTreeMap<i64, f64>);
+    let mut books = HashMap::<(String, String), Sides>::new();
+    let mut quotes = Vec::new();
+    for (line_no, line) in fs::read_to_string(events_path)?.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let event: PublicTapeEvent = serde_json::from_str(line)
+            .with_context(|| format!("{}:{}", events_path.display(), line_no + 1))?;
+        let key = (event.exchange.clone(), event.pair.clone());
+        let book = books.entry(key).or_default();
+        if event.kind == EventKind::Snapshot {
+            book.0.clear();
+            book.1.clear();
+        }
+        apply_tape_levels(&mut book.0, &event.bids);
+        apply_tape_levels(&mut book.1, &event.asks);
+        let bids = book
+            .0
+            .iter()
+            .rev()
+            .take(50)
+            .map(|(price, quantity)| NivelOrden {
+                precio: *price as f64 / 100_000_000.0,
+                cantidad: *quantity,
+            })
+            .collect::<Vec<_>>();
+        let asks = book
+            .1
+            .iter()
+            .take(50)
+            .map(|(price, quantity)| NivelOrden {
+                precio: *price as f64 / 100_000_000.0,
+                cantidad: *quantity,
+            })
+            .collect::<Vec<_>>();
+        let (Some(bid), Some(ask)) = (bids.first(), asks.first()) else {
+            continue;
+        };
+        quotes.push(Cotizacion {
+            exchange: event.exchange,
+            par: event.pair,
+            bid: bid.precio,
+            bid_cantidad: bid.cantidad,
+            ask: ask.precio,
+            ask_cantidad: ask.cantidad,
+            bids: bids.into(),
+            asks: asks.into(),
+            evento_unix_ms: event
+                .exchange_timestamp
+                .unwrap_or(event.local_timestamp)
+                .timestamp_millis(),
+            recibida_en: event.local_timestamp,
+            latencia_ms: i64::try_from(event.observed_latency_ms.unwrap_or(0)).unwrap_or(i64::MAX),
+            secuencia: event.sequence_id.unwrap_or(line_no as u64),
+            exchange_sequence: event.sequence_id,
+            integrity_status: event.integrity.status,
+            resyncs: u64::from(event.integrity.resync),
+            sequence_gaps: u64::from(event.integrity.gap),
+            checksum_failures: 0,
+            invalidated_ms: 0,
+            timestamp_confiable: event.exchange_timestamp.is_some(),
+            conectado: matches!(event.source, TapeSource::WebSocket { .. }),
+            ultimo_mensaje: if matches!(event.source, TapeSource::Rest { .. }) {
+                "rest_fallback".into()
+            } else {
+                String::new()
+            },
+        });
+    }
+    quotes.sort_by_key(|quote| (quote.evento_unix_ms, quote.secuencia));
+    Ok(quotes)
+}
+
+fn apply_tape_levels(book: &mut BTreeMap<i64, f64>, levels: &[NivelOrden]) {
+    for level in levels {
+        let price = (level.precio * 100_000_000.0).round() as i64;
+        if level.cantidad == 0.0 {
+            book.remove(&price);
+        } else {
+            book.insert(price, level.cantidad);
+        }
+    }
 }
 
 fn materialize_events(quotes: &[Cotizacion], config: &MapaCostos) -> Vec<TapeEvent> {
@@ -715,7 +950,8 @@ fn csv_report(r: &Report) -> String {
     s
 }
 fn markdown_report(r: &Report) -> String {
-    let mut s=format!("# Evaluación cronológica de tape\n\n- Split: **{}/{}/{}** (A/B/C)\n- Eventos: **{}/{}/{}**\n- Seed de optimización: **{}** (no se usa para seleccionar con C)\n- Ganador observado en holdout: **{}**\n\n| Estrategia | P&L neto | P&L/BTC | Max DD | Fill órdenes | Profit factor | Costos | Ventanas negativas |\n|---|---:|---:|---:|---:|---:|---:|---:|\n",r.split.train,r.split.calibration,r.split.holdout,r.event_counts[0],r.event_counts[1],r.event_counts[2],r.seed,r.holdout_winner);
+    let f = &r.quantitative_funnel;
+    let mut s=format!("# Evaluación cronológica de tape\n\n- Split: **{}/{}/{}** (A/B/C)\n- Eventos comparables A/B/C: **{}/{}/{}**\n- Quotes crudos/válidos: **{}/{}**\n- Candidatos comparables: **{}**\n- Dislocaciones brutas/netas/netas con liquidez: **{}/{}/{}**\n- Netas por millón de quotes: **{:.2}**\n- Seed de optimización: **{}** (no se usa para seleccionar con C)\n- Campeón preregistrado con B: **{}**\n- Mejor resultado ex post en C: **{}**\n- ¿El campeón ganó C?: **{}**\n\n> Política de selección: {}\n\n> Definición: {}\n\n| Estrategia | P&L neto | P&L/BTC | Max DD | Fill órdenes | Profit factor | Costos | Ventanas negativas |\n|---|---:|---:|---:|---:|---:|---:|---:|\n",r.split.train,r.split.calibration,r.split.holdout,r.event_counts[0],r.event_counts[1],r.event_counts[2],f.raw_quotes,f.valid_quotes,f.comparable_candidates,f.gross_dislocations,f.net_dislocations,f.liquid_net_dislocations,f.net_per_million_quotes,r.seed,r.preregistered_champion,r.ex_post_holdout_winner,r.champion_won_holdout,r.selection_policy,f.definition);
     for x in &r.results {
         let m = &x.holdout;
         let _ = writeln!(
@@ -737,9 +973,83 @@ fn markdown_report(r: &Report) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
     use crate::types::ExchangeConfig;
 
     use super::*;
+
+    fn write_native_shard(root: &Path, name: &str, timestamp_ms: i64, price: f64) {
+        let shard = root.join(name);
+        fs::create_dir_all(&shard).unwrap();
+        let config = crate::tape::CaptureConfig {
+            schema_version: 1,
+            pair: "BTC/USD".into(),
+            exchanges: vec!["Kraken".into()],
+            depth: 10,
+        };
+        let config_bytes = serde_json::to_vec_pretty(&config).unwrap();
+        fs::write(shard.join(crate::tape::CONFIG_FILE), &config_bytes).unwrap();
+        let timestamp = DateTime::<Utc>::from_timestamp_millis(timestamp_ms).unwrap();
+        let event = PublicTapeEvent {
+            schema_version: 1,
+            exchange_timestamp: Some(timestamp),
+            local_timestamp: timestamp,
+            exchange: "Kraken".into(),
+            pair: "BTC/USD".into(),
+            source: TapeSource::WebSocket {
+                url: "wss://fixture".into(),
+            },
+            kind: EventKind::Snapshot,
+            sequence_id: Some(timestamp_ms as u64),
+            previous_sequence: None,
+            bids: vec![NivelOrden {
+                precio: price,
+                cantidad: 1.0,
+            }],
+            asks: vec![NivelOrden {
+                precio: price + 1.0,
+                cantidad: 1.0,
+            }],
+            integrity: crate::tape::IntegrityState {
+                status: "snapshot".into(),
+                gap: false,
+                resync: false,
+                connection_epoch: 0,
+                reconnected: false,
+            },
+            observed_latency_ms: Some(1),
+        };
+        let mut events_bytes = serde_json::to_vec(&event).unwrap();
+        events_bytes.write_all(b"\n").unwrap();
+        fs::write(shard.join(EVENTS_FILE), &events_bytes).unwrap();
+        let manifest = crate::tape::TapeManifest {
+            schema_version: 1,
+            dataset_id: name.into(),
+            source_classification: "public_market_capture".into(),
+            started_at: timestamp - chrono::Duration::milliseconds(1),
+            ended_at: timestamp + chrono::Duration::milliseconds(1),
+            exchanges: vec!["Kraken".into()],
+            pairs: vec!["BTC/USD".into()],
+            events: 1,
+            snapshots: 1,
+            sequence_gaps: 0,
+            rest_fallback_events: 0,
+            reconnect_events: 0,
+            delivery_policy: "bounded_channel_await_no_application_drop".into(),
+            events_by_exchange: BTreeMap::from([("Kraken".into(), 1)]),
+            uncompressed_bytes: events_bytes.len() as u64,
+            duration_ms: 2,
+            sha256: format!("{:x}", Sha256::digest(&events_bytes)),
+            git_commit: "fixture".into(),
+            config_sha256: format!("{:x}", Sha256::digest(&config_bytes)),
+        };
+        fs::write(
+            shard.join(MANIFEST_FILE),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
     #[test]
     fn split_rejects_invalid() {
         assert!("50,20,20".parse::<Split>().is_err());
@@ -801,5 +1111,116 @@ mod tests {
         }
 
         assert_eq!(hash_config(&first), hash_config(&second));
+    }
+
+    #[test]
+    fn quantitative_funnel_is_monotone_and_does_not_call_every_quote_a_dislocation() {
+        let events = vec![
+            TapeEvent {
+                timestamp_ms: 1,
+                buy_exchange: "A".into(),
+                sell_exchange: "B".into(),
+                ask: 100.0,
+                bid: 101.0,
+                available_btc: 1.0,
+                cost_quantity_btc: 1.0,
+                latency_ms: 1,
+                gross_bps: 10.0,
+                base_cost_bps: 4.0,
+                costs: CostosOperacion::default(),
+                realized_move_bps: 0.0,
+            },
+            TapeEvent {
+                timestamp_ms: 2,
+                buy_exchange: "A".into(),
+                sell_exchange: "B".into(),
+                ask: 100.0,
+                bid: 100.1,
+                available_btc: 0.0,
+                cost_quantity_btc: 0.0,
+                latency_ms: 1,
+                gross_bps: 1.0,
+                base_cost_bps: 4.0,
+                costs: CostosOperacion::default(),
+                realized_move_bps: 0.0,
+            },
+        ];
+        let funnel = quantitative_funnel(&[], &events);
+        assert_eq!(funnel.comparable_candidates, 2);
+        assert_eq!(funnel.gross_dislocations, 2);
+        assert_eq!(funnel.net_dislocations, 1);
+        assert_eq!(funnel.liquid_net_dislocations, 1);
+        assert!(funnel.liquid_net_dislocations <= funnel.net_dislocations);
+        assert!(funnel.net_dislocations <= funnel.gross_dislocations);
+        assert!(funnel.gross_dislocations <= funnel.comparable_candidates);
+    }
+
+    #[test]
+    fn strategy_funnel_reports_paper_conversion_separately_from_market_counts() {
+        let event = TapeEvent {
+            timestamp_ms: 1,
+            buy_exchange: "A".into(),
+            sell_exchange: "B".into(),
+            ask: 100.0,
+            bid: 101.0,
+            available_btc: 1.0,
+            cost_quantity_btc: 1.0,
+            latency_ms: 1,
+            gross_bps: 10.0,
+            base_cost_bps: 4.0,
+            costs: CostosOperacion::default(),
+            realized_move_bps: 0.0,
+        };
+        let metrics = Metrics {
+            filled_orders: 1,
+            ..Default::default()
+        };
+        let funnel = strategy_funnel(&[event], &metrics);
+        assert_eq!(funnel.net_dislocations, 1);
+        assert_eq!(funnel.paper_orders_filled, 1);
+        assert_eq!(funnel.conversion_from_net, 1.0);
+    }
+
+    #[test]
+    fn champion_is_selected_from_calibration_scores_before_holdout() {
+        let strategies = base_strategies([0.4, 0.2, 0.2, 0.1, 0.1], 7);
+        let mut scores = vec![-10.0; strategies.len()];
+        scores[2] = 5.0;
+        assert_eq!(
+            select_by_calibration(&strategies, &scores).as_deref(),
+            Some(strategies[2].name.as_str())
+        );
+    }
+
+    #[test]
+    fn champion_selection_rejects_non_finite_scores_and_has_deterministic_ties() {
+        let strategies = base_strategies([0.4, 0.2, 0.2, 0.1, 0.1], 7);
+        let mut scores = vec![f64::NAN; strategies.len()];
+        assert_eq!(select_by_calibration(&strategies, &scores), None);
+        scores.fill(1.0);
+        let expected = strategies
+            .iter()
+            .map(|strategy| strategy.name.as_str())
+            .min()
+            .unwrap();
+        assert_eq!(
+            select_by_calibration(&strategies, &scores).as_deref(),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn verified_native_corpus_loads_all_shards_without_manual_conversion() {
+        let root =
+            std::env::temp_dir().join(format!("mayab-evaluation-corpus-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        write_native_shard(&root, "shard-000001", 1_000, 100.0);
+        write_native_shard(&root, "shard-000002", 2_000, 101.0);
+        let quotes = load_quotes(&root).unwrap();
+        assert_eq!(quotes.len(), 2);
+        assert_eq!(quotes[0].bid, 100.0);
+        assert_eq!(quotes[1].bid, 101.0);
+        let _ = fs::remove_dir_all(root);
     }
 }

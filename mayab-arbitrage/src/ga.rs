@@ -126,17 +126,19 @@ impl Genoma {
     }
 
     fn normalizar(&mut self) {
-        let total: f64 = self
-            .pesos
-            .iter()
-            .copied()
-            .filter(|v| v.is_finite() && *v > 0.0)
-            .sum();
+        for peso in &mut self.pesos {
+            *peso = if peso.is_finite() {
+                peso.max(0.01)
+            } else {
+                0.01
+            };
+        }
+        let total: f64 = self.pesos.iter().sum();
         if total <= 0.0 {
             self.pesos = Self::base().pesos;
         } else {
             for peso in &mut self.pesos {
-                *peso = (*peso).max(0.01) / total;
+                *peso /= total;
             }
         }
         self.umbral_min_spread_bps = self.umbral_min_spread_bps.clamp(0.10, 8.0);
@@ -358,6 +360,10 @@ impl EstadoGa {
     /// Evoluciona la población usando operaciones simuladas y conteo de fallos.
     pub fn evolucionar(&mut self, operaciones: &[Operacion], fallos: usize) {
         self.ajustar_poblacion();
+        // Las islas son una vista de la población vigente, no una copia de la
+        // población inicial. Sin esta sincronización las generaciones 2..N
+        // volvían a competir con genomas obsoletos.
+        self.repartir_en_islas();
         self.generacion += 1;
         self.operaciones_evaluadas = operaciones.len();
         self.fallos_evaluados = fallos;
@@ -454,40 +460,21 @@ impl EstadoGa {
             .cloned()
             .collect::<Vec<_>>();
         while siguiente.len() < self.config.tamano_poblacion {
+            let nicho = siguiente.len() % self.config_islas.len();
+            let config_nicho = self.config_islas[nicho];
             let padre = self.torneo(3);
             let madre = self.torneo(3);
-            let mut hijo = if self.rng.gen_bool(self.config.tasa_cruce) {
+            let mut hijo = if self.rng.gen_bool(config_nicho.tasa_cruce) {
                 self.cruzar(&padre, &madre)
             } else {
                 padre
             };
-            self.mutar(&mut hijo);
+            self.mutar_con_tasa(&mut hijo, config_nicho.tasa_mutacion);
             siguiente.push(hijo);
         }
 
         self.aplicar_recocido_simulado(operaciones, fallos, &mut siguiente, elite);
         self.inyectar_evolucion_diferencial(operaciones, fallos, &mut siguiente, elite);
-
-        // Migración de islas y meta-GA
-        if self.generacion > 0 && self.generacion % 5 == 0 {
-            // Migrar élite entre islas (0->1, 1->2, 2->3, 3->0)
-            for i in 0..4 {
-                if !self.islas[i].is_empty() {
-                    let emigrante = self.islas[i][0].clone();
-                    // Meta-GA: mutar ligeramente las tasas de cruce y mutación
-                    self.config_islas[i].tasa_mutacion = (self.config_islas[i].tasa_mutacion
-                        + self.rng.gen_range(-0.02..0.02))
-                    .clamp(0.01, 0.4);
-                    self.config_islas[i].tasa_cruce = (self.config_islas[i].tasa_cruce
-                        + self.rng.gen_range(-0.05..0.05))
-                    .clamp(0.5, 0.95);
-                    let dest = (i + 1) % 4;
-                    if let Some(last) = self.islas[dest].last_mut() {
-                        *last = emigrante;
-                    }
-                }
-            }
-        }
 
         if self.diversidad < 0.04 {
             for genoma in siguiente.iter_mut().skip(elite).step_by(3) {
@@ -540,6 +527,28 @@ impl EstadoGa {
             self.mejora_generacional = (self.mejor_fitness - fitness_antes_hibrido).max(0.0);
         }
         self.poblacion = siguiente;
+        self.repartir_en_islas();
+
+        // Migración anular sobre la generación recién creada. Las tasas
+        // auto-adaptadas sí gobiernan la descendencia de la próxima llamada.
+        if self.generacion % 5 == 0 {
+            let emigrantes = core::array::from_fn::<_, 4, _>(|i| self.islas[i].first().cloned());
+            for (i, emigrante) in emigrantes.into_iter().enumerate() {
+                self.config_islas[i].tasa_mutacion = (self.config_islas[i].tasa_mutacion
+                    + self.rng.gen_range(-0.02..0.02))
+                .clamp(0.01, 0.4);
+                self.config_islas[i].tasa_cruce = (self.config_islas[i].tasa_cruce
+                    + self.rng.gen_range(-0.05..0.05))
+                .clamp(0.5, 0.95);
+                let destino = (i + 1) % self.islas.len();
+                if let (Some(emigrante), Some(reemplazo)) =
+                    (emigrante, self.islas[destino].last_mut())
+                {
+                    *reemplazo = emigrante;
+                }
+            }
+            self.aplanar_islas();
+        }
     }
 
     /// Convierte el estado interno al contrato público del dashboard.
@@ -569,6 +578,8 @@ impl EstadoGa {
             metaheuristicas: vec![
                 "GA + recocido simulado".into(),
                 "GA + evolucion diferencial".into(),
+                "NSGA-II en 4 islas".into(),
+                "tasas auto-adaptativas por nicho".into(),
             ],
         })
     }
@@ -579,7 +590,11 @@ impl EstadoGa {
         serde_json::json!({
             "activo": activo,
             "generacion": self.generacion,
-            "mejorFitness": self.mejor_fitness,
+            "fitnessDelRepresentantePareto": self.mejor_fitness,
+            "maxFitness": self.mejor_fitness.max(self.retador_fitness),
+            "meanFitness": self.fitness_promedio,
+            "champion": "baseline_hasta_validar_holdout",
+            "challenger": "ga_pareto",
             "fitnessPromedio": self.fitness_promedio,
             "retadorFitness": self.retador_fitness,
             "diversidad": self.diversidad,
@@ -601,7 +616,9 @@ impl EstadoGa {
             "politicaCampeon": "max_fitness_ajustado_riesgo_en_primer_frente",
             "metaheuristicas": [
                 "GA + recocido simulado",
-                "GA + evolucion diferencial"
+                "GA + evolucion diferencial",
+                "NSGA-II en 4 islas",
+                "tasas auto-adaptativas por nicho"
             ],
             "mejorGenoma": {
                 "ponderacionUtilidad": self.mejores_pesos[0],
@@ -750,6 +767,22 @@ impl EstadoGa {
         }
     }
 
+    fn repartir_en_islas(&mut self) {
+        for isla in &mut self.islas {
+            isla.clear();
+        }
+        for (i, genoma) in self.poblacion.iter().cloned().enumerate() {
+            self.islas[i % self.islas.len()].push(genoma);
+        }
+    }
+
+    fn aplanar_islas(&mut self) {
+        self.poblacion.clear();
+        for isla in &self.islas {
+            self.poblacion.extend(isla.iter().cloned());
+        }
+    }
+
     fn torneo(&mut self, k: usize) -> Genoma {
         let mut mejor = &self.poblacion[self.rng.gen_range(0..self.poblacion.len())];
         for _ in 1..k {
@@ -787,22 +820,22 @@ impl EstadoGa {
         hijo
     }
 
-    fn mutar(&mut self, genoma: &mut Genoma) {
-        if self.config.tasa_mutacion <= 0.0 {
+    fn mutar_con_tasa(&mut self, genoma: &mut Genoma, tasa_mutacion: f64) {
+        if tasa_mutacion <= 0.0 {
             return;
         }
         for peso in &mut genoma.pesos {
-            if self.rng.gen_bool(self.config.tasa_mutacion) {
+            if self.rng.gen_bool(tasa_mutacion) {
                 *peso += gauss(&mut self.rng, 0.0, 0.08);
             }
         }
-        if self.rng.gen_bool(self.config.tasa_mutacion) {
+        if self.rng.gen_bool(tasa_mutacion) {
             genoma.umbral_min_spread_bps += gauss(&mut self.rng, 0.0, 0.45);
         }
-        if self.rng.gen_bool(self.config.tasa_mutacion) {
+        if self.rng.gen_bool(tasa_mutacion) {
             genoma.max_operacion_btc += gauss(&mut self.rng, 0.0, 0.08);
         }
-        if self.rng.gen_bool(self.config.tasa_mutacion) {
+        if self.rng.gen_bool(tasa_mutacion) {
             genoma.tolerancia_latencia_ms += gauss(&mut self.rng, 0.0, 700.0) as i64;
         }
         genoma.normalizar();
@@ -1088,6 +1121,14 @@ fn evaluar_pesos(g: &Genoma, operaciones: &[Operacion]) -> (f64, f64) {
     for (op, neto_bps) in operaciones.iter().zip(netos_bps) {
         let ruta = format!("{}->{}", op.compra_en, op.venta_en);
         let (wins, total) = rutas.get(&ruta).copied().unwrap_or((0, 1));
+        let outcome_bool = op.utilidad_usd > 0.0;
+        // Leave-one-out: la confiabilidad de una ruta no puede usar el mismo
+        // outcome que intenta predecir. Una ruta nueva recibe un prior neutral.
+        let confiabilidad = if total > 1 {
+            (wins - usize::from(outcome_bool)) as f64 / (total - 1) as f64
+        } else {
+            0.5
+        };
         let z_score = (neto_bps - media) / desv;
         let prediccion = score_canonico(
             &g.pesos,
@@ -1097,12 +1138,12 @@ fn evaluar_pesos(g: &Genoma, operaciones: &[Operacion]) -> (f64, f64) {
                 tolerancia_latencia_ms: g.tolerancia_latencia_ms,
                 cantidad_btc: op.cantidad_btc,
                 max_operacion_btc: (max_cantidad),
-                confiabilidad: wins as f64 / total.max(1) as f64,
+                confiabilidad,
                 z_score,
             },
         )
         .clamp(0.0, 1.0);
-        let outcome = if op.utilidad_usd > 0.0 { 1.0 } else { 0.0 };
+        let outcome = if outcome_bool { 1.0 } else { 0.0 };
         calibracion += 1.0 - (prediccion - outcome).powi(2);
         edge += (prediccion - 0.5) * (op.utilidad_usd / 25.0).tanh();
     }
@@ -1230,5 +1271,46 @@ mod tests {
             fitness_genoma(&utilidad, &ventana_utilidad)
                 > fitness_genoma(&frescura, &ventana_frescura)
         );
+    }
+
+    #[test]
+    fn normalizacion_conserva_simplex_tras_mutaciones_extremas() {
+        let mut genoma = Genoma::base();
+        genoma.pesos = [f64::NAN, -3.0, 0.0, 2.0, f64::INFINITY];
+        genoma.normalizar();
+
+        assert!(genoma
+            .pesos
+            .iter()
+            .all(|peso| peso.is_finite() && *peso > 0.0));
+        assert!((genoma.pesos.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn islas_siguen_la_generacion_y_meta_ga_adapta_tasas() {
+        let mut ga = EstadoGa::default();
+        let operaciones = vec![
+            op(18.0, false),
+            op(9.0, false),
+            op(-4.0, true),
+            op(14.0, false),
+        ];
+        let tasas_iniciales = ga.config_islas;
+
+        for _ in 0..5 {
+            ga.evolucionar(&operaciones, 1);
+            assert_eq!(
+                ga.islas.iter().map(Vec::len).sum::<usize>(),
+                ga.poblacion.len()
+            );
+            assert!(ga
+                .islas
+                .iter()
+                .flatten()
+                .all(|genoma| ga.poblacion.contains(genoma)));
+        }
+
+        assert_eq!(ga.generacion, 5);
+        assert_ne!(ga.config_islas, tasas_iniciales);
     }
 }

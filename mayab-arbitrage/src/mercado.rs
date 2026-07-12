@@ -857,10 +857,20 @@ pub async fn capture_public_books(
         let tx = tx.clone();
         tokio::spawn(async move {
             let name = adapter.nombre().to_string();
+            let mut connection_epoch = 0_u64;
             loop {
-                if let Err(error) = capture_connection(adapter.as_ref(), depth, &tx).await {
+                if tx.is_closed() {
+                    break;
+                }
+                if let Err(error) =
+                    capture_connection(adapter.as_ref(), depth, connection_epoch, &tx).await
+                {
                     tracing::warn!(exchange = %name, %error, "captura WS reconectando");
                 }
+                if tx.is_closed() {
+                    break;
+                }
+                connection_epoch = connection_epoch.saturating_add(1);
                 tokio::time::sleep(Duration::from_millis(750)).await;
             }
         });
@@ -871,6 +881,7 @@ pub async fn capture_public_books(
 async fn capture_connection(
     adapter: &dyn ExchangeAdapter,
     depth: usize,
+    connection_epoch: u64,
     tx: &tokio::sync::mpsc::Sender<TapeEvent>,
 ) -> anyhow::Result<()> {
     let (mut ws, _) = connect_async(adapter.ws_url()).await?;
@@ -880,6 +891,7 @@ async fn capture_connection(
     let mut book = LibroEstado::new(adapter.par());
     let mut previous_sequence = None;
     let mut previous_resyncs = 0;
+    let mut first_useful_event = true;
     while let Some(message) = ws.next().await {
         let bytes = match message? {
             Message::Text(text) => text.as_bytes().to_vec(),
@@ -896,7 +908,11 @@ async fn capture_connection(
             continue;
         };
         let exchange_ms = (quote.evento_unix_ms > 0).then_some(quote.evento_unix_ms);
-        let gap = book.resyncs > previous_resyncs;
+        let reconnected = connection_epoch > 0 && first_useful_event;
+        // Una conexión nueva rompe continuidad aunque el primer payload sea un
+        // snapshot válido. Se marca como gap/resync para que el verificador no
+        // compare secuencias pertenecientes a sesiones distintas.
+        let gap = book.resyncs > previous_resyncs || reconnected;
         let event = TapeEvent {
             schema_version: 1,
             exchange_timestamp: exchange_ms.and_then(DateTime::<Utc>::from_timestamp_millis),
@@ -915,12 +931,15 @@ async fn capture_connection(
                 status: book.integrity_status.clone(),
                 gap,
                 resync: gap,
+                connection_epoch,
+                reconnected,
             },
             observed_latency_ms: exchange_ms
                 .map(|ts| local.timestamp_millis().saturating_sub(ts).max(0) as u64),
         };
         previous_sequence = book.ultima_secuencia.or(previous_sequence);
         previous_resyncs = book.resyncs;
+        first_useful_event = false;
         if tx.send(event).await.is_err() {
             return Ok(());
         }

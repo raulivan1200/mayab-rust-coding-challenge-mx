@@ -99,7 +99,7 @@ jury_state = jurado.get("estado") or {}
 checks = readiness.get("checks") or []
 rubrica = readiness.get("rubricaOficial") or []
 required_rubric_fields = {
-    "criterio", "pesoPct", "puntaje", "preguntaComite",
+    "criterio", "pesoPct", "estado", "preguntaComite",
     "evidenciaActual", "siguienteMovimientoDemo",
 }
 rubric_contract_ok = (

@@ -19,6 +19,7 @@ use rust_decimal::{
     prelude::{FromPrimitive, ToPrimitive},
     Decimal,
 };
+use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 
 use crate::{
@@ -233,10 +234,19 @@ impl Motor {
     }
 
     /// Recibe una cotización normalizada desde un adaptador de mercado.
-    pub async fn recibir_cotizacion(&self, mut cotizacion: Cotizacion) {
-        let ahora = Utc::now();
+    pub async fn recibir_cotizacion(&self, cotizacion: Cotizacion) {
+        self.recibir_cotizacion_en(cotizacion, Utc::now(), true)
+            .await;
+    }
+
+    async fn recibir_cotizacion_en(
+        &self,
+        mut cotizacion: Cotizacion,
+        ahora: DateTime<Utc>,
+        recalcular_latencia: bool,
+    ) {
         cotizacion.recibida_en = ahora;
-        if cotizacion.evento_unix_ms > 0 {
+        if recalcular_latencia && cotizacion.evento_unix_ms > 0 {
             cotizacion.latencia_ms = (ahora.timestamp_millis() - cotizacion.evento_unix_ms).max(0);
         }
         cotizacion.conectado = cotizacion.ultimo_mensaje != "rest_fallback";
@@ -1204,7 +1214,6 @@ impl Motor {
                     "modo": "instantaneo",
                     "operacionesInsertadas": insertadas,
                     "generacionGa": state.ga.generacion,
-                "generacionGa": state.ga.generacion,
                 })
             }
         }
@@ -1239,23 +1248,74 @@ impl Motor {
         })
     }
 
-    /// Reinyecta secuencialmente los order books capturados, invocando analizar() en cada tick.
+    /// Reproduce una copia del tape en un motor desechable.
+    ///
+    /// El motor live nunca recibe las cotizaciones del replay: sus wallets,
+    /// PnL, GA y libros permanecen intactos mientras el sandbox se evalúa.
     pub async fn ejecutar_replay_capturado(&self) -> serde_json::Value {
-        let datos = {
+        let (datos, mut costos, par_base, pares_extra) = {
             let state = self.state.read().await;
-            state.datos_capturados.clone()
+            let par_base = state
+                .pares_activos
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "BTC/USD".to_string());
+            (
+                state.datos_capturados.clone(),
+                state.costos.clone(),
+                par_base,
+                state
+                    .pares_activos
+                    .iter()
+                    .skip(1)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
         };
         if datos.is_empty() {
             return serde_json::json!({"ok": false, "error": "no hay datos capturados para replay"});
         }
+
+        costos.simular_adversidad = false;
+        costos.prob_fallo_orden = 0.0;
+        costos.prob_movimiento_brusco = 0.0;
+        let input_sha256 = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&datos).unwrap_or_default())
+        );
+
+        let sandbox = Motor::new(costos, 250_000.0, 2.5, par_base, pares_extra, None);
         let mut procesados = 0;
+        let mut reloj_anterior: Option<DateTime<Utc>> = None;
         for cot in datos {
-            self.recibir_cotizacion(cot).await;
-            self.analizar(Utc::now()).await;
+            let reloj_capturado = cot.recibida_en;
+            let reloj = reloj_anterior.map_or(reloj_capturado, |anterior| {
+                if reloj_capturado > anterior {
+                    reloj_capturado
+                } else {
+                    anterior + chrono::Duration::milliseconds(1)
+                }
+            });
+            sandbox.recibir_cotizacion_en(cot, reloj, false).await;
+            sandbox.analizar(reloj).await;
+            reloj_anterior = Some(reloj);
             procesados += 1;
-            tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        serde_json::json!({"ok": true, "ticksProcesados": procesados, "mensaje": "replay completado"})
+        let resultado = sandbox.estado().await;
+        serde_json::json!({
+            "ok": true,
+            "aislado": true,
+            "fuente": "captura_mercado_publico",
+            "determinista": true,
+            "inputSha256": input_sha256,
+            "reloj": "timestamps_capturados_monotonizados",
+            "adversidadAleatoria": false,
+            "ticksProcesados": procesados,
+            "operaciones": resultado.operaciones.len(),
+            "pnlUsd": resultado.metricas.utilidad_acumulada_usd,
+            "oportunidades": resultado.oportunidades.len(),
+            "mensaje": "replay completado en sandbox; el estado live no fue modificado",
+        })
     }
 
     /// Devuelve un análisis de sensibilidad GA sobre un holdout común.
@@ -2970,7 +3030,15 @@ fn precio_referencia<'a>(cotizaciones: impl IntoIterator<Item = &'a Cotizacion>)
 }
 
 pub fn cotizacion_valida(c: &Cotizacion, ahora: DateTime<Utc>, stale_ms: i64) -> bool {
-    if c.exchange.is_empty() || c.bid <= 0.0 || c.ask <= 0.0 || c.bid >= c.ask {
+    if c.exchange.is_empty()
+        || !c.bid.is_finite()
+        || !c.ask.is_finite()
+        || c.bid <= 0.0
+        || c.ask <= 0.0
+        || c.bid >= c.ask
+        || profundidad_disponible(&c.bids, c.bid_cantidad) <= 0.0
+        || profundidad_disponible(&c.asks, c.ask_cantidad) <= 0.0
+    {
         return false;
     }
     (ahora - c.recibida_en).num_milliseconds() <= stale_ms
@@ -3671,6 +3739,27 @@ mod tests {
     }
 
     #[test]
+    fn quote_sin_cantidad_ni_profundidad_no_es_ruteable() {
+        let incompleta = cot("A", 100.0, 101.0, 0.0, 0.0);
+        assert!(!cotizacion_valida(&incompleta, Utc::now(), 1_000));
+        assert_eq!(profundidad_disponible(&[], 0.0), 0.0);
+    }
+
+    #[test]
+    fn quote_con_profundidad_explicita_es_ruteable_aunque_bbo_qty_falte() {
+        let mut completa = cot("A", 100.0, 101.0, 0.0, 0.0);
+        completa.bids.push(NivelOrden {
+            precio: 100.0,
+            cantidad: 0.25,
+        });
+        completa.asks.push(NivelOrden {
+            precio: 101.0,
+            cantidad: 0.20,
+        });
+        assert!(cotizacion_valida(&completa, Utc::now(), 1_000));
+    }
+
+    #[test]
     fn drawdown_mide_caida_desde_el_pico() {
         let ahora = Utc::now();
         let serie = [10.0, 15.0, 7.0, 12.0].map(|valor| PuntoSerie {
@@ -3706,6 +3795,91 @@ mod tests {
             .any(|e| e.tipo == "kill_switch"));
         motor.set_kill_switch(false).await;
         assert!(!motor.estado().await.metricas.circuit_breaker_activo);
+    }
+
+    #[tokio::test]
+    async fn replay_vacio_falla_cerrado_sin_mutar_estado() {
+        let motor = Motor::new(cfg_test(), 250_000.0, 2.5, "BTC/USD".into(), vec![], None);
+        let antes = motor.estado().await;
+        let resultado = motor.ejecutar_replay_capturado().await;
+        let despues = motor.estado().await;
+
+        assert_eq!(resultado["ok"], false);
+        assert_eq!(antes.operaciones, despues.operaciones);
+        assert_eq!(antes.balances, despues.balances);
+        assert_eq!(antes.genetico, despues.genetico);
+    }
+
+    #[tokio::test]
+    async fn captura_expone_ciclo_de_vida_y_numero_de_snapshots() {
+        let motor = Motor::new(cfg_test(), 250_000.0, 2.5, "BTC/USD".into(), vec![], None);
+        motor.iniciar_captura().await;
+        assert_eq!(motor.captura_estado().await["activa"], true);
+
+        motor
+            .recibir_cotizacion(cot("A", 100.0, 101.0, 1.0, 1.0))
+            .await;
+        motor
+            .recibir_cotizacion(cot("B", 102.0, 103.0, 1.0, 1.0))
+            .await;
+
+        assert_eq!(motor.detener_captura().await, 2);
+        let estado = motor.captura_estado().await;
+        assert_eq!(estado["activa"], false);
+        assert_eq!(estado["snapshots"], 2);
+    }
+
+    #[tokio::test]
+    async fn replay_capturado_es_sandbox_y_no_contamina_live() {
+        let motor = Motor::new(cfg_test(), 250_000.0, 2.5, "BTC/USD".into(), vec![], None);
+        motor.iniciar_captura().await;
+        motor
+            .recibir_cotizacion(cot("A", 100.0, 101.0, 1.0, 1.0))
+            .await;
+        motor
+            .recibir_cotizacion(cot("B", 104.0, 105.0, 1.0, 1.0))
+            .await;
+        motor.detener_captura().await;
+
+        let antes = motor.estado().await;
+        let resultado = motor.ejecutar_replay_capturado().await;
+        let despues = motor.estado().await;
+
+        assert_eq!(resultado["ok"], true);
+        assert_eq!(resultado["aislado"], true);
+        assert_eq!(resultado["ticksProcesados"], 2);
+        assert_eq!(antes.operaciones, despues.operaciones);
+        assert_eq!(antes.oportunidades, despues.oportunidades);
+        assert_eq!(antes.balances, despues.balances);
+        assert_eq!(antes.genetico, despues.genetico);
+        assert_eq!(
+            antes.metricas.utilidad_acumulada_usd,
+            despues.metricas.utilidad_acumulada_usd
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_same_tape_produces_identical_summary_and_input_hash() {
+        let mut config = cfg_test();
+        config.simular_adversidad = true;
+        config.prob_fallo_orden = 1.0;
+        config.prob_movimiento_brusco = 1.0;
+        let motor = Motor::new(config, 250_000.0, 2.5, "BTC/USD".into(), vec![], None);
+        motor.iniciar_captura().await;
+        motor
+            .recibir_cotizacion(cot("A", 100.0, 101.0, 1.0, 1.0))
+            .await;
+        motor
+            .recibir_cotizacion(cot("B", 104.0, 105.0, 1.0, 1.0))
+            .await;
+        motor.detener_captura().await;
+
+        let first = motor.ejecutar_replay_capturado().await;
+        let second = motor.ejecutar_replay_capturado().await;
+        assert_eq!(first, second);
+        assert_eq!(first["determinista"], true);
+        assert_eq!(first["adversidadAleatoria"], false);
+        assert_eq!(first["inputSha256"].as_str().map(str::len), Some(64));
     }
 
     #[test]

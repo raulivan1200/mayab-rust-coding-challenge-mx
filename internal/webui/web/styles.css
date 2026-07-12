@@ -5392,6 +5392,14 @@ body::after {
   line-height: 1.2;
 }
 
+.landing-copy .landing-stack-phrase {
+  max-width: 760px;
+  padding-left: 14px;
+  border-left: 4px solid currentColor;
+  font-size: clamp(0.86rem, 1.15vw, 1rem);
+  line-height: 1.35;
+}
+
 .landing-cta {
   position: relative;
   isolation: isolate;
@@ -6449,6 +6457,64 @@ strong.metric-value {
 .tutorial-fab {
   top: auto;
   bottom: max(18px, env(safe-area-inset-bottom));
+}
+
+/* El contenedor, no cada boton, controla la posicion y la separacion. */
+.floating-help-actions {
+  position: fixed;
+  z-index: 2147483010;
+  top: 90dvh;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 100vw;
+  padding: 12px max(18px, env(safe-area-inset-right)) 12px max(18px, env(safe-area-inset-left));
+  transform: translateY(-100%);
+  pointer-events: none;
+}
+
+.dictionary-fab,
+.tutorial-fab {
+  box-sizing: border-box;
+  position: relative;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  left: auto;
+  width: auto;
+  max-width: calc(50vw - 30px);
+  min-height: 52px;
+  padding: 12px 18px;
+  font-size: 0.9rem;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: auto;
+}
+
+.dictionary-fab span,
+.tutorial-fab span {
+  display: inline-block;
+}
+
+/* En ventanas estrechas conservar el padding y reducir el texto, no la zona tactil. */
+@media (max-height: 420px), (max-width: 420px) {
+  .floating-help-actions {
+    gap: 10px;
+    padding: 10px max(12px, env(safe-area-inset-right)) 10px max(12px, env(safe-area-inset-left));
+  }
+
+  .dictionary-fab,
+  .tutorial-fab {
+    width: 48px;
+    min-height: 48px;
+    padding: 12px;
+  }
+
+  .dictionary-fab span,
+  .tutorial-fab span {
+    display: none;
+  }
 }
 
 .reveal-card {
@@ -7803,25 +7869,23 @@ a,
   }
 }
 
-/* Interacción unificada: las superficies no ganan un halo o borde blanco al
-   pasar el cursor. Los botones conservan la tinta sólida de su sección y todas
-   las tarjetas usan el mismo cambio discreto de fondo. Esta regla se mantiene
-   al final para cerrar la cascada histórica del dashboard. */
+/* Interacción unificada: las superficies informativas conservan exactamente
+   su paleta. Solo una superficie que sea realmente accionable recibe hover. */
 [data-theme="dark"] {
   --border-card: 1px solid transparent;
 }
 
 :is(.panel, .ga-panel, .metricas article, .exchange, .ruta, .landing-card) {
-  transition:
-    background-color 260ms cubic-bezier(0.22, 1, 0.36, 1),
-    border-color 260ms cubic-bezier(0.22, 1, 0.36, 1),
-    color 260ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: none;
 }
 
 @media (hover: hover) and (pointer: fine) {
-  :is(.panel, .ga-panel, .metricas article, .exchange, .ruta, .landing-card):hover {
-    border-color: color-mix(in srgb, var(--ink) 18%, var(--line));
-    background-color: color-mix(in srgb, var(--paper) 99%, var(--acento) 1%);
+  :is(.panel, .ga-panel, .metricas article, .exchange, .ruta, .landing-card):is(a, button, [role="button"]) {
+    transition: filter 220ms ease;
+  }
+
+  :is(.panel, .ga-panel, .metricas article, .exchange, .ruta, .landing-card):is(a, button, [role="button"]):hover {
+    filter: saturate(1.03);
     box-shadow: none;
     transform: none;
   }
@@ -7836,5 +7900,341 @@ a,
   ):not(:disabled):is(:hover, :focus-visible) {
     border-color: transparent;
     box-shadow: none;
+  }
+}
+/* Tesis ejecutiva: debe ser lo primero que entienda un evaluador. */
+.mayab-thesis {
+  margin: 18px 0;
+  padding: clamp(22px, 3vw, 38px);
+  border: 1px solid color-mix(in srgb, var(--btc, #f7931a) 45%, transparent);
+  border-radius: 24px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--btc, #f7931a) 13%, transparent), transparent 62%);
+}
+
+.mayab-thesis h1 {
+  max-width: 1050px;
+  margin: 7px 0 10px;
+  font-size: clamp(1.45rem, 3vw, 2.75rem);
+  line-height: 1.05;
+  letter-spacing: -0.035em;
+}
+
+.mayab-thesis > p:last-child {
+  margin: 0;
+  color: var(--texto-secundario, #667085);
+}
+/* Selector editorial de procedencia: la fuente de evidencia se elige antes de
+   entrar al dashboard y nunca se confunde con el tipo de ejecución. */
+.data-lens-menu {
+  min-width: min(720px, 62vw);
+  min-height: 62px;
+  display: grid;
+  grid-template-columns: auto repeat(3, minmax(142px, 1fr));
+  align-items: stretch;
+  padding: 5px;
+  border: 1px solid #111;
+  border-radius: 18px;
+  background: color-mix(in srgb, #f7efe7 88%, transparent);
+  backdrop-filter: blur(14px);
+}
+
+.data-lens-label {
+  display: grid;
+  place-items: center;
+  padding: 0 14px;
+  color: #665f58;
+  font-size: 0.64rem;
+  font-weight: 950;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.data-lens-item {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-left: 1px solid rgba(17, 17, 17, 0.18);
+  border-radius: 12px;
+  color: #111;
+  text-decoration: none;
+  transition: background-color 220ms ease, color 220ms ease, transform 220ms ease;
+}
+
+.data-lens-item span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.data-lens-item strong,
+.data-lens-item small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.data-lens-item strong {
+  font-family: var(--font-compact);
+  font-size: 0.76rem;
+  font-weight: 950;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.data-lens-item small {
+  color: #665f58;
+  font-size: 0.62rem;
+  font-weight: 700;
+}
+
+.data-lens-dot,
+.data-lens-index {
+  width: 25px;
+  height: 25px;
+  flex: 0 0 25px;
+  display: grid;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-size: 0.56rem;
+  font-style: normal;
+  font-weight: 950;
+}
+
+.data-lens-dot::after {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #0b6b35;
+  content: "";
+  box-shadow: 0 0 0 4px rgba(11, 107, 53, 0.14);
+}
+
+.data-lens-item.is-active {
+  background: #111;
+  color: #fff;
+}
+
+.data-lens-item.is-active small {
+  color: rgba(255, 255, 255, 0.68);
+}
+
+.data-lens-item[data-data-lens="replay"].is-active { background: #0057a8; }
+.data-lens-item[data-data-lens="demo"].is-active { background: #7f43b6; }
+
+.data-lens-explainer {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(180px, auto) auto;
+  align-items: center;
+  gap: 16px;
+  margin: -10px 0 clamp(18px, 2.2vw, 34px);
+  padding: 10px 16px;
+  border-block: 1px solid rgba(17, 17, 17, 0.2);
+  color: #111;
+}
+
+.data-lens-scale {
+  justify-self: end;
+  padding: 7px 10px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: #665f58;
+  font-size: 0.62rem;
+  font-weight: 950;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.data-lens-scale[data-status="verified"] {
+  background: #0b6b35;
+  color: #fff;
+}
+
+.data-lens-scale[data-status="pending"] {
+  background: #ffb200;
+  color: #111;
+}
+
+.data-lens-scale[data-status="unavailable"] {
+  background: transparent;
+  color: #665f58;
+}
+
+.data-lens-explainer span,
+.data-lens-explainer small {
+  color: #665f58;
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.data-lens-explainer span {
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.data-lens-explainer strong {
+  font-size: 0.78rem;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .data-lens-item:not(.is-active):hover {
+    background: rgba(17, 17, 17, 0.08);
+    transform: translateY(-1px);
+  }
+}
+
+@media (max-width: 980px) {
+  .landing-nav {
+    flex-wrap: wrap;
+  }
+
+  .data-lens-menu {
+    order: 3;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .data-lens-explainer {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .data-lens-scale {
+    justify-self: start;
+  }
+}
+
+@media (max-width: 640px) {
+  .landing-dashboard-link,
+  .data-lens-label {
+    display: none;
+  }
+
+  .data-lens-menu {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    border-radius: 14px;
+  }
+
+  .data-lens-item {
+    min-height: 58px;
+    padding: 7px 8px;
+  }
+
+  .data-lens-item:first-of-type {
+    border-left: 0;
+  }
+
+  .data-lens-item small {
+    font-size: 0.56rem;
+  }
+
+  .data-lens-dot,
+  .data-lens-index {
+    display: none;
+  }
+
+  .data-lens-explainer {
+    margin-top: -4px;
+    padding-inline: 6px;
+  }
+}
+
+/* Hero legible desde el primer paint. La animacion reveal es progresiva y no
+   debe funcionar como una pantalla de carga ni difuminar el mensaje principal. */
+.landing-hero > .reveal-card:not(.is-visible),
+.landing-hero .landing-card.reveal-card:not(.is-visible) {
+  opacity: 1 !important;
+  clip-path: none !important;
+  filter: none !important;
+  transform: none !important;
+  pointer-events: auto;
+}
+
+.landing-copy {
+  min-height: auto;
+  padding: clamp(34px, 4vw, 64px) clamp(22px, 3.6vw, 58px);
+  justify-content: flex-start;
+}
+
+.landing-copy h1 {
+  max-width: 15ch;
+  margin: 12px 0 0;
+  font-size: clamp(3.35rem, 5.35vw, 5.9rem);
+  line-height: 0.91;
+  text-wrap: balance;
+}
+
+.landing-copy > p:not(.landing-kicker) {
+  max-width: 60ch;
+  line-height: 1.35;
+}
+
+.landing-copy .landing-stack-phrase {
+  margin-top: 24px;
+  padding: 2px 0 2px 16px;
+  border-left-width: 3px;
+  font-weight: 650;
+}
+
+.landing-actions {
+  margin-top: 28px;
+}
+
+.landing-actions .landing-cta {
+  margin-top: 0;
+}
+
+.landing-proof {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: 100%;
+  margin-top: 30px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(17, 17, 17, 0.26);
+}
+
+[data-theme="dark"] .landing-proof {
+  border-top-color: rgba(255, 255, 255, 0.24);
+}
+
+.landing-proof > span {
+  align-items: flex-start;
+  line-height: 1.25;
+}
+
+@media (max-width: 1180px) {
+  .landing-copy {
+    min-height: auto;
+  }
+
+  .landing-card-stack {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .landing-copy {
+    min-height: auto;
+    padding: 30px 20px 34px;
+  }
+
+  .landing-copy h1 {
+    font-size: clamp(2.75rem, 13.5vw, 4.6rem);
+    line-height: 0.94;
+  }
+
+  .landing-proof,
+  .landing-card-stack {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .landing-proof {
+    gap: 12px;
   }
 }

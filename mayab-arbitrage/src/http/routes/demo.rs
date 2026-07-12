@@ -27,5 +27,18 @@ pub(crate) fn routes() -> Router<EstadoApp> {
             "/api/demo/capturar/replay",
             post(server::captura_replay_http),
         )
+        .route(
+            "/api/replay/captura/iniciar",
+            post(server::captura_iniciar_http),
+        )
+        .route(
+            "/api/replay/captura/detener",
+            post(server::captura_detener_http),
+        )
+        .route(
+            "/api/replay/captura/estado",
+            get(server::captura_estado_http),
+        )
+        .route("/api/replay/ejecutar", post(server::captura_replay_http))
         .route("/api/adverso", post(server::trigger_adverso_http))
 }

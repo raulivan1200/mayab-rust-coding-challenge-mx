@@ -2,7 +2,27 @@
 
 Feeds públicos multi-exchange, decisiones auditables y ejecución 100% simulada en un solo binario Rust.
 
-> **Aclaración para el Jurado**: Este proyecto está construido 100% en **Rust, Tokio y Axum**. Si la descripción del repositorio en GitHub menciona "Go", se trata de un remanente en la configuración de la plataforma que no corresponde al código actual.
+> **Rust en el camino crítico; vanilla JS en la última milla: sin GC en el motor, sin hidratación en el dashboard y sin una cadena de servicios entre la señal y la evidencia.**
+
+Esta es una decisión arquitectónica, no un benchmark inventado: Rust elimina el
+GC del proceso y permite trabajo CPU multihilo; la UI nativa evita el runtime y
+la hidratación de un framework. Node.js, Python y otros stacks pueden ser rápidos,
+pero cualquier multiplicador requiere una implementación equivalente y el mismo
+hardware/dataset. La metodología y sus límites están en
+[ADR 3](docs/ADRs/0003-benchmark-rust-vs-node-php.md).
+
+## Evidencia que cabe en una pantalla
+
+| Señal verificable | Evidencia |
+|---|---|
+| 10 CEX públicos | WebSocket-first, con fallback REST etiquetado |
+| Suite Rust multi-capa | conteo y resultado del CI del SHA entregable |
+| 24 semillas pareadas | baseline y campeón GA sobre el mismo holdout |
+| 10,000 remuestras bootstrap | IC temporal, efecto y corrección Holm |
+| 0 BTC residual tras fallar la venta | `POST /api/demo/caos` termina en `RECONCILED_LOSS` |
+| p50 / p95 / p99 del pipeline | valores runtime en `GET /api/latencias` y `GET /api/jurado` |
+
+La cifra operacional principal no es un spread bruto: es **cero exposición residual después de una segunda pierna rechazada**, con la transición completa y su pérdida de unwind auditadas. Las cifras runtime se publican desde el proceso evaluado; no se congelan en marketing.
 
 [Aplicación pública en Cloud Run](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app)
 
@@ -51,7 +71,10 @@ El resto del README explica, en orden, el problema y la evidencia, arquitectura,
 | Optimización Genética Híbrida | Completado | Dashboard > Panel GA | Visualización de pesos, convergencia y fitness |
 | Evaluación y Backtest | Completado | `GET /api/paquete-evaluacion` | Scorecard, benchmark de latencia y exportaciones |
 
-Mayab Arbitraje BTC es un sistema inteligente de arbitraje de Bitcoin en tiempo real con optimización evolutiva mediante **GA multiobjetivo con selección NSGA-II y metaheurísticas híbridas** (elitismo, recocido simulado, evolución diferencial, reinicio adaptativo). Monitorea libros públicos en 10 CEX simultáneamente y expone 2 adaptadores DEX de investigación claramente etiquetados como simulados; detecta oportunidades de arbitraje tradicional y triangular, simula ejecuciones con costos realistas, y **evoluciona automáticamente su estrategia de selección** usando un motor genético que optimiza pesos, umbrales y tolerancias.
+Mayab Arbitraje BTC concentra tres capacidades: **hot path event-driven en Rust con matemática decimal**, **decisión net-first con profundidad, inventario y riesgo de ejecución**, y **evidencia reproducible mediante replay, caos, auditoría y comparación contra baseline**. Monitorea libros públicos en 10 CEX, detecta rutas cross-exchange y triangulares y simula cada ejecución con costos explícitos. El GA multiobjetivo profundiza la selección de parámetros; no sustituye la contabilidad ni las reglas de riesgo.
+
+Para contrastar revisiones de versiones anteriores con el entregable actual, consulta la [respuesta verificable a la auditoría](docs/RESPUESTA_AUDITORIA.md).
+La comparación externa con los rivales públicos y las brechas P0/P1/P2 está en la [auditoría competitiva con corte 2026-07-12](docs/COMPETITOR_AUDIT_2026-07-12.md).
 
 El sistema corre como un solo binario Rust: conexiones WebSocket concurrentes sobre Tokio, motor de decisión, simulador de carteras, optimización genética ligera, API Axum e interfaz web servida por el mismo proceso. Esa arquitectura reduce latencia operativa, simplifica el despliegue y permite demostrar el sistema en vivo sin una cadena pesada de servicios.
 
@@ -60,7 +83,7 @@ El sistema corre como un solo binario Rust: conexiones WebSocket concurrentes so
 1. Abre la [aplicación pública](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app) y revisa el badge LIVE/DEMO/REST, P&L, mapa de rutas, wallets, eventos y panel GA. Si prefieres una visita guiada, pulsa **Recorrido de 2 min** en el encabezado; es opcional.
 2. Abre `/api/jurado`: concentra rúbrica, scorecard, cobertura finalista, checks, evidencia clave y links de auditoría.
 3. Abre `/api/preflight`: confirma `judgeReadiness.status=ready`, checks completos y la rúbrica oficial de 5 criterios.
-4. La instancia pública queda precargada por el deploy con una demo auditada. Los controles que mutan el simulador son solo para el operador y solicitan `ADMIN_TOKEN`; un jurado sin credenciales puede revisar toda la evidencia mediante los endpoints GET.
+4. La instancia pública queda precargada por el deploy con una demo auditada. Con `MAYAB_JUDGE_MODE=true`, el jurado puede reiniciar y ejecutar únicamente los recorridos cerrados `/api/demo/reset`, `/api/demo/final` y `/api/demo/caos`; cualquier otra mutación sigue protegida por `ADMIN_TOKEN`.
 5. En local, o como operador autenticado, pulsa **Preparar demo auditada** y **Forzar rebalanceo** para reproducir la corrida y el movimiento interno con costo explícito.
 6. Abre `/api/paquete-evaluacion`: verás scorecard, huella de auditoría, recomendaciones finales, backtest reproducible, evidencia SQLite y diferenciadores listos para revisión.
 
@@ -84,7 +107,7 @@ Este proyecto está diseñado como MVP demostrable y seguro para evaluación té
 - No puede cobrar comisiones reales: las comisiones, retiros, slippage y balances son parámetros de simulación.
 - Los WebSockets de mercado consumen datos públicos.
 - Los endpoints POST modifican únicamente el estado simulado del proceso y los parámetros visibles del dashboard.
-- En producción (`MAYAB_ENV=production`), `ADMIN_TOKEN` es obligatorio, debe tener al menos 32 caracteres y protege los endpoints mutables mediante `Authorization: Bearer <token>` o `X-Admin-Token`.
+- En producción (`MAYAB_ENV=production`), `ADMIN_TOKEN` es obligatorio, debe tener al menos 32 caracteres y protege los endpoints mutables mediante `Authorization: Bearer <token>` o `X-Admin-Token`. La excepción opt-in `MAYAB_JUDGE_MODE=true` sólo abre los tres recorridos de demo predefinidos; no abre configuración, wallets arbitrarios, exchanges, GA libre ni MCP.
 
 Una demo local en modo desarrollo puede ejecutarse sin `ADMIN_TOKEN`; un deploy productivo falla de forma cerrada si no se configura. Si se quisiera convertir en producto con dinero real, la primera tarea no sería conectar órdenes, sino endurecer autenticación/autorización, rate limiting, auditoría, aislamiento de secretos, permisos por exchange y límites duros de exposición.
 
@@ -113,15 +136,18 @@ Contrato HTTP:
 
 ## Virtudes principales
 
+La revision rapida y reproducible esta en [docs/EVIDENCE_MATRIX.md](docs/EVIDENCE_MATRIX.md). Separa evidencia LIVE de escenarios SYNTHETIC y enlaza cada afirmacion con runtime, codigo, prueba y endpoint.
+
 - **GA híbrido multiobjetivo**: non-dominated sorting, rank y crowding distance sobre PnL, Sharpe, drawdown y win rate; publica el frente de Pareto y elige de forma determinista el mayor fitness ajustado por riesgo del primer frente. Incluye cruce uniforme, mutación gaussiana, **recocido simulado**, **evolución diferencial** y **reinicio adaptativo**.
 - **Scoring adaptativo**: Los pesos de la función de puntuación (utilidad, frescura, liquidez, confiabilidad, Z-Score) son optimizados genéticamente, no fijos.
 - **Metaheurísticas híbridas**: Combina GA clásico con recocido simulado, evolución diferencial y reinicio por convergencia para escapar de óptimos locales.
 - **Detección de convergencia y reinicio adaptativo**: Cuando el fitness deja de mejorar, se inyecta diversidad y se aumenta la tasa de mutación.
-- **Diez casas de cambio conectadas en paralelo**: Binance, Kraken, Coinbase, OKX, Bybit, Bitfinex, KuCoin, Gate.io, Bitstamp, Gemini (activables/desactivables individualmente desde la UI).
+- **Diez adaptadores CEX implementados**: Binance, Kraken, Coinbase, OKX, Bybit, Bitfinex, KuCoin, Gate.io, Bitstamp y Gemini. El dashboard distingue adaptador disponible, venue habilitado, feed conectado y libro ruteable; nunca presenta feeds o pares como si fueran exchanges únicos.
 - **Arbitraje Triangular**: Detección y simulación en ciclos de tres monedas.
 - **Métricas Fintech Avanzadas**: Sharpe Ratio, Sortino Ratio, Kelly Criterion, TOBI, y actualización Bayesiana.
 - **Soporte Multi-Par Automático**: Permite añadir pares dinámicos (e.g. ETH, SOL) a través de PARES_EXTRA.
 - **WebSocket-first con REST fallback público**: los WebSockets son la fuente primaria; si un feed queda stale o desconectado, el adaptador toma un snapshot REST de order book y lo marca como `rest_fallback`.
+- **Integridad observable por feed**: `/metrics` publica conexión, latencia, tiempo invalidado, resincronizaciones, gaps de secuencia y fallos de checksum por exchange/par. Así una desconexión o libro corrupto deja evidencia cuantificable en vez de convertirse silenciosamente en una oportunidad.
 - **Evaluación de rutas compra-venta en cada ciclo**, no solo comparación entre dos mercados fijos.
 - **Precisión financiera interna con `rust_decimal`**: fees, slippage, retiro amortizado, basis USD/USDT, PnL, tamaño ejecutable y actualización de wallets se calculan con decimal fijo; el JSON público conserva números para compatibilidad con la UI.
 - **Simulación realista** con comisiones por casa, deslizamiento estimado con niveles de order book, retiro amortizado, riesgo de latencia, balances por cartera y ajuste USD/USDT.
@@ -137,9 +163,9 @@ Contrato HTTP:
 - **Backtest reproducible multisemilla** vía API/UI: compara baseline contra el campeón GA publicado en 24 semillas comunes y muestra mediana y P05–P95.
 - **Bootstrap temporal pareado**: 10,000 remuestras moving-block con seed explícita, sensibilidad de bloques de 30/60/120 s, IC percentiles de PnL neto, fill rate, drawdown y sus diferencias; incluye P(ΔPnL > 0), permutación por bloques, tamaño del efecto, corrección Holm y conclusión inconclusa si el IC de ΔPnL cruza cero.
 - **Preflight operacional** (`/api/preflight`) con salud de feeds, configuración, riesgo, GA, archivos del dashboard y endpoints de auditoría.
-- **Jury Mode** (`/api/jurado`) como superficie única de evaluación: rúbrica oficial, scorecard, cobertura contra benchmark finalista, checks, evidencia clave y enlaces verificables.
+- **Jury Mode** (`/api/jurado`) como superficie única de evaluación: matriz de evidencia PASS/WARN/FAIL, cobertura contra la rúbrica, checks, timestamps y enlaces verificables. Mayab no se asigna una calificación a sí mismo.
 - **Endpoint compatible con LLMs y revisores automáticos** (`/api/resumen-llm`) con resumen narrativo, Markdown y métricas clave sin tener que interpretar HTML.
-- **Paquete de evaluación para jurado** (`/api/paquete-evaluacion`) con scorecard, guion de demo, evidencia auditable, backtest reproducible y huella de corrida.
+- **Paquete de evaluación para jurado** (`/api/paquete-evaluacion`) con matriz de evidencia, guion de demo, backtest reproducible y huella de corrida.
 - **Tablero operativo en tiempo real** con mapa de rutas, panel forense de oportunidades, score EV, modo LIVE/DEMO/REST, timeline operativo, presets de estrategia, panel genético (fitness, diversidad, pesos, convergencia), ganancia/pérdida, latencia, oportunidades y ejecuciones.
 - **Auditoría de decisiones** por ruta: score final, razón de aceptación/descarte, pesos GA usados, costo total, latencia, Z-Score y balances relevantes antes de ejecutar.
 - **Auditoría local en SQLite**: operaciones, oportunidades, eventos, rebalanceos y decisiones se guardan para revisión y exportación. En Cloud Run, `/tmp` es efímero; retención permanente requiere volumen o backend externo.
@@ -257,6 +283,20 @@ Mapa de mantenimiento con responsabilidades por archivo: [ARCHITECTURE.md](ARCHI
 El servidor mantiene una tarea Tokio por cada feed de mercado WebSocket y un ciclo de análisis periódico independiente. La interfaz web recibe actualizaciones en tiempo real mediante una conexión WebSocket única en `/tiempo-real` y puede modificar parámetros en caliente consumiendo las APIs `/api/config`, `/api/exchanges`, `/api/ga/config` vía POST.
 
 ## Demo para el comité
+
+### Respuesta a “¿qué pasa si compra y la venta falla?”
+
+El motor no presenta ese caso como un simple circuit breaker. La demo publica una máquina de estados auditable:
+
+```text
+PENDING
+→ LEG_A_FILLED
+→ LEG_B_REJECTED
+→ UNWIND_FILLED
+→ RECONCILED_LOSS
+```
+
+La exposición temporal aparece en la traza, el unwind registra su PnL realizado y la conciliación exige `exposicionFinalBtc = 0`. Se reproduce con `POST /api/demo/caos`, se ve en la tabla **FSM de ejecución y conciliación** y forma parte del gate de release.
 
 Flujo recomendado para evaluar la aplicación en vivo:
 
@@ -649,7 +689,7 @@ Sandbox; no convierte este servidor público en un bot live. Su threat model,
 configuración fail-closed, ciclo de órdenes, ledger y despliegue privado están en
 [docs/TESTNET_EXECUTION.md](docs/TESTNET_EXECUTION.md).
 
-Los endpoints GET de evidencia permanecen públicos. En desarrollo local los POST pueden usarse sin token; en producción todos los endpoints que mutan el simulador requieren `ADMIN_TOKEN`, aunque no ejecuten operaciones reales ni accedan a cuentas de exchange. Esta barrera evita que una visita reinicie o altere la corrida que está evaluando otra persona.
+Los endpoints GET de evidencia permanecen públicos. En desarrollo local los POST pueden usarse sin token. En producción, las mutaciones requieren `ADMIN_TOKEN`, salvo que el deploy active explícitamente `MAYAB_JUDGE_MODE=true`: en ese caso sólo `/api/demo/reset`, `/api/demo/final` y `/api/demo/caos` son públicos, deterministas, simulados y sujetos al rate limit HTTP. Esta superficie estrecha permite la evaluación sin exponer el panel administrativo.
 
 El token se envía como `Authorization: Bearer <token>` o `X-Admin-Token`. No debe incluirse en capturas, URLs, código cliente versionado ni imágenes Docker. Una eventual versión con dinero real requeriría además autorización por acción, roles, límites de exposición y controles de secretos antes de conectar cualquier API privada.
 
@@ -710,6 +750,8 @@ curl http://localhost:8080/api/paquete-evaluacion
 ```
 
 `/api/demo/reset` crea una corrida limpia sin tumbar los feeds públicos. `/api/demo/caos` prueba el ciclo degradación→protección→recuperación y verifica que la segunda pierna termine conciliada sin exposición residual. `/api/demo/final` ejecuta en un solo paso el flujo recomendado de jurado: evolución GA con replay si hace falta, demo rentable, fill parcial y rebalanceo forzado. `/api/lab/sweep` compara presets sobre el mismo replay y valida robustez en 24 semillas comunes. El campeón puede perder: el reporte conserva el resultado para evitar cherry-picking.
+
+`/api/demo/final` devuelve además una huella SHA-256 de auditoría y etiqueta la fuente como `demo_controlada_sintetica`. La huella permite detectar cambios en la evidencia exportada; no se presenta como firma digital ni como prueba de rentabilidad live.
 
 También puedes correr el smoke completo:
 
@@ -854,6 +896,86 @@ cargo run --bin evaluate-tape -- \
 Genera `evaluation.json`, `evaluation.csv` y `evaluation.md`. Acepta un archivo
 o directorio con JSON (array de cotizaciones o wrapper `cotizaciones`/`eventos`)
 y JSONL/NDJSON.
+
+### Identidad y procedencia del tape
+
+Las capturas nativas incluyen un manifiesto verificable con `datasetId`,
+clasificación `public_market_capture`, SHA-256 de eventos y configuración,
+commit Git, ventana temporal, bytes sin comprimir, eventos por exchange,
+snapshots, gaps de secuencia y fallbacks REST. La verificación reconstruye cada
+libro y vuelve a calcular hashes y conteos antes de aceptar la cinta:
+
+```bash
+cargo run -p mayab-cli --bin verify-tape -- artifacts/tapes/run-001
+```
+
+El número de eventos solo se publica junto con `datasetId` y `sha256`. Una demo
+sintética o un replay generado no puede etiquetarse como
+`public_market_capture`. Esto permite acumular una historia grande de mercado
+público sin convertir volumen sintético en “evidencia real”.
+
+Para agregar múltiples capturas sin contar dos veces el mismo tape:
+
+```bash
+cargo run -p mayab-cli --bin verify-corpus -- \
+  --root artifacts/tapes \
+  --output artifacts/evidence/corpus.json
+```
+
+El agregador rechaza hashes duplicados y genera una identidad SHA-256 para el
+corpus completo. La definición de eventos, candidatos y dislocaciones, junto
+con los gates para publicar cifras, está en
+[`docs/QUANTITATIVE_EVIDENCE.md`](docs/QUANTITATIVE_EVIDENCE.md).
+
+Para acumular capturas verificadas en shards de 30 minutos durante 24 horas:
+
+```bash
+cargo run -p mayab-cli --bin capture-corpus -- \
+  --root artifacts/tapes/btc-usd \
+  --total 24h --shard 30m --pair BTC/USD \
+  --exchanges Binance,Kraken,Coinbase,OKX --depth 10
+```
+
+Cada shard se verifica inmediatamente; uno corrupto queda en cuarentena con
+prefijo `failed-` y nunca se incorpora al conteo del corpus.
+
+La captura produce además `corpus.sqlite`, un índice transaccional de metadatos
+para consultar el corpus sin meter escrituras SQLite en el WebSocket. Los JSONL
+siguen siendo la evidencia autoritativa. `verify-corpus` también acepta
+`--sqlite-index artifacts/evidence/corpus.sqlite`.
+
+El embudo cuantitativo a escala se obtiene en una sola pasada y memoria acotada:
+
+```bash
+cargo run -p mayab-cli --bin scan-corpus -- \
+  --root artifacts/tapes/btc-usd \
+  --output artifacts/evidence/corpus-scan.json
+```
+
+Este scan no selecciona estrategias: cuenta mercado observable y enlaza tanto
+el hash del corpus como el hash canónico del modelo de costos.
+
+`evidence-seal.json` encadena el reporte, scan e índice SQLite. Verificación:
+
+```bash
+cargo run -p mayab-cli --bin verify-corpus-seal -- artifacts/tapes/btc-usd
+```
+
+El benchmark reproducible de 100k eventos está documentado en
+[`BENCHMARKING.md`](BENCHMARKING.md). Su fixture lleva la clasificación
+`synthetic_benchmark` y nunca puede superar el gate de evidencia pública.
+
+Para exponer el reporte precomputado sin reescanear todos los eventos en cada
+petición:
+
+```bash
+MAYAB_RESEARCH_CORPUS=artifacts/tapes/btc-usd cargo run
+curl -sS http://127.0.0.1:8080/api/research/tapes | jq '.corpus.evidenceGates'
+```
+
+El endpoint publica además el SHA-256 del reporte y el comando de reverificación.
+No expone la ruta absoluta configurada y declara que verificar el JSON no
+sustituye la reconstrucción completa mediante `verify-corpus`.
 
 ## Fase 9 — Microestructura y calibración
 

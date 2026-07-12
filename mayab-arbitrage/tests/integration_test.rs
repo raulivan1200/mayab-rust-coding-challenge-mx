@@ -289,9 +289,9 @@ async fn integration_preflight_reporta_salud_feeds_y_ga() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    // judgeReadiness.status es "ready" o "review"
+    // Un motor recién creado puede estar blocked hasta recibir dos libros frescos.
     let status = json["judgeReadiness"]["status"].as_str().unwrap();
-    assert!(status == "ready" || status == "review");
+    assert!(matches!(status, "ready" | "blocked"));
     // En preflight, "checks" es un array de {name, ok, detalle}
     assert!(json["checks"].is_array());
     assert!(json["checks"].as_array().unwrap().len() >= 10);

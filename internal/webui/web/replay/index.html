@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="es" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0c0e14">
+  <title>Mayab Replay — Laboratorio aislado</title>
+  <link rel="icon" href="/icons/favicon.svg">
+  <link rel="stylesheet" href="/styles.css?v=20260712-replay-shared">
+  <link rel="stylesheet" href="/replay/replay.css?v=20260712-responsive">
+  <script src="/theme-init.js"></script>
+</head>
+<body>
+  <main id="replay-top" class="pantalla replay-page">
+    <div class="landing-nav">
+      <a class="landing-brand" href="/" aria-label="Mayab inicio">Mayab BTC</a>
+      <nav class="data-lens-menu" aria-label="Elegir procedencia de datos">
+        <span class="data-lens-label">Ver datos</span>
+        <a class="data-lens-item" href="/#dashboard" data-data-lens="live">
+          <i class="data-lens-dot" aria-hidden="true"></i>
+          <span><strong>Mercado</strong><small>WS públicos · paper</small></span>
+        </a>
+        <a class="data-lens-item is-active" href="#replay-top" data-data-lens="replay" aria-current="page">
+          <i class="data-lens-index" aria-hidden="true">02</i>
+          <span><strong>Replay</strong><small>captura · sandbox</small></span>
+        </a>
+        <a class="data-lens-item" href="/?lens=demo#dashboard" data-data-lens="demo">
+          <i class="data-lens-index" aria-hidden="true">03</i>
+          <span><strong>Demo</strong><small>sintética · auditable</small></span>
+        </a>
+      </nav>
+      <a class="landing-nav-link" href="/#dashboard">Dashboard</a>
+    </div>
+    <header class="replay-hero">
+      <p class="ceja">Laboratorio reproducible</p>
+      <h1>Captura el mercado. Reprodúcelo sin tocar el estado live.</h1>
+      <p>Esta ruta no abre el WebSocket del dashboard. La captura copia cotizaciones públicas y la ejecución crea un motor desechable con wallets, PnL y GA independientes. El reloj proviene del tape y cada entrada queda identificada por SHA-256.</p>
+    </header>
+    <section class="panel replay-card">
+      <div class="status"><span id="dot"></span><strong id="status">Consultando captura…</strong></div>
+      <div class="metricas replay-metrics">
+        <article><span>Snapshots</span><strong id="snapshots">0</strong></article>
+        <article><span>Duración</span><strong id="duration">0 s</strong></article>
+        <article><span>Aislamiento</span><strong>Live intacto</strong></article>
+      </div>
+      <div class="replay-actions">
+        <button id="start" class="btn-secundario">Iniciar captura</button>
+        <button id="stop" class="btn-secundario" disabled>Detener captura</button>
+        <button id="run" class="btn-primario btn-inline" disabled>Ejecutar en sandbox</button>
+      </div>
+    </section>
+    <section class="panel replay-card result">
+      <p class="ceja">Último resultado</p>
+      <h2 id="resultTitle">Todavía no hay replay</h2>
+      <div id="resultGrid" class="metricas replay-metrics muted">
+        <article><span>Ticks</span><strong>—</strong></article>
+        <article><span>Operaciones</span><strong>—</strong></article>
+        <article><span>PnL simulado</span><strong>—</strong></article>
+        <article><span>Input SHA-256</span><strong>—</strong></article>
+      </div>
+      <p id="resultNote">Captura unos segundos de mercado y detén la grabación para habilitar el replay.</p>
+    </section>
+    <section class="panel replay-notice"><strong>Separación de estados</strong><p>El tape vive en memoria y está etiquetado como mercado público capturado. Al ejecutar, se copia a un motor nuevo; al terminar, ese motor se descarta.</p></section>
+  </main>
+  <script src="/replay/replay.js"></script>
+</body>
+</html>

@@ -11,6 +11,7 @@ CPU="${CPU:-1}"
 CONCURRENCY="${CONCURRENCY:-20}"
 TIMEOUT="${TIMEOUT:-3600}"
 MAYAB_ENV="${MAYAB_ENV:-production}"
+MAYAB_JUDGE_MODE="${MAYAB_JUDGE_MODE:-true}"
 AUDITORIA_DB_PATH="${AUDITORIA_DB_PATH:-/data/mayab-auditoria.sqlite}"
 STORAGE_MODE="${STORAGE_MODE:-sqlite_ephemeral}"
 
@@ -40,6 +41,14 @@ esac
 case "$MIN_INSTANCES:$MAX_INSTANCES:$CONCURRENCY:$TIMEOUT" in
   *[!0-9:]*|*::*|:*|*:)
     echo "MIN_INSTANCES, MAX_INSTANCES, CONCURRENCY y TIMEOUT deben ser enteros" >&2
+    exit 2
+    ;;
+esac
+
+case "$MAYAB_JUDGE_MODE" in
+  true|false) ;;
+  *)
+    echo "MAYAB_JUDGE_MODE debe ser true o false" >&2
     exit 2
     ;;
 esac
@@ -81,7 +90,7 @@ else
 fi
 
 # Build env vars list
-ENV_VARS="RUST_LOG=info,MAYAB_ENV=${MAYAB_ENV},ENTORNO=${MAYAB_ENV},AUDITORIA_DB_PATH=${AUDITORIA_DB_PATH},STORAGE_MODE=${STORAGE_MODE},DEMO_RENTABLE_INICIAL=false,TRUST_PROXY_HEADERS=true"
+ENV_VARS="RUST_LOG=info,MAYAB_ENV=${MAYAB_ENV},ENTORNO=${MAYAB_ENV},MAYAB_JUDGE_MODE=${MAYAB_JUDGE_MODE},AUDITORIA_DB_PATH=${AUDITORIA_DB_PATH},STORAGE_MODE=${STORAGE_MODE},DEMO_RENTABLE_INICIAL=false,TRUST_PROXY_HEADERS=true"
 
 # Optional env vars with defaults
 if [ -n "${DISCORD_APPLICATION_ID:-}" ]; then

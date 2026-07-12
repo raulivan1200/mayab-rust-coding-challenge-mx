@@ -1,12 +1,16 @@
-# Top-Tier Upgrade Checklist
+# Archivo histórico — plan inicial de hardening
 
-Tracking the upgrade of Mayab BTC Arbitrage from "excellent challenge delivery" to "top 1-2 serious project".
+> **No usar este checklist para evaluar el estado actual.** Se conserva para
+> mostrar la evolución del proyecto antes del hardening final; muchas casillas
+> no se reconciliaron después de implementar la arquitectura HTTP, auth,
+> rate-limits, escenarios adversos y CI. La evidencia autoritativa y ejecutable
+> está en [`FINAL_EVIDENCE.md`](../FINAL_EVIDENCE.md), `GET /api/jurado` y
+> `GET /api/preflight`.
 
-> **Status note (2026-07-12):** this is a roadmap, not a declaration that every
-> unchecked item is missing from the product. Checked items below are backed by
-> the repository; unchecked items remain post-challenge work or still require a
-> public CI/release run. The authoritative delivery evidence is
-> [`FINAL_EVIDENCE.md`](../FINAL_EVIDENCE.md).
+Plan original para llevar Mayab BTC Arbitrage de una entrega de challenge a un proyecto top 1–2.
+
+> **Estado al archivarse (2026-07-12):** las casillas son el inventario original,
+> no una declaración de funcionalidad ausente ni un checklist de release vigente.
 
 ## P0 — Security (Production Deployment)
 

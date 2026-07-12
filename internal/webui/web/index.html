@@ -25,7 +25,7 @@
       html[data-theme="light"] { background: #f4e9e1; color-scheme: light; }
     </style>
     <script src="/theme-init.js"></script>
-    <link rel="stylesheet" href="/styles.css?v=20260711-live-controls" />
+    <link rel="stylesheet" href="/styles.css?v=20260712-hero-legible" />
   </head>
   <body>
     <noscript>
@@ -38,14 +38,37 @@
       <section class="landing-page" aria-label="Landing Mayab Arbitraje BTC">
         <div class="landing-nav">
           <a class="landing-brand" href="#landing-top" aria-label="Mayab inicio">Mayab BTC</a>
-          <a class="landing-nav-link" href="#dashboard">Entrar al dashboard</a>
+          <nav class="data-lens-menu" aria-label="Elegir procedencia de datos">
+            <span class="data-lens-label">Ver datos</span>
+            <a class="data-lens-item is-active" href="#dashboard" data-data-lens="live" aria-current="page">
+              <i class="data-lens-dot" aria-hidden="true"></i>
+              <span><strong>Mercado</strong><small>WS públicos · paper</small></span>
+            </a>
+            <a class="data-lens-item" href="/replay/" data-data-lens="replay">
+              <i class="data-lens-index" aria-hidden="true">02</i>
+              <span><strong>Replay</strong><small>captura · sandbox</small></span>
+            </a>
+            <a class="data-lens-item" href="#dashboard" data-data-lens="demo">
+              <i class="data-lens-index" aria-hidden="true">03</i>
+              <span><strong>Demo</strong><small>sintética · auditable</small></span>
+            </a>
+          </nav>
+          <a class="landing-nav-link landing-dashboard-link" href="#dashboard">Dashboard</a>
+        </div>
+
+        <div class="data-lens-explainer" role="status" aria-live="polite">
+          <span id="dataLensEyebrow">01 · Mercado público</span>
+          <strong id="dataLensTitle">Señales observadas; órdenes y PnL siempre simulados.</strong>
+          <small id="dataLensDetail">Esta vista nunca presenta una demo sintética como resultado de mercado.</small>
+          <b id="dataLensScale" class="data-lens-scale" data-status="loading">Corpus público · consultando evidencia</b>
         </div>
 
         <div id="landing-top" class="landing-hero">
           <div class="landing-copy reveal-card">
-            <p class="landing-kicker" data-ui-copy="landingKicker">10 CEX públicos · 100+ rutas · inteligencia evolutiva</p>
-            <h1 data-ui-copy="landingTitle">Las oportunidades duran milisegundos. Mayab fue construido para no parpadear.</h1>
-            <p data-ui-copy="landingBody">Mayab escucha el mercado, compara cada ruta y obliga a cada oportunidad a sobrevivir costos, liquidez, latencia, inventario y riesgo antes de decidir.</p>
+            <p class="landing-kicker" data-ui-copy="landingKicker">10 CEX públicos · 90 rutas · evidencia reproducible</p>
+            <h1 data-ui-copy="landingTitle">Arbitraje que puede explicar cada decisión y sobrevivir una pierna fallida.</h1>
+            <p data-ui-copy="landingBody">Mayab compara cada ruta neta de costos, prueba inventario y profundidad, y reconcilia la exposición si la venta simulada falla después de comprar.</p>
+            <p class="landing-stack-phrase"><strong>Rust en el camino crítico; vanilla JS en la última milla.</strong> Sin GC en el motor, sin hidratación en el dashboard y sin una cadena de servicios entre la señal y la evidencia.</p>
             <div class="landing-actions">
               <a class="landing-cta" href="#dashboard">
                 <span data-ui-copy="landingPrimaryCta">Ver a Mayab decidir</span>
@@ -54,9 +77,9 @@
               <a class="landing-cta landing-cta-secondary" href="/api/paquete-evaluacion" target="_blank" rel="noopener" title="Abre el reporte JSON con score técnico, métricas, auditoría y cobertura de evaluación" data-ui-copy="landingSecondaryCta">Inspeccionar la evidencia completa</a>
             </div>
             <div class="landing-proof" aria-label="Principios de la demo">
-              <span><strong>01</strong> <span data-ui-copy="proofMarket">10 CEX públicos en tiempo real + 2 adaptadores DEX de investigación</span></span>
-              <span><strong>02</strong> <span data-ui-copy="proofCosts">Cada costo cuenta</span></span>
-              <span><strong>03</strong> <span data-ui-copy="proofSafety">Capital real: cero</span></span>
+              <span><strong>01</strong> <span data-ui-copy="proofMarket">10 CEX públicos en tiempo real</span></span>
+              <span><strong>02</strong> <span data-ui-copy="proofCosts">Suite Rust multi-capa · conteo sellado por CI</span></span>
+              <span><strong>03</strong> <span data-ui-copy="proofSafety">0 BTC residual · capital real: cero</span></span>
             </div>
           </div>
 
@@ -74,9 +97,9 @@
               <span>02</span>
               <h2>Resultado reproducible</h2>
               <ul>
-                <li>Escenario rentable etiquetado, repetible y auditable</li>
-                <li>Fees, slippage, latencia y fills parciales</li>
-                <li>GA entrenado con replay sintético etiquetado</li>
+                <li>Segunda pierna rechazada y unwind auditable</li>
+                <li>Exposición residual final: 0 BTC</li>
+                <li>Replay aislado que no contamina el estado live</li>
               </ul>
             </article>
           </div>
@@ -193,6 +216,11 @@
       </nav>
 
       <div class="tab-content activo" id="tab-overview">
+      <section class="mayab-thesis" aria-label="Tesis operativa de Mayab">
+        <p class="ceja">La ventaja verificable</p>
+        <h1>Mayab sólo ejecuta cuando el edge sobrevive profundidad, fees, latencia, revalidación y riesgo de inventario.</h1>
+        <p>Datos públicos · ejecución 100% simulada · cada rechazo, fill, unwind y rebalanceo queda auditable.</p>
+      </section>
       <section class="llm-strip" aria-label="Resumen operativo para humanos y LLMs">
         <div>
           <p class="ceja">Lectura rápida</p>
@@ -352,7 +380,7 @@
             <p class="ceja">Validación técnica</p>
           <h2>Evidencia de preparación</h2>
           </div>
-          <a class="btn-link btn-link-destacado" href="/api/jurado" target="_blank" rel="noopener" title="Muestra score, checks operativos, métricas clave y enlaces de verificación">Consultar validación y score</a>
+          <a class="btn-link btn-link-destacado" href="/api/jurado" target="_blank" rel="noopener" title="Muestra evidencia, checks operativos, métricas clave y enlaces de verificación">Consultar matriz de evidencia</a>
           <a class="btn-link" href="/api/preflight" target="_blank" rel="noopener" title="Ejecuta el checklist de salud, datos, seguridad y capacidad de auditoría">Ver checklist operativo</a>
         </div>
         <div id="judgeReadiness" class="judge-readiness">Calculando validaciones con métricas de la sesión...</div>
@@ -374,11 +402,11 @@
         <div class="panel-titulo">
           <div>
             <p class="ceja">Modelo / Evidencia</p>
-            <h2>Scoring evolutivo</h2>
+            <h2>GA-Optimized Risk Score</h2>
           </div>
           <span id="edgeEstado" class="edge-status">esperando señal explicable</span>
         </div>
-        <p id="edgeExplicacion" class="panel-ayuda">El motor calcula valor esperado con utilidad neta, frescura del book, liquidez, confiabilidad histórica y z-score del spread.</p>
+        <p id="edgeExplicacion" class="panel-ayuda">Score heurístico explicable cuyos pesos son ajustados por algoritmo genético. No es una red neuronal ni se promueve si no supera al baseline fuera de muestra.</p>
         <div class="edge-plane" aria-label="Plano cartesiano del score evolutivo">
           <svg id="edgePlane" viewBox="0 0 360 240" role="img" aria-label="Plano de probabilidad contra impacto">
             <defs>
@@ -640,7 +668,7 @@
           </div>
           <span id="demoEstado">listo</span>
         </div>
-        <p class="panel-ayuda">La demo solo se prepara cuando tú lo solicitas y cada recorrido final reinicia primero el estado simulado, evitando PnL acumulado entre visitas. También puedes ejecutar escenarios reproducibles de fallos, baja liquidez y protección de capital. Todos los resultados son simulados y quedan registrados.</p>
+        <p class="panel-ayuda"><strong>SANDBOX SINTÉTICO:</strong> la demo solo se prepara cuando tú lo solicitas y cada recorrido final reinicia primero el estado simulado. No representa PnL del mercado live. Produce evidencia determinística de conciliación, fill parcial, unwind y rebalanceo.</p>
         <div class="demo-actions">
           <button type="button" id="btnResetDemo" class="btn-secundario">Reiniciar corrida de jurado</button>
           <button type="button" id="btnDemoFinal" class="btn-secundario demo-final btc-icon-button">Preparar recorrido completo</button>
@@ -653,13 +681,6 @@
           <button type="button" class="btn-secundario" data-demo="liquidez_insuficiente">Liquidez insuficiente</button>
           <button type="button" class="btn-secundario" data-demo="circuit_breaker">Circuit breaker</button>
           <button type="button" class="btn-secundario" data-demo="rebalanceo">Forzar rebalanceo</button>
-        </div>
-        <div class="demo-actions" style="margin-top: 1rem; border-top: 1px solid var(--borde); padding-top: 1rem;">
-          <p class="panel-ayuda" style="margin-bottom: 0.5rem; font-size: 0.85rem;">Replay real: captura order books en vivo y reinyéctalos determinísticamente</p>
-          <button type="button" id="btnCapturarIniciar" class="btn-secundario" style="background: var(--azul);">Iniciar captura</button>
-          <button type="button" id="btnCapturarDetener" class="btn-secundario" style="background: var(--rojo);" disabled>Detener captura</button>
-          <button type="button" id="btnCapturarReplay" class="btn-secundario demo-primary" disabled>Ejecutar replay</button>
-          <span id="capturaEstado" class="feedback" style="margin-left: 0.5rem;"></span>
         </div>
         <span id="demoFeedback" class="feedback"></span>
       </section>
@@ -1091,14 +1112,16 @@
       <div id="notificaciones" class="notificaciones-container"></div>
     </main>
 
-    <button id="tutorialToggle" class="dictionary-fab tutorial-fab" type="button" aria-haspopup="dialog" aria-controls="tutorialPanel">
-      <i style="font-size: 20px; line-height: 1; font-style: normal;">⏱️</i>
-      <span>Recorrido 2 min</span>
-    </button>
-    <button id="dictionaryToggle" class="dictionary-fab" type="button" aria-label="Abrir diccionario de conceptos" aria-controls="dictionaryPanel" aria-expanded="false">
-      <img src="/icons/dictionary.svg" alt="" aria-hidden="true" />
-      <span>Diccionario</span>
-    </button>
+    <div class="floating-help-actions" aria-label="Ayuda y recorrido">
+      <button id="dictionaryToggle" class="dictionary-fab" type="button" aria-label="Abrir diccionario de conceptos" aria-controls="dictionaryPanel" aria-expanded="false">
+        <img src="/icons/dictionary.svg" alt="" aria-hidden="true" />
+        <span>Diccionario</span>
+      </button>
+      <button id="tutorialToggle" class="dictionary-fab tutorial-fab" type="button" aria-haspopup="dialog" aria-controls="tutorialPanel">
+        <i style="font-size: 20px; line-height: 1; font-style: normal;">⏱️</i>
+        <span>Recorrido 2 min</span>
+      </button>
+    </div>
     <div id="dictionaryBackdrop" class="dictionary-backdrop" hidden></div>
     <aside id="dictionaryPanel" class="dictionary-panel" role="dialog" aria-modal="true" aria-labelledby="dictionaryTitle" hidden>
       <header class="dictionary-header">
@@ -1187,6 +1210,6 @@
     <div id="paper-texture-overlay" aria-hidden="true"></div>
     <script src="/favicon.js?v=20260710-svg-profit" type="module"></script>
     <script src="/shader.js?v=20260710-grid-perf" type="module"></script>
-    <script src="/app.js?v=20260711-auto-evidence" type="module"></script>
+    <script src="/app.js?v=20260712-hero-legible" type="module"></script>
   </body>
 </html>

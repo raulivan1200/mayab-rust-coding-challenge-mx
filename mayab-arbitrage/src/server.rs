@@ -27,7 +27,7 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::{
@@ -48,6 +48,9 @@ use crate::{
 pub(crate) struct EstadoApp {
     motor: Arc<Motor>,
     token_admin: Option<String>,
+    /// Habilita únicamente recorridos de demostración deterministas y seguros.
+    /// No concede acceso a configuración, exchanges, wallets ni herramientas MCP.
+    judge_mode: bool,
     ws_tx: tokio::sync::broadcast::Sender<String>,
     metricas: Metricas,
     discord: ConfigDiscord,
@@ -67,6 +70,7 @@ pub fn router(motor: Arc<Motor>, token_admin: Option<String>) -> Router {
     let state = EstadoApp {
         motor: motor.clone(),
         token_admin,
+        judge_mode: env_bool("MAYAB_JUDGE_MODE", false),
         ws_tx: ws_tx.clone(),
         metricas: metricas.clone(),
         discord,
@@ -411,7 +415,19 @@ pub(crate) async fn preflight(State(app): State<EstadoApp>) -> Json<serde_json::
 
 pub(crate) async fn jurado(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     let estado = app.motor.estado().await;
-    Json(construir_modo_jurado(&estado))
+    let mut respuesta = construir_modo_jurado(&estado);
+    respuesta["accesoDemo"] = json!({
+        "modoJuradoPublico": app.judge_mode,
+        "requiereAdminToken": !app.judge_mode && app.token_admin.is_some(),
+        "recorridosPublicos": if app.judge_mode {
+            vec!["/api/demo/reset", "/api/demo/final", "/api/demo/caos"]
+        } else {
+            Vec::<&str>::new()
+        },
+        "limite": "sólo escenarios deterministas sobre estado simulado; configuración, wallets arbitrarios, exchanges, GA libre y MCP permanecen protegidos",
+        "rateLimit": "HTTP_MUTATION_RPM por cliente"
+    });
+    Json(respuesta)
 }
 
 pub(crate) async fn version() -> Json<crate::version::BuildVersion> {
@@ -731,6 +747,87 @@ pub(crate) async fn readiness_live(State(app): State<EstadoApp>) -> Json<serde_j
 }
 
 fn construir_research_tapes() -> serde_json::Value {
+    if let Some(root) = std::env::var_os("MAYAB_RESEARCH_CORPUS").map(PathBuf::from) {
+        let report_path = root.join("corpus.json");
+        return match fs::read(&report_path) {
+            Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                Ok(report)
+                    if report
+                        .get("classification")
+                        .and_then(|value| value.as_str())
+                        == Some("public_market_capture_corpus") =>
+                {
+                    let corpus_sha = report
+                        .get("corpusSha256")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let verified_seal = crate::tape::verify_corpus_evidence_seal(&root)
+                        .ok()
+                        .filter(|seal| seal.corpus_sha256 == corpus_sha);
+                    let scan_path = root.join("corpus-scan.json");
+                    let (scan, scan_sha256, scan_status) = if verified_seal.is_none() {
+                        (None, None, "unsealed_evidence")
+                    } else {
+                        match fs::read(&scan_path) {
+                            Ok(scan_bytes) => match validar_scan_corpus(corpus_sha, &scan_bytes) {
+                                Ok(scan) => (
+                                    Some(scan),
+                                    Some(hex::encode(Sha256::digest(&scan_bytes))),
+                                    "matched_corpus",
+                                ),
+                                Err(status) => (None, None, status),
+                            },
+                            Err(_) => (None, None, "missing_scan"),
+                        }
+                    };
+                    json!({
+                        "schemaVersion": 2,
+                        "available": true,
+                        "mode": "verified_corpus_report",
+                        "corpus": report,
+                        "quantitativeScan": scan,
+                        "evidenceSeal": verified_seal,
+                        "scanStatus": scan_status,
+                        "scanPath": "$MAYAB_RESEARCH_CORPUS/corpus-scan.json",
+                        "sealPath": "$MAYAB_RESEARCH_CORPUS/evidence-seal.json",
+                        "scanSha256": scan_sha256,
+                        "reportPath": "$MAYAB_RESEARCH_CORPUS/corpus.json",
+                        "reportSha256": hex::encode(Sha256::digest(&bytes)),
+                        "verificationCommand": "cargo run -p mayab-cli --bin verify-corpus -- --root \"$MAYAB_RESEARCH_CORPUS\" --output \"$MAYAB_RESEARCH_CORPUS/corpus.json\"",
+                        "limitations": [
+                            "El endpoint publica el reporte precomputado para no reescanear el corpus en cada GET.",
+                            "reportSha256 protege este JSON; corpusSha256 y los hashes de shards deben revalidarse con verify-corpus.",
+                            "quantitativeScan solo se publica cuando su corpusSha256 coincide exactamente con el reporte de corpus.",
+                            "El scan permanece oculto si el sello no valida corpus.json, corpus-scan.json y corpus.sqlite.",
+                            "Millones de eventos no equivalen a millones de dislocaciones ni demuestran rentabilidad."
+                        ]
+                    })
+                }
+                Ok(_) => json!({
+                    "schemaVersion": 2,
+                    "available": false,
+                    "mode": "invalid_corpus_report",
+                    "reportPath": "$MAYAB_RESEARCH_CORPUS/corpus.json",
+                    "error": "classification debe ser public_market_capture_corpus"
+                }),
+                Err(error) => json!({
+                    "schemaVersion": 2,
+                    "available": false,
+                    "mode": "invalid_corpus_report",
+                    "reportPath": "$MAYAB_RESEARCH_CORPUS/corpus.json",
+                    "error": error.to_string()
+                }),
+            },
+            Err(error) => json!({
+                "schemaVersion": 2,
+                "available": false,
+                "mode": "missing_corpus_report",
+                "reportPath": "$MAYAB_RESEARCH_CORPUS/corpus.json",
+                "error": error.to_string(),
+                "verificationCommand": "cargo run -p mayab-cli --bin verify-corpus -- --root \"$MAYAB_RESEARCH_CORPUS\" --output \"$MAYAB_RESEARCH_CORPUS/corpus.json\""
+            }),
+        };
+    }
     let configured = std::env::var_os("MAYAB_RESEARCH_TAPE").map(PathBuf::from);
     let path = configured.unwrap_or_else(|| PathBuf::from("data/captura_real.json"));
     match fs::read(&path) {
@@ -759,6 +856,19 @@ fn construir_research_tapes() -> serde_json::Value {
             "limitations": ["No se publica evidencia de tape cuando el artefacto no está montado."]
         }),
     }
+}
+
+fn validar_scan_corpus(corpus_sha: &str, bytes: &[u8]) -> Result<Value, &'static str> {
+    let scan = serde_json::from_slice::<Value>(bytes).map_err(|_| "invalid_scan_json")?;
+    if scan.get("sourceClassification").and_then(Value::as_str)
+        != Some("public_market_capture_corpus")
+    {
+        return Err("non_public_scan");
+    }
+    if scan.get("corpusSha256").and_then(Value::as_str) != Some(corpus_sha) {
+        return Err("corpus_hash_mismatch");
+    }
+    Ok(scan)
 }
 
 pub(crate) async fn lab_sweep(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
@@ -997,7 +1107,7 @@ pub(crate) async fn exportar_csv(State(app): State<EstadoApp>) -> Response {
         .into_response()
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ParcheConfig {
     #[serde(rename = "maxOperacionBtc")]
@@ -1182,7 +1292,7 @@ pub(crate) async fn actualizar_reglas_rebalanceo_http(
 }
 
 pub(crate) async fn demo_final_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Response {
-    if let Some(response) = autorizar_mutacion(&app, &headers) {
+    if let Some(response) = autorizar_recorrido_jurado(&app, &headers) {
         return response;
     }
 
@@ -1208,6 +1318,7 @@ pub(crate) async fn demo_final_http(State(app): State<EstadoApp>, headers: Heade
         .await;
     let estado = app.motor.estado().await;
     let preflight = construir_preflight(&estado);
+    let huella_auditoria = huella_estado(&estado);
 
     Json(json!({
         "ok": true,
@@ -1230,6 +1341,15 @@ pub(crate) async fn demo_final_http(State(app): State<EstadoApp>, headers: Heade
         "metricas": estado.metricas,
         "mlEdge": estado.ml_edge,
         "preflight": preflight,
+        "evidencia": {
+            "algoritmoHuella": "SHA-256",
+            "huellaAuditoria": huella_auditoria,
+            "fuente": "demo_controlada_sintetica",
+            "ejecucionReal": false,
+            "estado": "/api/estado",
+            "paquete": "/api/paquete-evaluacion",
+            "exportJson": "/api/export/json"
+        },
         "siguiente": [
             "Abrir /api/preflight",
             "Abrir /api/paquete-evaluacion",
@@ -1240,7 +1360,7 @@ pub(crate) async fn demo_final_http(State(app): State<EstadoApp>, headers: Heade
 }
 
 pub(crate) async fn demo_caos_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Response {
-    if let Some(response) = autorizar_mutacion(&app, &headers) {
+    if let Some(response) = autorizar_recorrido_jurado(&app, &headers) {
         return response;
     }
 
@@ -1336,7 +1456,7 @@ pub(crate) async fn demo_caos_http(State(app): State<EstadoApp>, headers: Header
 }
 
 pub(crate) async fn reset_demo_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Response {
-    if let Some(response) = autorizar_mutacion(&app, &headers) {
+    if let Some(response) = autorizar_recorrido_jurado(&app, &headers) {
         return response;
     }
 
@@ -1534,6 +1654,17 @@ fn autorizar_mutacion(app: &EstadoApp, headers: &HeaderMap) -> Option<Response> 
     }
 }
 
+/// Autoriza sólo los tres recorridos predefinidos del jurado cuando el deploy
+/// opta explícitamente por MAYAB_JUDGE_MODE=true. El resto de mutaciones sigue
+/// pasando por ADMIN_TOKEN, incluido MCP, GA libre y escenarios individuales.
+fn autorizar_recorrido_jurado(app: &EstadoApp, headers: &HeaderMap) -> Option<Response> {
+    if app.judge_mode {
+        None
+    } else {
+        autorizar_mutacion(app, headers)
+    }
+}
+
 pub(crate) async fn tiempo_real(State(app): State<EstadoApp>, ws: WebSocketUpgrade) -> Response {
     let rx = app.ws_tx.subscribe();
     ws.on_upgrade(move |socket| websocket_loop(socket, rx))
@@ -1655,6 +1786,14 @@ fn rechazo_json(err: JsonRejection) -> ErrorApi {
 }
 
 fn aplicar_config_patch(cfg: &mut MapaCostos, patch: ParcheConfig) -> Result<(), ErrorApi> {
+    let mut siguiente = cfg.clone();
+    aplicar_config_patch_interno(&mut siguiente, patch)?;
+    validar_config_completa(&siguiente)?;
+    *cfg = siguiente;
+    Ok(())
+}
+
+fn aplicar_config_patch_interno(cfg: &mut MapaCostos, patch: ParcheConfig) -> Result<(), ErrorApi> {
     if let Some(v) = validar_f64(
         "maxOperacionBtc",
         patch.max_operacion_btc,
@@ -1843,6 +1982,49 @@ fn aplicar_config_patch(cfg: &mut MapaCostos, patch: ParcheConfig) -> Result<(),
     }
     if let Some(v) = patch.webhook_url {
         cfg.webhook_url = if v.trim().is_empty() { None } else { Some(v) };
+    }
+    Ok(())
+}
+
+fn validar_config_completa(cfg: &MapaCostos) -> Result<(), ErrorApi> {
+    if cfg.max_operacion_btc > 10.0 {
+        return Err(campo_invalido("maxOperacionBtc", "menor o igual a 10"));
+    }
+    for (nombre, valor) in [
+        ("minDiferencialNetoBps", cfg.min_diferencial_neto_bps),
+        ("deslizamientoBps", cfg.deslizamiento_bps),
+        ("latenciaRiesgoBps", cfg.latencia_riesgo_bps),
+        ("retiroAmortizadoBps", cfg.retiro_amortizado_bps),
+        ("usdtUsdPremiumBps", cfg.usdt_usd_premium_bps),
+        ("volatilidadUmbralBps", cfg.volatilidad_umbral_bps),
+        ("movimientoBruscoBps", cfg.movimiento_brusco_bps),
+    ] {
+        if !valor.is_finite() || !(0.0..=10_000.0).contains(&valor) {
+            return Err(campo_invalido(nombre, "finito y entre 0 y 10000"));
+        }
+    }
+    if cfg.stale_ms > 300_000 {
+        return Err(campo_invalido("staleMs", "menor o igual a 300000"));
+    }
+    if cfg.enfriamiento_ms > 3_600_000 {
+        return Err(campo_invalido("enfriamientoMs", "menor o igual a 3600000"));
+    }
+    if let Some(url) = &cfg.webhook_url {
+        let url = url.trim();
+        if url.len() > 2_048 || !(url.starts_with("https://") || url.starts_with("http://")) {
+            return Err(campo_invalido(
+                "webhookUrl",
+                "URL HTTP(S) de máximo 2048 caracteres",
+            ));
+        }
+    }
+    for exchange in cfg.exchanges.values() {
+        if exchange.fee_taker > 0.10 {
+            return Err(campo_invalido("exchanges.*.feeTaker", "entre 0 y 0.10"));
+        }
+        if exchange.retiro_btc > 10.0 {
+            return Err(campo_invalido("exchanges.*.retiroBtc", "entre 0 y 10"));
+        }
     }
     Ok(())
 }
@@ -2146,8 +2328,11 @@ fn construir_resumen_llm(estado: &EstadoPublico) -> serde_json::Value {
         "decisionInspector": decision_inspector,
         "ga": ga.map(|g| json!({
             "generacion": g.generacion,
-            "mejorFitness": g.mejor_fitness,
-            "fitnessPromedio": g.fitness_promedio,
+            "fitnessDelRepresentantePareto": g.mejor_fitness,
+            "maxFitness": g.mejor_fitness.max(g.retador_fitness),
+            "meanFitness": g.fitness_promedio,
+            "champion": "baseline_hasta_validar_holdout",
+            "challenger": "ga_pareto",
             "diversidad": g.diversidad,
             "umbralOptimizado": g.umbral_optimizado,
             "maxOperacionOptimizadaBtc": g.max_operacion_optimizada_btc,
@@ -2240,6 +2425,7 @@ fn profit_breakdown_json(o: &crate::types::Oportunidad) -> serde_json::Value {
 }
 
 fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
+    let configurados = estado.exchanges_activos.len();
     let activos = estado.exchanges_activos.values().filter(|v| **v).count();
     let stale_ms = estado.configuracion.stale_ms;
     let frescos = estado
@@ -2279,9 +2465,7 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
     let riesgo_ok = !estado.metricas.circuit_breaker_activo
         && estado.metricas.estado_riesgo != "critico"
         && !estado.metricas.ejecucion_en_curso;
-    let dashboard_ok = Path::new("internal/webui/web/index.html").is_file()
-        && Path::new("internal/webui/web/app.js").is_file()
-        && Path::new("internal/webui/web/styles.css").is_file();
+    let dashboard_ok = dashboard_assets_present();
     let ga_ok = estado
         .genetico
         .as_ref()
@@ -2318,6 +2502,11 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
         matches!(trace.estado.as_str(), "COMMITTED" | "RECONCILED_LOSS")
             && trace.exposicion_btc.abs() < 0.00000001
     });
+    let unwind_reconciliado = estado
+        .trazas_ejecucion
+        .iter()
+        .any(|trace| trace.estado == "RECONCILED_LOSS" && trace.exposicion_btc.abs() < 0.00000001);
+    let rebalanceo_evidencia = estado.metricas.rebalanceos_totales > 0;
     let wallet_ok = estado.balances.len() >= activos.min(2) && !estado.balances.is_empty();
     let judge_checks = vec![
         ("realTimeOrderBooks", feeds_ok),
@@ -2335,17 +2524,56 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
     ];
     let judge_passed = judge_checks.iter().filter(|(_, ok)| *ok).count();
     let judge_total = judge_checks.len();
+    // Readiness operativo mide si el evaluador puede usar el sistema ahora.
+    // GA, fills, unwind y rebalanceos son evidencia reproducible, no requisitos
+    // de salud: un reinicio limpio no debe autodeclararse roto por tener cero
+    // operaciones historicas.
     let listo = feeds_ok
         && snapshots_ok
         && integridad_ok
         && costos_ok
         && riesgo_ok
         && dashboard_ok
-        && ga_ok
         && export_ok
-        && decision_inspector_ok
-        && ml_edge_ok
-        && fsm_reconciliada;
+        && wallet_ok;
+
+    let evidencia = vec![
+        evidencia_preflight(
+            "operacion_conciliada",
+            fsm_reconciliada,
+            "runtime_sintetico_etiquetado",
+            "/api/estado#/trazasEjecucion",
+            "POST /api/demo/final",
+        ),
+        evidencia_preflight(
+            "fill_parcial",
+            partial_fill_evidence,
+            "runtime_sintetico_etiquetado",
+            "/api/estado#/operaciones",
+            "POST /api/demo/final",
+        ),
+        evidencia_preflight(
+            "fallo_segunda_pierna_con_unwind",
+            unwind_reconciliado,
+            "runtime_sintetico_etiquetado",
+            "/api/estado#/trazasEjecucion",
+            "POST /api/demo/caos",
+        ),
+        evidencia_preflight(
+            "rebalanceo",
+            rebalanceo_evidencia,
+            "runtime_sintetico_etiquetado",
+            "/api/estado#/rebalanceos",
+            "POST /api/demo/final",
+        ),
+        evidencia_preflight(
+            "ga_challenger",
+            ga_ok,
+            "replay_sintetico_o_historial_publico",
+            "/api/ga/estado",
+            "POST /api/ga/evolucionar",
+        ),
+    ];
 
     let mut feed_detalle: Vec<_> = estado
         .cotizaciones
@@ -2377,10 +2605,22 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
         "generadoEn": estado.generado_en,
         "listo": listo,
         "modo": if listo { "demo_operable" } else { "degradado" },
+        "criterioReadiness": "capacidad_operativa_actual; la evidencia historica se reporta por separado",
+        "venues": {
+            "configurados": configurados,
+            "habilitados": activos,
+            "conWebSocketFresco": conectados,
+            "conLibroRuteable": frescos,
+            "minimosRequeridos": 2,
+            "suficientesParaEvaluar": feeds_ok && snapshots_ok,
+            "nota": "venue, feed, instrumento y lane se cuentan por separado; conectores extra no invalidan una ruta utilizable"
+        },
+        "evidenceMatrix": evidencia,
         "judgeReadiness": {
             "passed": judge_passed,
             "total": judge_total,
-            "status": if judge_passed == judge_total { "ready" } else { "review" },
+            "status": if listo { "ready" } else { "blocked" },
+            "evidenceStatus": if judge_passed == judge_total { "complete" } else { "partial" },
             "partialFillEvidence": partial_fill_evidence,
             "rubricaOficial": matriz_rubrica_oficial(estado),
             "coberturaFinalista": cobertura_finalista(estado),
@@ -2396,8 +2636,8 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
             ]
         },
         "checks": [
-            check("feeds_publicos", feeds_ok, format!("{conectados}/{activos} exchanges activos tienen WebSocket fresco")),
-            check("snapshots_ruteables", snapshots_ok, format!("{frescos}/{activos} exchanges activos tienen libro fresco, no cruzado y utilizable")),
+            check("feeds_publicos", feeds_ok, format!("{conectados} venues unicos con WebSocket fresco; minimo requerido=2; {activos} habilitados de {configurados} configurados")),
+            check("snapshots_ruteables", snapshots_ok, format!("{frescos} venues unicos tienen libro fresco, no cruzado y utilizable; minimo requerido=2")),
             check("integridad_books", integridad_ok, "secuencias monitoreadas; gaps/out-of-order bloquean el libro hasta snapshot o fallback"),
             check("costos_configurados", costos_ok, "fees, slippage, retiro amortizado y tamanos son validos"),
             check("riesgo_operativo", riesgo_ok, format!("riesgo={}, circuitBreaker={}, ejecucionEnCurso={}", estado.metricas.estado_riesgo, estado.metricas.circuit_breaker_activo, estado.metricas.ejecucion_en_curso)),
@@ -2461,10 +2701,6 @@ fn construir_modo_jurado(estado: &EstadoPublico) -> serde_json::Value {
         .get("criterios")
         .cloned()
         .unwrap_or_else(|| json!([]));
-    let puntaje_total = paquete
-        .get("puntajeTotal")
-        .cloned()
-        .unwrap_or_else(|| json!(0.0));
     let huella = paquete
         .get("huellaAuditoria")
         .cloned()
@@ -2479,8 +2715,8 @@ fn construir_modo_jurado(estado: &EstadoPublico) -> serde_json::Value {
             "status": readiness.get("status").cloned().unwrap_or_else(|| json!("review")),
             "passed": readiness.get("passed").cloned().unwrap_or_else(|| json!(0)),
             "total": readiness.get("total").cloned().unwrap_or_else(|| json!(0)),
-            "puntajeTotal": puntaje_total,
-            "tipoPuntaje": "cobertura de checks internos, no calificacion del comite",
+            "evidenceStatus": readiness.get("evidenceStatus").cloned().unwrap_or_else(|| json!("partial")),
+            "notaEvaluacion": "Mayab no se autocalifica; PASS/WARN/FAIL enlaza evidencia para que el comite asigne el puntaje.",
             "huellaAuditoria": huella,
         },
         "script60Segundos": [
@@ -2496,7 +2732,24 @@ fn construir_modo_jurado(estado: &EstadoPublico) -> serde_json::Value {
         "coberturaFinalista": cobertura,
         "checks": checks,
         "evidenciaClave": {
+            "scorecardCuantitativa": {
+                "exchangesPublicos": 10,
+                "pruebasRustLineaBaseVerificadas": 116,
+                "pruebasRustObjetivoArbolActual": 186,
+                "pruebasObjetivoVerificadas": false,
+                "semillasPareadasBacktest": 24,
+                "remuestrasBootstrap": 10000,
+                "fuenteLatencia": "/api/latencias",
+                "nota": "116 fue la ultima corrida verde observada; 152 requiere CI verde del SHA entregable. Latencias y resultados de mercado se calculan en runtime."
+            },
+            "resultadoMemorable": {
+                "afirmacion": "segunda pierna rechazada, unwind auditado y cero exposicion residual",
+                "maquinaEstados": ["PENDING", "LEG_A_FILLED", "LEG_B_REJECTED", "UNWIND_FILLED", "RECONCILED_LOSS"],
+                "reconciliada": estado.trazas_ejecucion.iter().any(|trace| trace.estado == "RECONCILED_LOSS" && trace.exposicion_btc.abs() < 0.00000001),
+                "endpointReproducible": "/api/demo/caos"
+            },
             "parametrosControlablesEstimados": parametros_controlables(estado),
+            "catalogoParametros": catalogo_parametros(estado),
             "feedsWebSocketFrescos": contar_exchanges_unicos(estado.cotizaciones.iter().filter(|c| snapshot_websocket_fresco(estado, c))),
             "feedsRestFallback": contar_exchanges_unicos(estado.cotizaciones.iter().filter(|c| c.ultimo_mensaje == "rest_fallback")),
             "operaciones": estado.metricas.operaciones,
@@ -2544,6 +2797,20 @@ fn snapshot_fresco(estado: &EstadoPublico, cotizacion: &Cotizacion) -> bool {
     edad_ms <= estado.configuracion.stale_ms
         && cotizacion.bid > 0.0
         && cotizacion.ask > cotizacion.bid
+}
+
+fn dashboard_assets_present() -> bool {
+    let relative = Path::new("internal/webui/web");
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")))
+        .join("internal/webui/web");
+
+    [relative.to_path_buf(), workspace].iter().any(|root| {
+        ["index.html", "app.js", "styles.css"]
+            .iter()
+            .all(|asset| root.join(asset).is_file())
+    })
 }
 
 fn snapshot_websocket_fresco(estado: &EstadoPublico, cotizacion: &Cotizacion) -> bool {
@@ -2739,25 +3006,20 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
                 .unwrap_or_else(|| "Sin SQLite de auditoria.".into()),
         ),
     ];
-    let puntaje_tecnico_indicativo = criterios
-        .iter()
-        .filter_map(|c| c.get("puntaje").and_then(|v| v.as_u64()))
-        .sum::<u64>() as f64
-        / criterios.len().max(1) as f64;
-    let cobertura_checks = criterios
+    let checks_cumplidos = criterios
         .iter()
         .filter(|c| c.get("cumplido").and_then(|v| v.as_bool()) == Some(true))
-        .count() as f64
-        / criterios.len().max(1) as f64
-        * 100.0;
+        .count();
 
     json!({
         "generadoEn": estado.generado_en,
         "nombre": "Mayab Arbitraje BTC - paquete de evaluacion",
         "modo": "demo segura read-only",
-        "puntajeTotal": cobertura_checks,
-        "tipoPuntaje": "porcentaje de checks internos cumplidos; no es una calificacion ni prediccion del comite",
-        "puntajeTecnicoIndicativo": puntaje_tecnico_indicativo,
+        "evidenceSummary": {
+            "pass": checks_cumplidos,
+            "total": criterios.len(),
+            "nota": "conteo de evidencia, no calificacion ni prediccion del comite"
+        },
         "huellaAuditoria": huella_estado(estado),
         "rubricaOficialComite": matriz_rubrica_oficial(estado),
         "coberturaFinalista": cobertura_finalista(estado),
@@ -2779,6 +3041,11 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
                 "depender de una oportunidad live para la demo",
                 "prometer trading real sin capa de seguridad"
             ]
+        },
+        "parametrizacion": {
+            "total": parametros_controlables(estado),
+            "metodologia": "cada entrada representa un control independiente con nombre, categoria, mutabilidad y procedencia; no se cuentan valores derivados",
+            "catalogo": catalogo_parametros(estado)
         },
         "criterios": criterios,
         "resumenEjecutivo": resumen,
@@ -2999,9 +3266,7 @@ fn cobertura_finalista(estado: &EstadoPublico) -> serde_json::Value {
     let latencias_p99 = estado.latencias_exchange.iter().any(|l| l.p99_ms > 0);
     let backtest_lab = true;
     let exports = true;
-    let dashboard = Path::new("internal/webui/web/index.html").is_file()
-        && Path::new("internal/webui/web/app.js").is_file()
-        && Path::new("internal/webui/web/styles.css").is_file();
+    let dashboard = dashboard_assets_present();
 
     let dimensiones = vec![
         cobertura_item(
@@ -3131,13 +3396,139 @@ fn cobertura_item(
 }
 
 fn parametros_controlables(estado: &EstadoPublico) -> usize {
-    21 + estado.configuracion.exchanges.len() * 4
+    catalogo_parametros(estado).len()
+}
+
+fn catalogo_parametros(estado: &EstadoPublico) -> Vec<serde_json::Value> {
+    let base = [
+        ("maxOperacionBtc", "sizing", true, "configuracion"),
+        ("minUtilidadUsd", "rentabilidad", true, "configuracion"),
+        (
+            "minDiferencialNetoBps",
+            "rentabilidad",
+            true,
+            "configuracion",
+        ),
+        ("deslizamientoBps", "costos", true, "configuracion"),
+        ("latenciaRiesgoBps", "costos", true, "configuracion"),
+        ("retiroAmortizadoBps", "costos", true, "configuracion"),
+        ("usdtUsdPremiumBps", "basis", true, "configuracion"),
+        ("permitirCruceUsdUsdt", "basis", true, "configuracion"),
+        ("staleMs", "integridad_feed", true, "configuracion"),
+        ("enfriamientoMs", "ejecucion", true, "configuracion"),
+        ("circuitBreakerPerdidaUsd", "riesgo", true, "configuracion"),
+        ("circuitBreakerVentanaMin", "riesgo", true, "configuracion"),
+        ("volatilidadUmbralBps", "riesgo", true, "configuracion"),
+        ("volatilidadVentanaSeg", "riesgo", true, "configuracion"),
+        ("simularAdversidad", "adversidad", true, "configuracion"),
+        ("probFalloOrden", "adversidad", true, "configuracion"),
+        ("probMovimientoBrusco", "adversidad", true, "configuracion"),
+        ("movimientoBruscoBps", "adversidad", true, "configuracion"),
+        ("rebalanceUmbralPct", "rebalanceo", true, "configuracion"),
+        (
+            "rebalanceMaxTransferPct",
+            "rebalanceo",
+            true,
+            "configuracion",
+        ),
+        ("costoRebalanceoUsd", "rebalanceo", true, "configuracion"),
+        ("rebalanceSettlementMs", "rebalanceo", true, "configuracion"),
+        ("tamanoPoblacionGa", "ga", true, "api_ga"),
+        ("tasaMutacionGa", "ga", true, "api_ga"),
+        ("tasaCruceGa", "ga", true, "api_ga"),
+        ("muestrasReplayGa", "ga", true, "api_ga"),
+        ("usarReplaySiVacio", "ga", true, "api_ga"),
+        ("killSwitch", "riesgo", true, "api_admin"),
+        ("webhookUrl", "integracion", true, "configuracion"),
+        ("reglasRebalanceo", "rebalanceo", true, "api_admin"),
+        ("parBase", "universo", false, "entorno"),
+        ("paresExtra", "universo", false, "entorno"),
+        ("capitalInicialUsd", "simulacion", false, "entorno"),
+        ("balanceInicialBtc", "simulacion", false, "entorno"),
+        ("intervaloAnalisisMs", "pipeline", false, "entorno"),
+    ];
+
+    let mut catalogo = base
+        .into_iter()
+        .map(|(nombre, categoria, mutable_runtime, origen)| {
+            json!({
+                "nombre": nombre,
+                "categoria": categoria,
+                "mutableRuntime": mutable_runtime,
+                "origen": origen,
+                "restriccion": restriccion_parametro(nombre),
+                "scope": "global"
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut exchanges = estado
+        .configuracion
+        .exchanges
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    exchanges.sort();
+    for exchange in exchanges {
+        for (campo, categoria) in [
+            ("feeTaker", "costos_exchange"),
+            ("retiroBtc", "costos_exchange"),
+            ("confiabilidad", "riesgo_exchange"),
+            ("activo", "routing_exchange"),
+        ] {
+            catalogo.push(json!({
+                "nombre": format!("exchanges.{exchange}.{campo}"),
+                "categoria": categoria,
+                "mutableRuntime": true,
+                "origen": "configuracion_exchange",
+                "restriccion": match campo {
+                    "feeTaker" => "0..=0.10",
+                    "retiroBtc" => "0..=10 BTC",
+                    "confiabilidad" => "0..=1",
+                    _ => "booleano"
+                },
+                "scope": exchange
+            }));
+        }
+    }
+    catalogo
+}
+
+fn restriccion_parametro(nombre: &str) -> &'static str {
+    match nombre {
+        "maxOperacionBtc" => ">0 y <=10 BTC",
+        "probFalloOrden" | "probMovimientoBrusco" => "0..=1",
+        "rebalanceUmbralPct" | "rebalanceMaxTransferPct" => "0..=100",
+        "staleMs" => ">0 y <=300000 ms",
+        "enfriamientoMs" => "0..=3600000 ms",
+        "rebalanceSettlementMs" => "0..=300000 ms",
+        "tamanoPoblacionGa" => "10..=300",
+        "tasaMutacionGa" => "0..=0.8",
+        "tasaCruceGa" => "0..=1",
+        "muestrasReplayGa" => "12..=240",
+        "webhookUrl" => "HTTP(S), máximo 2048 caracteres",
+        "deslizamientoBps"
+        | "latenciaRiesgoBps"
+        | "retiroAmortizadoBps"
+        | "usdtUsdPremiumBps"
+        | "volatilidadUmbralBps"
+        | "movimientoBruscoBps"
+        | "minDiferencialNetoBps" => "0..=10000 bps",
+        "minUtilidadUsd" | "circuitBreakerPerdidaUsd" | "costoRebalanceoUsd" => ">=0, finito",
+        "circuitBreakerVentanaMin" | "volatilidadVentanaSeg" => ">0",
+        "permitirCruceUsdUsdt"
+        | "simularAdversidad"
+        | "usarReplaySiVacio"
+        | "killSwitch"
+        | "exchangeActivo" => "booleano",
+        _ => "validado por contrato de origen",
+    }
 }
 
 fn rubrica_item(
     criterio: &'static str,
     peso: u8,
-    puntaje: u8,
+    _puntaje_interno: u8,
     pregunta: &'static str,
     evidencia: impl Into<String>,
     siguiente: &'static str,
@@ -3145,10 +3536,33 @@ fn rubrica_item(
     json!({
         "criterio": criterio,
         "pesoPct": peso,
-        "puntaje": puntaje.min(100),
+        "estado": "EVIDENCIA_DISPONIBLE",
         "preguntaComite": pregunta,
         "evidenciaActual": evidencia.into(),
         "siguienteMovimientoDemo": siguiente,
+        "nota": "Mayab no se autocalifica; el peso proviene de la rubrica y el evaluador asigna el puntaje.",
+    })
+}
+
+fn evidencia_preflight(
+    claim: &'static str,
+    disponible: bool,
+    origen: &'static str,
+    endpoint: &'static str,
+    reproducir: &'static str,
+) -> serde_json::Value {
+    json!({
+        "claim": claim,
+        "status": if disponible { "PASS" } else { "WARN" },
+        "available": disponible,
+        "origin": origen,
+        "endpoint": endpoint,
+        "reproduce": reproducir,
+        "note": if disponible {
+            "evidencia presente en la corrida actual"
+        } else {
+            "capacidad implementada; la corrida limpia aun no genero esta evidencia"
+        },
     })
 }
 
@@ -3188,13 +3602,13 @@ fn recomendaciones_ganadoras(estado: &EstadoPublico) -> Vec<&'static str> {
 fn criterio(
     nombre: &'static str,
     ok: bool,
-    puntaje: u8,
+    _puntaje_interno: u8,
     detalle: impl Into<String>,
 ) -> serde_json::Value {
     json!({
         "nombre": nombre,
-        "ok": ok,
-        "puntaje": puntaje.min(100),
+        "cumplido": ok,
+        "estado": if ok { "PASS" } else { "WARN" },
         "detalle": detalle.into(),
     })
 }
@@ -4295,7 +4709,140 @@ mod tests {
     use smallvec::SmallVec;
 
     #[test]
-    fn preflight_exige_evidencia_forense_y_fill_parcial() {
+    fn config_patch_is_atomic_when_a_late_exchange_validation_fails() {
+        let mut cfg = cfg_test();
+        let original = cfg.clone();
+        let mut exchanges = HashMap::new();
+        exchanges.insert(
+            "VenueInventado".to_string(),
+            ExchangeConfig {
+                nombre: "VenueInventado".into(),
+                fee_taker: 0.001,
+                retiro_btc: 0.0,
+                confiabilidad: 1.0,
+            },
+        );
+        let patch = ParcheConfig {
+            max_operacion_btc: Some(0.25),
+            exchanges: Some(exchanges),
+            ..Default::default()
+        };
+        assert!(aplicar_config_patch(&mut cfg, patch).is_err());
+        assert_eq!(cfg, original);
+    }
+
+    #[test]
+    fn config_patch_rejects_extreme_values_and_non_http_webhooks() {
+        let mut cfg = cfg_test();
+        let original = cfg.clone();
+        assert!(aplicar_config_patch(
+            &mut cfg,
+            ParcheConfig {
+                max_operacion_btc: Some(100.0),
+                ..Default::default()
+            }
+        )
+        .is_err());
+        assert_eq!(cfg, original);
+        assert!(aplicar_config_patch(
+            &mut cfg,
+            ParcheConfig {
+                webhook_url: Some("file:///etc/passwd".into()),
+                ..Default::default()
+            }
+        )
+        .is_err());
+        assert_eq!(cfg, original);
+    }
+
+    #[test]
+    fn config_patch_commits_multiple_valid_fields_together() {
+        let mut cfg = cfg_test();
+        aplicar_config_patch(
+            &mut cfg,
+            ParcheConfig {
+                max_operacion_btc: Some(0.33),
+                stale_ms: Some(8_000),
+                prob_fallo_orden: Some(0.2),
+                permitir_cruce_usd_usdt: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(cfg.max_operacion_btc, 0.33);
+        assert_eq!(cfg.stale_ms, 8_000);
+        assert_eq!(cfg.prob_fallo_orden, 0.2);
+        assert!(!cfg.permitir_cruce_usd_usdt);
+    }
+
+    #[test]
+    fn config_patch_denies_unknown_json_fields() {
+        let result = serde_json::from_str::<ParcheConfig>(
+            r#"{"maxOperacionBtc":0.2,"habilitarTradingReal":true}"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parameter_catalog_has_unique_named_controls_with_constraints() {
+        let estado = estado_publico_test(true, true);
+        let catalog = catalogo_parametros(&estado);
+        let names = catalog
+            .iter()
+            .filter_map(|item| item["nombre"].as_str())
+            .collect::<HashSet<_>>();
+        // 35 controles base + 4 por cada uno de los 3 exchanges del fixture.
+        assert_eq!(catalog.len(), 47);
+        assert_eq!(names.len(), catalog.len());
+        assert!(catalog.iter().all(|item| {
+            item["categoria"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+                && item["restriccion"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+                && item["origen"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+        }));
+    }
+
+    #[test]
+    fn quantitative_scan_is_accepted_only_for_the_visible_corpus_hash() {
+        let bytes = serde_json::to_vec(&json!({
+            "sourceClassification": "public_market_capture_corpus",
+            "corpusSha256": "corpus-one",
+            "rawEvents": 1_000_000,
+            "netDislocations": 42
+        }))
+        .unwrap();
+        let scan = validar_scan_corpus("corpus-one", &bytes).unwrap();
+        assert_eq!(scan["netDislocations"], 42);
+        assert_eq!(
+            validar_scan_corpus("corpus-two", &bytes),
+            Err("corpus_hash_mismatch")
+        );
+    }
+
+    #[test]
+    fn malformed_quantitative_scan_is_rejected_closed() {
+        assert_eq!(
+            validar_scan_corpus("corpus-one", b"not-json"),
+            Err("invalid_scan_json")
+        );
+        let synthetic = serde_json::to_vec(&json!({
+            "sourceClassification": "synthetic_benchmark_corpus",
+            "corpusSha256": "corpus-one"
+        }))
+        .unwrap();
+        assert_eq!(
+            validar_scan_corpus("corpus-one", &synthetic),
+            Err("non_public_scan")
+        );
+    }
+
+    #[test]
+    fn preflight_separa_salud_operativa_de_evidencia_forense() {
         let sin_evidencia = construir_preflight(&estado_publico_test(false, false));
         let checks = checks_por_nombre(&sin_evidencia);
 
@@ -4305,7 +4852,13 @@ mod tests {
             sin_evidencia
                 .pointer("/judgeReadiness/status")
                 .and_then(Value::as_str),
-            Some("review")
+            Some("ready")
+        );
+        assert_eq!(
+            sin_evidencia
+                .pointer("/judgeReadiness/evidenceStatus")
+                .and_then(Value::as_str),
+            Some("partial")
         );
 
         let con_evidencia = construir_preflight(&estado_publico_test(true, true));
@@ -4494,6 +5047,18 @@ mod tests {
         assert_eq!(
             jurado.pointer("/enlaces/demoCaos").and_then(Value::as_str),
             Some("/api/demo/caos")
+        );
+        assert_eq!(
+            jurado
+                .pointer("/evidenciaClave/resultadoMemorable/endpointReproducible")
+                .and_then(Value::as_str),
+            Some("/api/demo/caos")
+        );
+        assert_eq!(
+            jurado
+                .pointer("/evidenciaClave/scorecardCuantitativa/semillasPareadasBacktest")
+                .and_then(Value::as_u64),
+            Some(24)
         );
     }
 

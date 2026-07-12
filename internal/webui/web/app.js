@@ -31,13 +31,13 @@ const WS_RECONNECT_MAX = 15_000;
 // Fuente única para el copy editorial de la interfaz. Los estados que cambian
 // en runtime también salen de aquí para evitar variantes dispersas.
 const UI_COPY = Object.freeze({
-  landingKicker: "10 CEX públicos · 100+ rutas · inteligencia evolutiva",
-  landingTitle: "Las oportunidades duran milisegundos. Mayab fue construido para no parpadear.",
-  landingBody: "Mayab escucha el mercado, compara cada ruta y obliga a cada oportunidad a sobrevivir costos, liquidez, latencia, inventario y riesgo antes de decidir.",
+  landingKicker: "10 CEX públicos · 90 rutas · evidencia reproducible",
+  landingTitle: "Arbitraje que puede explicar cada decisión y sobrevivir una pierna fallida.",
+  landingBody: "Mayab compara cada ruta neta de costos, prueba inventario y profundidad, y reconcilia la exposición si la venta simulada falla después de comprar.",
   landingPrimaryCta: "Ver a Mayab decidir",
   landingSecondaryCta: "Inspeccionar la evidencia completa",
   proofMarket: "10 CEX públicos en tiempo real + 2 adaptadores DEX de investigación",
-  proofCosts: "Cada costo cuenta",
+  proofCosts: "Suite Rust multi-capa · conteo sellado por CI",
   proofSafety: "Capital real: cero",
   socket: Object.freeze({
     connecting: "Conectando mercado",
@@ -88,6 +88,121 @@ function aplicarCopyEditorial() {
 }
 
 aplicarCopyEditorial();
+
+const DATA_LENS_COPY = Object.freeze({
+  live: Object.freeze({
+    eyebrow: "01 · Mercado público",
+    title: "Señales observadas; órdenes y PnL siempre simulados.",
+    detail: "Esta vista nunca presenta una demo sintética como resultado de mercado.",
+    tab: "tab-mercado",
+  }),
+  replay: Object.freeze({
+    eyebrow: "02 · Replay capturado",
+    title: "Un tape reproducible dentro de un motor desechable.",
+    detail: "El sandbox no modifica wallets, PnL, GA ni libros del proceso live.",
+  }),
+  demo: Object.freeze({
+    eyebrow: "03 · Demo sintética",
+    title: "Escenarios controlados para probar fallos, unwind y recuperación.",
+    detail: "Toda evidencia demo queda etiquetada; capital real y órdenes reales: cero.",
+    tab: "tab-riesgo",
+  }),
+});
+
+function iniciarSelectorProcedencia() {
+  const items = [...document.querySelectorAll("[data-data-lens]")];
+  const eyebrow = $("dataLensEyebrow");
+  const title = $("dataLensTitle");
+  const detail = $("dataLensDetail");
+  let lensSeleccionado = "live";
+
+  const mostrar = (lens) => {
+    const copy = DATA_LENS_COPY[lens];
+    if (!copy) return;
+    items.forEach((item) => {
+      const activo = item.dataset.dataLens === lens;
+      item.classList.toggle("is-active", activo);
+      if (activo) item.setAttribute("aria-current", "page");
+      else item.removeAttribute("aria-current");
+    });
+    if (eyebrow) eyebrow.textContent = copy.eyebrow;
+    if (title) title.textContent = copy.title;
+    if (detail) detail.textContent = copy.detail;
+  };
+
+  items.forEach((item) => {
+    item.addEventListener("mouseenter", () => mostrar(item.dataset.dataLens));
+    item.addEventListener("focus", () => mostrar(item.dataset.dataLens));
+    item.addEventListener("mouseleave", () => mostrar(lensSeleccionado));
+    item.addEventListener("click", (event) => {
+      const lens = item.dataset.dataLens;
+      lensSeleccionado = lens;
+      mostrar(lens);
+      if (lens === "replay") return;
+      event.preventDefault();
+      const tab = document.querySelector(`[data-tab="${DATA_LENS_COPY[lens]?.tab}"]`);
+      tab?.click();
+      $("dashboard")?.scrollIntoView({ behavior: reducirMovimiento ? "auto" : "smooth" });
+    });
+  });
+
+  const lensInicial = new URLSearchParams(window.location.search).get("lens");
+  if (lensInicial === "demo" || lensInicial === "live") {
+    lensSeleccionado = lensInicial;
+    mostrar(lensInicial);
+    const tab = document.querySelector(`[data-tab="${DATA_LENS_COPY[lensInicial].tab}"]`);
+    // The tab listeners are registered later in the same DOM-ready callback.
+    queueMicrotask(() => tab?.click());
+  }
+}
+
+async function cargarEscalaCorpusPublico() {
+  const badge = $("dataLensScale");
+  if (!badge) return;
+  try {
+    const response = await fetch("/api/research/tapes", {
+      headers: { accept: "application/json" },
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    const corpus = payload?.corpus;
+    const gates = corpus?.evidenceGates;
+    const scan = payload?.scanStatus === "matched_corpus" ? payload?.quantitativeScan : null;
+    if (!corpus || !gates) {
+      badge.dataset.status = "unavailable";
+      badge.textContent = "Corpus público · todavía no publicado";
+      badge.title = "La captura incluida es pequeña; no se declara evidencia de escala.";
+      return;
+    }
+    const events = Number(corpus.totalEvents || 0);
+    const shards = Number(corpus.uniqueTapes || 0);
+    const hours = Number(corpus.totalCaptureDurationMs || 0) / 3_600_000;
+    const verified = gates.publishableScale === true;
+    const netDislocations = Number(scan?.netDislocations || 0);
+    const formatWilson = (label, estimate) => {
+      if (!estimate) return `${label}: sin intervalo`;
+      const point = Number(estimate.perMillion || 0);
+      const lower = Number(estimate.lowerPerMillion95 || 0);
+      const upper = Number(estimate.upperPerMillion95 || 0);
+      return `${label}: ${numero.format(point)} por millón (IC Wilson 95% ${numero.format(lower)}–${numero.format(upper)})`;
+    };
+    badge.dataset.status = verified ? "verified" : "pending";
+    badge.textContent = verified && scan
+      ? `${numero.format(events)} eventos · ${numero.format(netDislocations)} netas`
+      : verified
+        ? `${numero.format(events)} eventos · escala verificada`
+        : `${numero.format(events)} eventos · escala pendiente`;
+    const scanDetail = scan
+      ? `${numero.format(netDislocations)} dislocaciones netas · ${formatWilson("brutas", scan.grossRate95)} · ${formatWilson("netas", scan.netRate95)} · ${formatWilson("netas con liquidez", scan.liquidNetRate95)} · ${numero.format(Number(scan.eventsPerSecond || 0))} eventos/s · ${numero.format(Number(scan.maxLevelsInMemory || 0))} niveles máximos residentes`
+      : "scan cuantitativo pendiente";
+    badge.title = `${shards} shards únicos · ${numero.format(hours)} h capturadas · ${scanDetail} · corpus ${corpus.corpusSha256 || "sin hash"}`;
+  } catch (_) {
+    badge.dataset.status = "unavailable";
+    badge.textContent = "Corpus público · evidencia no disponible";
+    badge.title = "No se pudo consultar /api/research/tapes.";
+  }
+}
 
 function mostrarFeedback(el, mensaje, ok = true) {
   if (!el) return;
@@ -1596,116 +1711,9 @@ async function renderJudgeReadiness(datos) {
         .catch(() => {})
         .finally(() => {
           preflightEnCurso = false;
-});
-  }
-
-  // Capture/Replay real
-  const btnCapturarIniciar = $("btnCapturarIniciar");
-  const btnCapturarDetener = $("btnCapturarDetener");
-  const btnCapturarReplay = $("btnCapturarReplay");
-  const capturaEstado = $("capturaEstado");
-  if (btnCapturarIniciar) {
-    btnCapturarIniciar.addEventListener("click", async () => {
-      btnCapturarIniciar.disabled = true;
-      btnCapturarDetener.disabled = false;
-      capturaEstado.textContent = "Iniciando captura...";
-      try {
-        const res = await fetch("/api/demo/capturar/iniciar", {
-          method: "POST",
-          headers: headersMutacion(),
         });
-        if (res.ok) {
-          capturaEstado.textContent = "Captura activa · order books guardándose";
-        } else {
-          btnCapturarIniciar.disabled = false;
-          btnCapturarDetener.disabled = true;
-          capturaEstado.textContent = "Error al iniciar captura";
-        }
-      } catch {
-        btnCapturarIniciar.disabled = false;
-        btnCapturarDetener.disabled = true;
-        capturaEstado.textContent = "Error de red";
-      }
-    });
-  }
-  if (btnCapturarDetener) {
-    btnCapturarDetener.addEventListener("click", async () => {
-      btnCapturarDetener.disabled = true;
-      capturaEstado.textContent = "Deteniendo captura...";
-      try {
-        const res = await fetch("/api/demo/capturar/detener", {
-          method: "POST",
-          headers: headersMutacion(),
-        });
-        if (res.ok) {
-          const body = await res.json();
-          capturaEstado.textContent = `Captura detenida · ${body.snapshots} snapshots guardados`;
-          btnCapturarIniciar.disabled = false;
-          btnCapturarReplay.disabled = false;
-        } else {
-          btnCapturarDetener.disabled = false;
-          capturaEstado.textContent = "Error al detener captura";
-        }
-      } catch {
-        btnCapturarDetener.disabled = false;
-        capturaEstado.textContent = "Error de red";
-      }
-    });
-  }
-  if (btnCapturarReplay) {
-    btnCapturarReplay.addEventListener("click", async () => {
-      btnCapturarReplay.disabled = true;
-      btnCapturarIniciar.disabled = true;
-      btnCapturarDetener.disabled = true;
-      capturaEstado.textContent = "Ejecutando replay determinístico...";
-      try {
-        const res = await fetch("/api/demo/capturar/replay", {
-          method: "POST",
-          headers: headersMutacion(),
-        });
-        if (res.ok) {
-          const body = await res.json();
-          capturaEstado.textContent = `Replay completado · ${body.ticksProcesados} ticks procesados`;
-        } else {
-          capturaEstado.textContent = "Error en replay";
-        }
-      } catch {
-        capturaEstado.textContent = "Error de red en replay";
-      } finally {
-        btnCapturarReplay.disabled = false;
-        btnCapturarIniciar.disabled = false;
-      }
-    });
-  }
-  // Poll estado de captura cada 2s
-  setInterval(async () => {
-    if (!capturaEstado) return;
-    try {
-      const res = await fetch("/api/demo/capturar/estado");
-      if (res.ok) {
-        const body = await res.json();
-        if (body.activa) {
-          capturaEstado.textContent = `Captura activa · ${body.snapshots} snapshots · ${body.duracionSegundos}s`;
-          btnCapturarIniciar.disabled = true;
-          btnCapturarDetener.disabled = false;
-          btnCapturarReplay.disabled = true;
-        } else if (body.snapshots > 0) {
-          capturaEstado.textContent = `Listo para replay · ${body.snapshots} snapshots guardados`;
-          btnCapturarIniciar.disabled = false;
-          btnCapturarDetener.disabled = true;
-          btnCapturarReplay.disabled = false;
-        } else {
-          capturaEstado.textContent = "";
-          btnCapturarIniciar.disabled = false;
-          btnCapturarDetener.disabled = true;
-          btnCapturarReplay.disabled = true;
-        }
-      }
-    } catch {
-      // Silencio
     }
-  }, 2000);
-}
+  }
 
   const readiness = preflightCache?.judgeReadiness;
   if (!readiness) {
@@ -1724,6 +1732,8 @@ async function renderJudgeReadiness(datos) {
   const checks = readiness.checks || [];
   const byName = Object.fromEntries(checks.map((c) => [c.name, c.ok === true]));
   const faltantes = checks.filter((c) => !c.ok).map((c) => etiquetaCheck(c.name));
+  const venues = preflightCache?.venues || {};
+  const evidencia = preflightCache?.evidenceMatrix || [];
   const cb = datos?.metricas?.circuitBreakerActivo ? "ACTIVO" : "inactivo";
   const modCon = datos?.metricas?.modoConservador ? "ON" : "OFF";
   const cbUsd = dinero.format(datos?.configuracion?.circuitBreakerPerdidaUsd || 0);
@@ -1737,8 +1747,8 @@ async function renderJudgeReadiness(datos) {
 
   container.innerHTML = `
     <div class="judge-score">
-      <strong>${numero.format(readiness.passed || 0)}/${numero.format(readiness.total || checks.length || 0)}</strong>
-      <span>${escapeHtml(estadoReadiness(readiness.status))}</span>
+      <strong>${readiness.status === "ready" ? "READY" : "BLOCKED"}</strong>
+      <span>capacidad operativa · ${numero.format(venues.conWebSocketFresco || 0)} live / mínimo ${numero.format(venues.minimosRequeridos || 2)}</span>
     </div>
     <div class="judge-cards">
       ${card("Control de estrategia", byName.netProfitCalculation && byName.feesSlippageLatency && byName.exports, "Umbrales, costos, riesgo, exchanges, GA y exports se pueden revisar o mover desde UI/API.")}
@@ -1747,7 +1757,9 @@ async function renderJudgeReadiness(datos) {
       ${card("Decisión explicable", byName.decisionInspector && byName.mlEdgeExplainable, "Cada ruta muestra score, pesos GA, EV, costos y razón de aceptación o descarte.")}
       ${card("Mercado conectado", byName.realTimeOrderBooks, "Order books públicos frescos, latencia por exchange y fallback REST visible.")}
     </div>
-    <p>${faltantes.length ? `Falta reforzar: ${escapeHtml(faltantes.join(", "))}` : "Listo para enseñar: utilidad neta, mercado vivo, fills parciales, wallets, auditoría, riesgo, GA y exports."}</p>
+    <p><strong>Venues:</strong> ${numero.format(venues.configurados || 0)} adaptadores configurados · ${numero.format(venues.habilitados || 0)} habilitados · ${numero.format(venues.conWebSocketFresco || 0)} LIVE · ${numero.format(venues.conLibroRuteable || 0)} ruteables.</p>
+    <p><strong>Evidencia de corrida:</strong> ${evidencia.map((e) => `${escapeHtml(e.claim)}=${escapeHtml(e.status)}`).join(" · ") || "esperando preflight"}. Un WARN significa “aún no ejecutado”, no falla operativa.</p>
+    <p>${faltantes.length ? `Evidencia opcional pendiente: ${escapeHtml(faltantes.join(", "))}` : "Evidencia runtime completa y verificable."}</p>
   `;
 }
 
@@ -2727,7 +2739,7 @@ function renderGenetico(datos) {
   setText("gaInyecciones", `${numero.format(g.inyeccionesDiferenciales || 0)} DE`);
   setText("gaMetaheuristicas", numero.format((g.metaheuristicas || []).length || 2));
 
-  setText("gaMejorFitness", formato(g.mejorFitness, 2));
+  setText("gaMejorFitness", formato(g.fitnessDelRepresentantePareto ?? g.mejorFitness, 2));
   setText("gaFitnessPromedio", formato(g.fitnessPromedio, 2));
   actualizarDueloGa(g);
   setText("gaDiversidad", `${formato(g.diversidad * 100, 1)}%`);
@@ -2762,20 +2774,23 @@ function renderGenetico(datos) {
 function actualizarDueloGa(g) {
   const el = $("gaDuelo");
   if (!el) return;
-  const campeon = Number(g.mejorFitness || 0);
+  const representante = Number(g.fitnessDelRepresentantePareto ?? g.mejorFitness ?? 0);
   const retador = Number(g.retadorFitness ?? g.fitnessPromedio ?? 0);
-  const delta = campeon - retador;
+  const baseline = Number(g.baselineFitness ?? retador);
+  const gaSuperaBaseline = representante > baseline;
+  const campeon = gaSuperaBaseline ? representante : baseline;
+  const delta = representante - baseline;
   const empateTecnico = Math.abs(delta) < 0.005;
 
   if (empateTecnico) {
-    el.textContent = `Empate técnico ${formato(campeon, 2)} · campeón retenido`;
-    el.title = "Mismo fitness visible; el GA conserva el campeón actual por elitismo hasta que un retador lo supere.";
+    el.textContent = `Champion: baseline · empate técnico ${formato(campeon, 2)}`;
+    el.title = "El GA es challenger; el baseline permanece champion sin uplift fuera de muestra defendible.";
   } else if (delta > 0) {
-    el.textContent = `Campeón +${formato(delta, 2)} · ${formato(campeon, 2)} vs ${formato(retador, 2)}`;
-    el.title = "El campeón tiene mayor fitness que el segundo mejor individuo.";
+    el.textContent = `Challenger GA +${formato(delta, 2)} · promoción sujeta a holdout`;
+    el.title = "El representante Pareto supera al baseline en esta métrica; aún requiere validación fuera de muestra.";
   } else {
-    el.textContent = `Retador supera +${formato(Math.abs(delta), 2)} · pendiente de promoción`;
-    el.title = "El retador aparece por encima del campeón visible; se promoverá al ordenar la siguiente generación.";
+    el.textContent = `Champion: baseline · GA ${formato(Math.abs(delta), 2)} por debajo`;
+    el.title = "Resultado científico honesto: el motor conserva la estrategia simple cuando el GA no demuestra uplift.";
   }
 }
 
@@ -3790,6 +3805,8 @@ document.addEventListener("DOMContentLoaded", () => {
     scrollPorTab.set(tabActivo, pantalla.scrollTop);
   };
   iniciarLanding();
+  iniciarSelectorProcedencia();
+  cargarEscalaCorpusPublico();
   iniciarAjusteMetricas();
   iniciarDiccionario();
   iniciarHerramientasTablas();
@@ -4080,6 +4097,12 @@ function iniciarLanding() {
   });
 
   const cards = document.querySelectorAll(".reveal-card");
+  // El primer viewport es contenido, no un loading state. Dejarlo visible desde
+  // el primer frame evita que una carga lenta del modulo o una peculiaridad del
+  // IntersectionObserver de Safari convierta el hero en bloques borrosos.
+  document
+    .querySelectorAll(".landing-hero > .landing-copy, .landing-hero .landing-card")
+    .forEach((card) => card.classList.add("is-visible"));
   const ctas = document.querySelectorAll('a[href="#dashboard"]');
   ctas.forEach((cta) => {
     cta.addEventListener("click", (event) => {
