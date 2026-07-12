@@ -343,7 +343,7 @@ fn cotizacion_desde_precio_liq(
     let half_spread = precio * spread_bps / 10000.0 / 2.0;
     let bid = precio - half_spread;
     let ask = precio + half_spread;
-    let qty = (liquidez / precio * 0.01).max(0.001).min(10.0);
+    let qty = (liquidez / precio * 0.01).clamp(0.001, 10.0);
     Cotizacion {
         exchange: if es_jupiter { "Jupiter" } else { "Raydium" }.to_string(),
         par: normalizar_par(par),
@@ -391,8 +391,6 @@ async fn run_solana_dex_connector(adaptador: Box<dyn ExchangeAdapter>, motor: Ar
         // Reserva virtual: 1000 BTC * 50M USD = 50B constante
         let reserva_btc = 1000.0_f64;
         let reserva_usd = precio_base * reserva_btc;
-        let k = reserva_btc * reserva_usd;
-
         // Generar niveles de order book simulando profundidad AMM
         let mut bids = Vec::new();
         let mut asks = Vec::new();

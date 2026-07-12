@@ -31,12 +31,12 @@ const WS_RECONNECT_MAX = 15_000;
 // Fuente única para el copy editorial de la interfaz. Los estados que cambian
 // en runtime también salen de aquí para evitar variantes dispersas.
 const UI_COPY = Object.freeze({
-  landingKicker: "12 exchanges · 100+ rutas · inteligencia evolutiva",
+  landingKicker: "10 CEX públicos · 100+ rutas · inteligencia evolutiva",
   landingTitle: "Las oportunidades duran milisegundos. Mayab fue construido para no parpadear.",
   landingBody: "Mayab escucha el mercado, compara cada ruta y obliga a cada oportunidad a sobrevivir costos, liquidez, latencia, inventario y riesgo antes de decidir.",
   landingPrimaryCta: "Ver a Mayab decidir",
   landingSecondaryCta: "Inspeccionar la evidencia completa",
-  proofMarket: "12 exchanges en tiempo real (10 CEX + 2 DEX)",
+  proofMarket: "10 CEX públicos en tiempo real + 2 adaptadores DEX de investigación",
   proofCosts: "Cada costo cuenta",
   proofSafety: "Capital real: cero",
   socket: Object.freeze({
@@ -1993,26 +1993,18 @@ async function cargarAblacionGA() {
     
     tbody.innerHTML = "";
     
-    const filas = [
-      { key: "solo_spread", label: "Solo spread neto" },
-      { key: "conservador", label: "Estrategia conservadora fija" },
-      { key: "ev_fijo", label: "EV fijo" },
-      { key: "ga_simple", label: "GA simple" },
-      { key: "ga_sin_annealing", label: "GA híbrido sin annealing" },
-      { key: "ga_sin_de", label: "GA híbrido sin evo. diferencial" },
-      { key: "ga_hibrido", label: "GA híbrido completo (Campeón)", isCampeon: true },
-    ];
+    const filas = data.resultados || [];
     
-    filas.forEach(({ key, label, isCampeon }) => {
-      const d = data[key];
-      if (!d) return;
+    filas.forEach((d, index) => {
+      const isCampeon = index === filas.length - 1;
+      const label = d.modelo || "Configuración";
       
       const tr = document.createElement("tr");
       if (isCampeon) {
         tr.style.backgroundColor = "var(--card-bg)";
       }
       
-      const pnlColor = d.mediana > 0 ? "verde" : d.mediana < 0 ? "rojo" : "";
+      const pnlColor = d.medianaPnL > 0 ? "verde" : d.medianaPnL < 0 ? "rojo" : "";
       
       const fNum = (n) => `<td class="num">${n}</td>`;
       const fMoneda = (n, c) => `<td class="num ${c}">${dinero.format(n)}</td>`;
@@ -2020,11 +2012,11 @@ async function cargarAblacionGA() {
       
       tr.innerHTML = `
         <td>${isCampeon ? `<strong style="color:var(--morado)">${label}</strong>` : label}</td>
-        ${fNum(formato(d.profit_factor, 2))}
-        ${fPct(d.win_rate)}
-        ${fMoneda(-d.drawdown, "")}
-        ${fNum(d.trades)}
-        ${fMoneda(d.mediana, pnlColor)}
+        ${fNum(formato(d.profitFactor, 2))}
+        ${fPct(d.winRate)}
+        ${fMoneda(-d.worstRunLoss, "")}
+        ${fNum(d.runs)}
+        ${fMoneda(d.medianaPnL, pnlColor)}
         <td class="num">${dinero.format(d.p05)} / ${dinero.format(d.p95)}</td>
       `;
       tbody.appendChild(tr);
@@ -2032,8 +2024,8 @@ async function cargarAblacionGA() {
     
     ablacionGACargada = true;
   } catch (e) {
-    debugError("No se pudo cargar la ablación GA", e);
-    tbody.innerHTML = `<tr><td colspan="7" class="text-center">Error al cargar ablación GA</td></tr>`;
+    debugError("No se pudo cargar la sensibilidad GA", e);
+    tbody.innerHTML = `<tr><td colspan="7" class="text-center">Error al cargar sensibilidad GA</td></tr>`;
   }
 }
 

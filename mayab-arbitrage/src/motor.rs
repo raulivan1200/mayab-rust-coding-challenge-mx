@@ -830,6 +830,7 @@ impl Motor {
                 precio_referencia(state.cotizaciones.values()),
                 seed,
                 Utc::now(),
+                true,
             );
             operaciones = replay.operaciones.into();
             fallos = replay.fallos;
@@ -1091,6 +1092,7 @@ impl Motor {
                     precio,
                     ahora.timestamp_millis() as u64 ^ 0x5155_4d45_5243_4144,
                     ahora,
+                    false,
                 );
                 let mut insertadas = 0usize;
                 for op in replay.operaciones {
@@ -1221,10 +1223,12 @@ impl Motor {
         let precio_ref = precio_referencia(state.cotizaciones.values());
         let cfg = state.ga.config;
 
-        // Estrategias a comparar
+        // Configuraciones reproducibles a comparar. Los nombres describen
+        // exactamente lo que cambia; no se presentan como ablaciones de
+        // operadores que EstadoGa todavía ejecuta internamente.
         let estrategias = vec![
             (
-                "Solo spread neto",
+                "Población mínima sin mutación",
                 ConfigGa {
                     tamano_poblacion: 10,
                     tasa_mutacion: 0.0,
@@ -1232,46 +1236,46 @@ impl Motor {
                 },
             ),
             (
-                "Conservadora fija",
+                "Población mínima con cruce",
                 ConfigGa {
                     tamano_poblacion: 10,
                     tasa_mutacion: 0.0,
+                    tasa_cruce: 0.72,
+                },
+            ),
+            (
+                "Población mínima con mutación",
+                ConfigGa {
+                    tamano_poblacion: 10,
+                    tasa_mutacion: 0.15,
                     tasa_cruce: 0.0,
                 },
             ),
             (
-                "EV fijo",
+                "GA compacto",
                 ConfigGa {
-                    tamano_poblacion: 10,
-                    tasa_mutacion: 0.0,
-                    tasa_cruce: 0.0,
-                },
-            ),
-            (
-                "GA simple",
-                ConfigGa {
-                    tamano_poblacion: 10,
+                    tamano_poblacion: 25,
                     tasa_mutacion: 0.15,
                     tasa_cruce: 0.72,
                 },
             ),
             (
-                "GA híbrido sin annealing",
+                "GA conservador",
                 ConfigGa {
-                    tamano_poblacion: 10,
-                    tasa_mutacion: 0.15,
-                    tasa_cruce: 0.72,
+                    tamano_poblacion: cfg.tamano_poblacion,
+                    tasa_mutacion: (cfg.tasa_mutacion * 0.5).clamp(0.0, 0.8),
+                    tasa_cruce: cfg.tasa_cruce,
                 },
             ),
             (
-                "GA híbrido sin evo. diferencial",
+                "GA exploratorio",
                 ConfigGa {
-                    tamano_poblacion: 10,
-                    tasa_mutacion: 0.15,
-                    tasa_cruce: 0.72,
+                    tamano_poblacion: cfg.tamano_poblacion,
+                    tasa_mutacion: (cfg.tasa_mutacion * 1.75).clamp(0.0, 0.8),
+                    tasa_cruce: cfg.tasa_cruce,
                 },
             ),
-            ("GA híbrido completo (Campeón)", cfg),
+            ("Configuración activa", cfg),
         ];
 
         let semillas_holdout: Vec<u64> = (401..=424).collect();
@@ -1280,18 +1284,30 @@ impl Motor {
         for (nombre, ga_cfg) in estrategias {
             let mut pnls = Vec::new();
             for &s in &semillas_holdout {
-                let replay = operaciones_sinteticas_ga(&costos, 24, precio_ref, s, Utc::now());
+                let replay =
+                    operaciones_sinteticas_ga(&costos, 24, precio_ref, s, Utc::now(), true);
                 let mut ga = crate::ga::EstadoGa::default();
                 ga.config = ga_cfg;
                 ga.evolucionar(&replay.operaciones[..], replay.fallos);
+                let estrategia = ga.estrategia();
                 let pnl: f64 = replay
                     .operaciones
                     .iter()
                     .filter(|op| {
                         let capital = op.precio_compra * op.cantidad_btc;
-                        capital > 0.0 && op.utilidad_usd > 0.0
+                        let neto_bps = if capital > 0.0 {
+                            op.utilidad_esperada_usd / capital * 10_000.0
+                        } else {
+                            0.0
+                        };
+                        capital > 0.0
+                            && neto_bps >= estrategia.umbral_min_spread_bps
+                            && op.latencia_max_ms <= estrategia.tolerancia_latencia_ms
                     })
-                    .map(|op| op.utilidad_usd)
+                    .map(|op| {
+                        let cantidad_aplicada = op.cantidad_btc.min(estrategia.max_operacion_btc);
+                        op.utilidad_usd * cantidad_aplicada / op.cantidad_btc.max(0.000_000_01)
+                    })
                     .sum();
                 pnls.push(pnl);
             }
@@ -1301,17 +1317,10 @@ impl Motor {
             let p95 = pnls[pnls.len() * 95 / 100];
             let trades = pnls.len();
             let win = pnls.iter().filter(|&&x| x > 0.0).count() as f64 / trades as f64;
-            let dd = pnls
+            let peor_perdida = pnls
                 .iter()
-                .rev()
-                .fold(0.0_f64, |mut acc, &x| {
-                    acc += x;
-                    if acc > 0.0 {
-                        acc
-                    } else {
-                        0.0
-                    }
-                })
+                .copied()
+                .fold(f64::INFINITY, f64::min)
                 .min(0.0)
                 .abs();
             let pf = pnls.iter().filter(|&&x| x > 0.0).sum::<f64>()
@@ -1326,14 +1335,22 @@ impl Motor {
                 "modelo": nombre,
                 "profitFactor": (pf * 100.0).round() / 100.0,
                 "winRate": (win * 100.0).round() / 100.0,
-                "drawdown": (dd * 100.0).round() / 100.0,
+                "drawdown": (peor_perdida * 100.0).round() / 100.0,
+                "worstRunLoss": (peor_perdida * 100.0).round() / 100.0,
                 "sharpe": 0.0,
+                "runs": trades,
+                "trades": trades,
                 "medianaPnL": (mediana * 100.0).round() / 100.0,
+                "p05": (p05 * 100.0).round() / 100.0,
+                "p95": (p95 * 100.0).round() / 100.0,
                 "p05_p95": format!("{:.0} / {:.0}", p05, p95),
             }));
         }
 
-        serde_json::json!({ "resultados": resultados })
+        serde_json::json!({
+            "metodologia": "24 semillas holdout comunes; cada estrategia filtra por su umbral y tolerancia de latencia, y limita el PnL por su tamaño máximo",
+            "resultados": resultados
+        })
     }
 }
 
@@ -2205,6 +2222,7 @@ fn operaciones_sinteticas_ga(
     precio_ref: f64,
     seed: u64,
     ahora: DateTime<Utc>,
+    incluir_adversidad: bool,
 ) -> ReplayGa {
     let exchanges = [
         "Binance", "Kraken", "Coinbase", "OKX", "Bybit", "Bitfinex", "KuCoin", "Gate.io",
@@ -2257,7 +2275,13 @@ fn operaciones_sinteticas_ga(
             + costos_operacion.deslizamiento_usd
             + costos_operacion.retiro_amort_usd
             + costos_operacion.latencia_riesgo_usd;
-        let utilidad = ((precio_venta - precio_compra) * cantidad - total_usd).max(1.0);
+        let utilidad_esperada = ((precio_venta - precio_compra) * cantidad - total_usd).max(1.0);
+        let adversa = incluir_adversidad && rng.gen_bool(0.22);
+        let utilidad = if adversa {
+            -rng.gen_range(40.0..160.0)
+        } else {
+            utilidad_esperada
+        };
         let parcial = rng.gen_bool(0.18);
         if rng.gen_bool(0.08) {
             fallos += 1;
@@ -2274,7 +2298,7 @@ fn operaciones_sinteticas_ga(
             precio_compra,
             precio_venta,
             utilidad_usd: utilidad,
-            utilidad_esperada_usd: utilidad,
+            utilidad_esperada_usd: utilidad_esperada,
             costos: CostosOperacion {
                 total_usd,
                 ..costos_operacion
@@ -3296,9 +3320,9 @@ mod tests {
     }
 
     #[test]
-    fn replay_sintetico_genera_muestras_rentables_para_ga() {
+    fn replay_sintetico_genera_holdout_con_resultados_adversos() {
         let cfg = cfg_test();
-        let replay = operaciones_sinteticas_ga(&cfg, 24, 95_000.0, 7, Utc::now());
+        let replay = operaciones_sinteticas_ga(&cfg, 24, 95_000.0, 7, Utc::now(), true);
         assert_eq!(replay.operaciones.len(), 24);
         assert!(replay.operaciones.iter().any(|op| op.utilidad_usd > 0.0));
         assert!(replay
@@ -3309,7 +3333,11 @@ mod tests {
             .operaciones
             .iter()
             .all(|op| op.compra_en != op.venta_en));
-        assert!(replay.operaciones.iter().all(|op| op.utilidad_usd >= 1.0));
+        assert!(replay
+            .operaciones
+            .iter()
+            .all(|op| op.utilidad_esperada_usd >= 1.0));
+        assert!(replay.operaciones.iter().any(|op| op.utilidad_usd < 0.0));
     }
 
     #[tokio::test]

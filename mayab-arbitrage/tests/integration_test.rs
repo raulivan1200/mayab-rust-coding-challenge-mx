@@ -171,6 +171,41 @@ async fn integration_ga_evolucionar_con_replay_sintetico() {
 }
 
 #[tokio::test]
+async fn integration_ga_sensibilidad_aplica_estrategias_y_expone_metodologia() {
+    let (app, _motor) = make_test_app().await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/ga/sensibilidad")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let resultados = json["resultados"].as_array().unwrap();
+
+    assert_eq!(resultados.len(), 7);
+    assert!(json["metodologia"]
+        .as_str()
+        .unwrap()
+        .contains("24 semillas holdout"));
+    assert!(resultados.iter().all(|fila| {
+        fila["modelo"].is_string()
+            && fila["profitFactor"].is_number()
+            && fila["winRate"].is_number()
+            && fila["runs"] == 24
+            && fila["trades"] == 24
+            && fila["worstRunLoss"].is_number()
+            && fila["medianaPnL"].is_number()
+            && fila["p05"].is_number()
+            && fila["p95"].is_number()
+    }));
+}
+
+#[tokio::test]
 async fn integration_demo_caos_ejecuta_checks_y_recupera() {
     let (app, _motor) = make_test_app().await;
 

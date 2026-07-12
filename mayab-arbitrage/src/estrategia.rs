@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 
 use crate::{
     motor::{config_exchange, Carteras},
-    types::{Cotizacion, MapaCostos, NivelOrden, Oportunidad, TipoOportunidad},
+    types::{Cotizacion, MapaCostos, Oportunidad, TipoOportunidad},
 };
 
 /// Trait que define una estrategia de detección de oportunidades.

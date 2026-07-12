@@ -24,6 +24,9 @@ Métricas Prometheus: contadores HTTP, gauges del motor (PnL, drawdown, Sharpe, 
 ## `GET /api/ga/estado`
 Estado del GA: población, generación, campeón, fitness.
 
+## `GET /api/ga/sensibilidad`
+Compara configuraciones de población, mutación y cruce sobre 24 semillas holdout comunes. El alias histórico `/api/ga/ablacion` conserva compatibilidad.
+
 ## `POST /api/ga/evolucionar`
 Ejecuta N generaciones del GA.
 

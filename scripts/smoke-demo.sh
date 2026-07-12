@@ -86,6 +86,7 @@ json_get "/api/mcp/manifest" "$TMP_DIR/mcp-manifest.json"
 json_post "/api/mcp/call" '{"tool":"summarize_for_llm"}' "$TMP_DIR/mcp-summary.json"
 json_get "/api/backtest" "$TMP_DIR/backtest.json"
 json_get "/api/lab/sweep" "$TMP_DIR/lab-sweep.json"
+json_get "/api/ga/sensibilidad" "$TMP_DIR/ga-sensibilidad.json"
 json_get "/api/export/json" "$TMP_DIR/export.json"
 json_get "/api/export/csv" "$TMP_DIR/export.csv"
 json_post "/api/demo" '{"escenario":"liquidez_insuficiente"}' "$TMP_DIR/demo-liquidez.json"
@@ -124,6 +125,7 @@ mcp_manifest = load("mcp-manifest.json")
 mcp_summary = load("mcp-summary.json")
 backtest = load("backtest.json")
 lab = load("lab-sweep.json")
+sensibilidad = load("ga-sensibilidad.json")
 export_json = load("export.json")
 demo_liquidez = load("demo-liquidez.json")
 demo_circuit = load("demo-circuit.json")
@@ -244,6 +246,14 @@ if lab.get("tipo") != "research_lab_sweep" or len(lab.get("resultados") or []) <
     errors.append("/api/lab/sweep no devolvio sweep completo")
 if not lab.get("ganador"):
     errors.append("/api/lab/sweep no reporta ganador")
+
+filas_sensibilidad = sensibilidad.get("resultados") or []
+if len(filas_sensibilidad) != 7 or "24 semillas holdout" not in sensibilidad.get("metodologia", ""):
+    errors.append("/api/ga/sensibilidad no expone las 7 configuraciones y metodología holdout")
+for fila in filas_sensibilidad:
+    if fila.get("runs") != 24 or not fila.get("modelo"):
+        errors.append("/api/ga/sensibilidad contiene una configuración incompleta")
+        break
 
 for key in ["operaciones", "eventosEjecucion", "trazasEjecucion", "auditoriaDecisiones", "rebalanceos", "balances", "configuracion", "telemetriaPipeline"]:
     if key not in export_json:

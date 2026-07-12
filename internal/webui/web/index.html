@@ -44,7 +44,7 @@
 
         <div id="landing-top" class="landing-hero">
           <div class="landing-copy reveal-card">
-            <p class="landing-kicker" data-ui-copy="landingKicker">12 exchanges · 100+ rutas · inteligencia evolutiva</p>
+            <p class="landing-kicker" data-ui-copy="landingKicker">10 CEX públicos · 100+ rutas · inteligencia evolutiva</p>
             <h1 data-ui-copy="landingTitle">Las oportunidades duran milisegundos. Mayab fue construido para no parpadear.</h1>
             <p data-ui-copy="landingBody">Mayab escucha el mercado, compara cada ruta y obliga a cada oportunidad a sobrevivir costos, liquidez, latencia, inventario y riesgo antes de decidir.</p>
             <div class="landing-actions">
@@ -55,7 +55,7 @@
               <a class="landing-cta landing-cta-secondary" href="/api/paquete-evaluacion" target="_blank" rel="noopener" title="Abre el reporte JSON con score técnico, métricas, auditoría y cobertura de evaluación" data-ui-copy="landingSecondaryCta">Inspeccionar la evidencia completa</a>
             </div>
             <div class="landing-proof" aria-label="Principios de la demo">
-              <span><strong>01</strong> <span data-ui-copy="proofMarket">12 exchanges en tiempo real (10 CEX + 2 DEX)</span></span>
+              <span><strong>01</strong> <span data-ui-copy="proofMarket">10 CEX públicos en tiempo real + 2 adaptadores DEX de investigación</span></span>
               <span><strong>02</strong> <span data-ui-copy="proofCosts">Cada costo cuenta</span></span>
               <span><strong>03</strong> <span data-ui-copy="proofSafety">Capital real: cero</span></span>
             </div>
@@ -907,22 +907,22 @@
         </div>
 
         <div class="ga-ablation-table-wrap" style="margin-bottom: 2rem;">
-          <p class="ceja" style="margin-bottom: 0.5rem; display: block;">Evidencia Cuantitativa (Holdout Baseline vs GA)</p>
+          <p class="ceja" style="margin-bottom: 0.5rem; display: block;">Sensibilidad cuantitativa del GA (holdout común)</p>
           <div class="table-responsive">
             <table class="rutas-table">
               <thead>
                 <tr>
-                  <th>Modelo / Ablación</th>
+                  <th>Configuración</th>
                   <th class="num">Profit Factor</th>
                   <th class="num">Win Rate</th>
-                  <th class="num">Drawdown</th>
-                  <th class="num">Trades</th>
+                  <th class="num">Peor corrida</th>
+                  <th class="num">Corridas</th>
                   <th class="num">Mediana PnL</th>
                   <th class="num">P05-P95 PnL (Intervalo)</th>
                 </tr>
               </thead>
               <tbody id="gaAblationBody">
-                <tr><td colspan="7" class="text-center">Cargando ablación GA...</td></tr>
+                <tr><td colspan="7" class="text-center">Cargando sensibilidad GA...</td></tr>
               </tbody>
             </table>
           </div>
@@ -1140,7 +1140,7 @@
       </div>
       <p class="ceja">Recorrido para jurado</p>
       <h2 id="tutorialTitle">Mercado público en vivo</h2>
-      <p id="tutorialText">10 exchanges configurados, 8 WebSocket frescos y 2 REST fallback normalizan order books y conservan la fuente visible.</p>
+      <p id="tutorialText">10 CEX públicos y 2 adaptadores DEX de investigación normalizan libros, conservan la fuente visible y separan WebSocket de fallback.</p>
       <p id="tutorialProof" class="tutorial-proof"></p>
       <div class="tutorial-actions">
         <button id="tutorialPrev" class="btn-secundario" type="button">Anterior</button>

@@ -5,7 +5,7 @@
 //! `X-Admin-Token`.
 
 use std::{
-    collections::{hash_map::DefaultHasher, HashMap},
+    collections::{hash_map::DefaultHasher, HashMap, HashSet},
     hash::{Hash, Hasher},
     path::Path,
     sync::Arc,
@@ -103,6 +103,8 @@ pub fn router(motor: Arc<Motor>, token_admin: Option<String>) -> Router {
         .route("/api/demo/capturar/estado", get(captura_estado_http))
         .route("/api/demo/capturar/replay", post(captura_replay_http))
         .route("/api/ga/estado", get(ga_estado))
+        .route("/api/ga/sensibilidad", get(ga_sensibilidad))
+        .route("/api/ga/ablacion", get(ga_sensibilidad))
         .route("/api/ga/config", get(obtener_config_ga).post(actualizar_config_ga_http))
         .route("/api/ga/evolucionar", post(evolucionar_ga_http))
         .route("/api/exchanges", post(alternar_exchange_http))
@@ -145,7 +147,11 @@ pub fn router(motor: Arc<Motor>, token_admin: Option<String>) -> Router {
 }
 
 async fn healthz() -> Json<serde_json::Value> {
-    Json(json!({ "ok": true }))
+    Json(json!({
+        "ok": true,
+        "version": env!("CARGO_PKG_VERSION"),
+        "name": env!("CARGO_PKG_NAME"),
+    }))
 }
 
 async fn contar_peticiones(State(metricas): State<Metricas>, req: Request, next: Next) -> Response {
@@ -990,6 +996,10 @@ async fn ga_estado(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     Json(app.motor.ga_estado().await)
 }
 
+async fn ga_sensibilidad(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+    Json(app.motor.ga_ablacion().await)
+}
+
 async fn obtener_config_ga(State(app): State<EstadoApp>) -> Json<ConfigGa> {
     Json(app.motor.ga_config().await)
 }
@@ -1788,12 +1798,16 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
         .cotizaciones
         .iter()
         .filter(|c| snapshot_fresco(estado, c))
-        .count();
+        .map(|c| c.exchange.as_str())
+        .collect::<HashSet<_>>()
+        .len();
     let conectados = estado
         .cotizaciones
         .iter()
         .filter(|c| snapshot_websocket_fresco(estado, c))
-        .count();
+        .map(|c| c.exchange.as_str())
+        .collect::<HashSet<_>>()
+        .len();
     // La rúbrica exige dos o más exchanges. Los adicionales mejoran cobertura,
     // pero una caída regional de un tercero no debe invalidar una demo con dos
     // WebSockets directos y snapshots ruteables claramente etiquetados.
@@ -2017,6 +2031,7 @@ fn construir_modo_jurado(estado: &EstadoPublico) -> serde_json::Value {
             "passed": readiness.get("passed").cloned().unwrap_or_else(|| json!(0)),
             "total": readiness.get("total").cloned().unwrap_or_else(|| json!(0)),
             "puntajeTotal": puntaje_total,
+            "tipoPuntaje": "cobertura de checks internos, no calificacion del comite",
             "huellaAuditoria": huella,
         },
         "script60Segundos": [
@@ -2033,8 +2048,8 @@ fn construir_modo_jurado(estado: &EstadoPublico) -> serde_json::Value {
         "checks": checks,
         "evidenciaClave": {
             "parametrosControlablesEstimados": parametros_controlables(estado),
-            "feedsWebSocketFrescos": estado.cotizaciones.iter().filter(|c| snapshot_websocket_fresco(estado, c)).count(),
-            "feedsRestFallback": estado.cotizaciones.iter().filter(|c| c.ultimo_mensaje == "rest_fallback").count(),
+            "feedsWebSocketFrescos": contar_exchanges_unicos(estado.cotizaciones.iter().filter(|c| snapshot_websocket_fresco(estado, c))),
+            "feedsRestFallback": contar_exchanges_unicos(estado.cotizaciones.iter().filter(|c| c.ultimo_mensaje == "rest_fallback")),
             "operaciones": estado.metricas.operaciones,
             "pnlUsd": estado.metricas.utilidad_acumulada_usd,
             "rebalanceos": estado.metricas.rebalanceos_totales,
@@ -2088,6 +2103,13 @@ fn snapshot_websocket_fresco(estado: &EstadoPublico, cotizacion: &Cotizacion) ->
         && cotizacion.ultimo_mensaje != "rest_fallback"
 }
 
+fn contar_exchanges_unicos<'a>(cotizaciones: impl Iterator<Item = &'a Cotizacion>) -> usize {
+    cotizaciones
+        .map(|c| c.exchange.as_str())
+        .collect::<HashSet<_>>()
+        .len()
+}
+
 fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
     let preflight = construir_preflight(estado);
     let resumen = construir_resumen_llm(estado);
@@ -2102,16 +2124,18 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
     let ga = estado.genetico.as_ref();
     let ml_edge = estado.ml_edge.as_ref();
     let persistencia = estado.persistencia.as_ref();
-    let ws_conectados = estado
-        .cotizaciones
-        .iter()
-        .filter(|c| snapshot_websocket_fresco(estado, c))
-        .count();
-    let rest_fallbacks = estado
-        .cotizaciones
-        .iter()
-        .filter(|c| c.ultimo_mensaje == "rest_fallback")
-        .count();
+    let ws_conectados = contar_exchanges_unicos(
+        estado
+            .cotizaciones
+            .iter()
+            .filter(|c| snapshot_websocket_fresco(estado, c)),
+    );
+    let rest_fallbacks = contar_exchanges_unicos(
+        estado
+            .cotizaciones
+            .iter()
+            .filter(|c| c.ultimo_mensaje == "rest_fallback"),
+    );
     let criterios = vec![
         criterio(
             "demo_segura",
@@ -2254,17 +2278,25 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
                 .unwrap_or_else(|| "Sin SQLite de auditoria.".into()),
         ),
     ];
-    let puntaje_total = criterios
+    let puntaje_tecnico_indicativo = criterios
         .iter()
         .filter_map(|c| c.get("puntaje").and_then(|v| v.as_u64()))
         .sum::<u64>() as f64
         / criterios.len().max(1) as f64;
+    let cobertura_checks = criterios
+        .iter()
+        .filter(|c| c.get("cumplido").and_then(|v| v.as_bool()) == Some(true))
+        .count() as f64
+        / criterios.len().max(1) as f64
+        * 100.0;
 
     json!({
         "generadoEn": estado.generado_en,
         "nombre": "Mayab Arbitraje BTC - paquete de evaluacion",
         "modo": "demo segura read-only",
-        "puntajeTotal": puntaje_total,
+        "puntajeTotal": cobertura_checks,
+        "tipoPuntaje": "porcentaje de checks internos cumplidos; no es una calificacion ni prediccion del comite",
+        "puntajeTecnicoIndicativo": puntaje_tecnico_indicativo,
         "huellaAuditoria": huella_estado(estado),
         "rubricaOficialComite": matriz_rubrica_oficial(estado),
         "coberturaFinalista": cobertura_finalista(estado),
@@ -2465,16 +2497,18 @@ fn matriz_rubrica_oficial(estado: &EstadoPublico) -> Vec<serde_json::Value> {
 
 fn cobertura_finalista(estado: &EstadoPublico) -> serde_json::Value {
     let parametros = parametros_controlables(estado);
-    let feeds_ws = estado
-        .cotizaciones
-        .iter()
-        .filter(|c| snapshot_websocket_fresco(estado, c))
-        .count();
-    let rest_fallbacks = estado
-        .cotizaciones
-        .iter()
-        .filter(|c| c.ultimo_mensaje == "rest_fallback")
-        .count();
+    let feeds_ws = contar_exchanges_unicos(
+        estado
+            .cotizaciones
+            .iter()
+            .filter(|c| snapshot_websocket_fresco(estado, c)),
+    );
+    let rest_fallbacks = contar_exchanges_unicos(
+        estado
+            .cotizaciones
+            .iter()
+            .filter(|c| c.ultimo_mensaje == "rest_fallback"),
+    );
     let eventos_adversos = estado
         .eventos_ejecucion
         .iter()

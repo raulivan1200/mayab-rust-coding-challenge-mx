@@ -44,6 +44,12 @@ paths:
       responses:
         '200':
           description: OK
+  /api/ga/sensibilidad:
+    get:
+      summary: Compara siete configuraciones GA sobre 24 semillas holdout comunes
+      responses:
+        '200':
+          description: Metodología y resultados por configuración
   /api/ga/evolucionar:
     post:
       summary: Fuerza la evolución de la población

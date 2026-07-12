@@ -44,6 +44,16 @@ AUDITORIA_DB_PATH="$DB_PATH" \
 target/release/mayab-arbitrage &
 APP_PID=$!
 
+# Dar oportunidad al proceso de reportar errores inmediatos (por ejemplo, un
+# puerto ocupado) antes de consultar HTTP. Sin esta barrera, otro servicio en
+# el mismo puerto podría responder al readiness y producir un falso positivo.
+sleep 1
+if ! kill -0 "$APP_PID" 2>/dev/null; then
+  echo "El binario release termino al arrancar; verifica que ${BASE_URL} este libre" >&2
+  wait "$APP_PID" 2>/dev/null || true
+  exit 1
+fi
+
 ready=0
 for _ in $(seq 1 60); do
   if ! kill -0 "$APP_PID" 2>/dev/null; then

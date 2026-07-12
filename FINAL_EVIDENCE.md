@@ -1,67 +1,56 @@
 # Evidencia de Validación Final (Mayab Arbitraje BTC)
 
-Este documento centraliza las métricas y la validación técnica extraída del entorno en modo *Real-market paper result* (con latencias y spreads de la red, operaciones puramente lógicas) y del modo *Synthetic demo result* (escenario artificial que forza oportunidad masiva para evaluación del motor de ejecución).
+Este documento indica cómo obtener evidencia vigente del binario que se está evaluando. Separa *Real-market paper result* (feeds públicos y ejecución simulada) de *Synthetic demo result* (escenarios artificiales etiquetados). Las métricas dinámicas no se copian aquí como constantes porque latencias, feeds y contadores cambian entre revisiones e instancias.
 
 ## 1. Rúbrica de Criterios (Evaluación Automática `/api/jurado`)
 
-Los criterios originales de autoevaluación (con puntaje 100/100) han sido reemplazados por una salida en formato `PASS/FAIL` estricto en el endpoint, demostrando objetivamente la funcionalidad sin inflar calificaciones:
+`/api/jurado` y `/api/preflight` calculan sus checks desde el estado actual. Para preparar una corrida reproducible y consultar la evidencia:
 
-*   **demo_segura**: PASS. "Sin llaves API, custodia, ordenes reales ni transferencias on-chain."
-*   **datos_tiempo_real**: PASS. "8 feeds WebSocket publicos frescos; 8 feeds con latencia EWMA disponible."
-*   **websocket_first_rest_fallback**: PASS. "WS es fuente primaria; 2 snapshots recientes llegaron por REST fallback publico."
-*   **motor_ejecutable**: PASS. "4850 operaciones simuladas, 120 oportunidades recientes."
-*   **explicabilidad**: PASS. "4850 decisiones auditadas con score, costos, pesos GA y razon."
-*   **ga_activo**: PASS. "Generacion 12, fitness 1.15, diversidad 85.0%, poblacion 50."
-*   **ml_edge_explicable**: PASS. "v1.2 score 0.895, EV 12.50 USD, confianza 92.5%, 15 features auditables."
-*   **riesgo_y_resiliencia**: PASS. "Riesgo=normal, circuitBreaker=false, modoConservador=false, fallos=2."
-*   **backtest_y_export**: PASS. "Incluye backtest deterministico, Research Lab sweep y exportaciones JSON/CSV de auditoria."
-*   **persistencia_sqlite_local**: PASS. "SQLite en /tmp/mayab-audit.sqlite con 4850 ops, 120 oportunidades, 4850 auditorias y 4850 eventos."
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/demo/final
+curl -sS http://127.0.0.1:8080/api/jurado | jq '{estado, checks, rubricaOficial}'
+curl -sS http://127.0.0.1:8080/api/preflight | jq '{listo, judgeReadiness, checks}'
+```
 
-## 2. Evidencia de Ablación (Genetic Algorithm)
+El gate automatizado completo es `./scripts/release-check.sh`; además de compilar y probar, exige PnL demo positivo, GA activo, fill parcial, rebalanceo, auditoría y reconciliación de segunda pierna sin exposición residual.
 
-La siguiente tabla resume el impacto del Algoritmo Genético ajustando parámetros vs el baseline del bot. Se simularon 5,000 oportunidades artificiales.
+## 2. Análisis de sensibilidad (Genetic Algorithm)
 
-| Configuración | Win Rate | Sharpe Ratio | Max Drawdown | Retorno (bps) | Costo Rebalanceo |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Baseline (Hardcoded)** | 42.5% | 1.12 | $1,250 | 0.85 | $350 |
-| **Híbrido (Reglas + GA)** | 68.2% | 2.45 | $420 | 2.15 | $120 |
+La evidencia vigente se genera en tiempo de ejecución mediante `GET /api/ga/sensibilidad`. El reporte usa siete configuraciones reproducibles y 24 semillas holdout comunes; no se conservan cifras estáticas que puedan quedar desalineadas del código desplegado.
 
-> **Conclusión del Experimento:** El Algoritmo Genético optimiza exitosamente el umbral de disparo y rebalanceo, mitigando los costos e incrementando la estabilidad del retorno ante la volatilidad.
+```bash
+curl -sS http://127.0.0.1:8080/api/ga/sensibilidad | jq '{metodologia, resultados}'
+```
+
+> **Lectura correcta:** El endpoint compara configuraciones reproducibles de población, mutación y cruce sobre 24 semillas holdout comunes. Cada estrategia aplica su propio umbral, tolerancia de latencia y tamaño máximo. Es análisis de sensibilidad del GA híbrido, no una prueba causal aislada de cada operador interno.
 
 ## 3. Telemetría de Latencia (Pipeline)
 
-La telemetría mide el flujo desde que el socket recibe un paquete (Quote) hasta que el motor produce una decisión en el libro de órdenes in-memory.
+La telemetría separa latencia de red, scheduling quote→decisión y cómputo interno. La fuente autoritativa es:
 
-*   **P50 (mediana):** 1.2 ms
-*   **P95:** 3.5 ms
-*   **P99:** 8.1 ms
+```bash
+curl -sS http://127.0.0.1:8080/api/latencias | jq
+```
 
-*Nota: La latencia P99 incluye la escritura asíncrona a la persistencia SQLite (I/O). El "hot-path" en memoria se mantiene sub-milisegundo la mayoría de las ocasiones.*
+Los percentiles deben citarse junto con la región, revisión y hora de la medición; el proyecto no declara un SLA universal de los exchanges.
 
 ## 4. Cobertura Estática
 
-*   `cargo test` y `cargo clippy`: PASS sin advertencias o issues de mutabilidad inesperada.
-*   `cargo audit`: PASS, sin vulnerabilidades en el árbol de dependencias de `Cargo.toml`.
-*   Aprovisionamiento Cloud Run (Contenedores inmutables y de un solo inicio): PASS mediante Action CI.
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- `cargo test --workspace --all-targets --locked`
+- `cargo audit`
+- `docker build --tag mayab-btc-arbitrage:ci .`
+
+No debe marcarse esta sección como aprobada si la revisión publicada no tiene todos los checks verdes.
 
 ## 5. Decision Inspector
 
-Ejemplo de auditoría de decisión generada por la API `/api/paquete-evaluacion`:
-```json
-{
-  "timestamp": "2026-07-12T04:00:15Z",
-  "par": "BTC/USDT",
-  "intercambioCompra": "Binance",
-  "intercambioVenta": "Kraken",
-  "diferencialBruto": 12.5,
-  "costoTransaccion": 2.1,
-  "slippageEstimado": 1.5,
-  "diferencialNeto": 8.9,
-  "utilidadUsd": 15.42,
-  "decisionCode": "EXECUTE_ARBITRAGE",
-  "decisionReason": "Diferencial neto superó el umbral optimizado por el GA (5.0 bps)",
-  "mlScore": 0.88
-}
+La auditoría real de la corrida se consulta sin ejemplos inventados:
+
+```bash
+curl -sS http://127.0.0.1:8080/api/paquete-evaluacion \
+  | jq '.evidencia.ultimaAuditoria'
 ```
 
-Esta evaluación certifica que el código cumple estrictamente los lineamientos de la prueba. Todas las llamadas suceden *on-demand* y las proyecciones financieras residen únicamente en la interfaz web y la memoria local del daemon. No se arriesga capital.
+Todas las órdenes, wallets y resultados son simulados. El sistema no usa llaves privadas, no firma órdenes y no arriesga capital.

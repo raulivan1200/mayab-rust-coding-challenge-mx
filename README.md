@@ -4,7 +4,7 @@
 
 [Aplicación pública en Cloud Run](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app)
 
-![Tests](https://img.shields.io/badge/tests-72%20passing-16a34a)
+![Tests](https://img.shields.io/badge/tests-73%20passing-16a34a)
 ![Rust](https://img.shields.io/badge/Rust-2021-b7410e)
 ![Modo](https://img.shields.io/badge/ejecuci%C3%B3n-100%25%20simulada-2563eb)
 
@@ -16,7 +16,7 @@
 | Optimización Genética Híbrida | Completado | Dashboard > Panel GA | Visualización de pesos, convergencia y fitness |
 | Evaluación y Backtest | Completado | `GET /api/paquete-evaluacion` | Scorecard, benchmark de latencia y exportaciones |
 
-Mayab Arbitraje BTC es un sistema inteligente de arbitraje de Bitcoin en tiempo real con optimización evolutiva mediante **algoritmo genético single-objetivo con metaheurísticas híbridas** (elitismo, recocido simulado, evolución diferencial, reinicio adaptativo). Monitorea libros de órdenes de criptomonedas en 10 exchanges simultáneamente, detecta oportunidades de arbitraje tradicional y triangular, simula ejecuciones con costos realistas, y **evoluciona automáticamente su estrategia de selección** usando un motor genético que optimiza pesos, umbrales y tolerancias.
+Mayab Arbitraje BTC es un sistema inteligente de arbitraje de Bitcoin en tiempo real con optimización evolutiva mediante **algoritmo genético single-objetivo con metaheurísticas híbridas** (elitismo, recocido simulado, evolución diferencial, reinicio adaptativo). Monitorea libros públicos en 10 CEX simultáneamente y expone 2 adaptadores DEX de investigación claramente etiquetados como simulados; detecta oportunidades de arbitraje tradicional y triangular, simula ejecuciones con costos realistas, y **evoluciona automáticamente su estrategia de selección** usando un motor genético que optimiza pesos, umbrales y tolerancias.
 
 El sistema corre como un solo binario Rust: conexiones WebSocket concurrentes sobre Tokio, motor de decisión, simulador de carteras, optimización genética ligera, API Axum e interfaz web servida por el mismo proceso. Esa arquitectura reduce latencia operativa, simplifica el despliegue y permite demostrar el sistema en vivo sin una cadena pesada de servicios.
 
@@ -240,7 +240,7 @@ Guion detallado para revisión o videollamada: [docs/defensa-comite.md](docs/def
 
 ## Judge checklist
 
-- Real-time order book monitoring: sí, WebSocket-first en **10 exchanges** con REST fallback público.
+- Real-time order book monitoring: sí, WebSocket-first en **10 CEX públicos** con REST fallback; los 2 adaptadores DEX adicionales son experimentales y simulados, no feeds públicos reales.
 - Net profitability calculation: sí, spread bruto/neto con fees, slippage, retiro amortizado y haircut de latencia.
 - Partial fills: sí, el tamaño ejecutable se limita por profundidad acumulada, USD disponible y BTC prefundeado.
 - Wallet accounting: sí, balances simulados por exchange, rebalanceos internos y eventos auditables.
