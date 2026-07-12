@@ -40,6 +40,9 @@ RUN apt-get update && \
 
 COPY --from=builder /mayab-arbitrage /app/mayab-arbitrage
 COPY internal/webui /app/internal/webui
+COPY README.md ARCHITECTURE.md DEMO_SCRIPT.md API_REFERENCE.md RUNBOOK.md /app/
+COPY docs /app/docs
+COPY scripts /app/scripts
 
 RUN mkdir -p /data && chown -R nonroot:nonroot /app /data
 

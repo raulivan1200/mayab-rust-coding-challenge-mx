@@ -95,7 +95,9 @@ smoke_get() {
 }
 
 echo "Validando revision publica en ${SERVICE_URL}"
-smoke_get "/healthz" "$TMP_DIR/healthz.json"
+# Cloud Run puede interceptar el path raíz /healthz; la ruta API es el
+# contrato estable tanto local como público.
+smoke_get "/api/healthz" "$TMP_DIR/healthz.json"
 grep -Eq '"ok"[[:space:]]*:[[:space:]]*true' "$TMP_DIR/healthz.json"
 
 smoke_get "/api/preflight" "$TMP_DIR/preflight.json"
