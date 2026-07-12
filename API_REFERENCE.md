@@ -1,5 +1,13 @@
 # API Reference
 
+## `GET /api/version`
+
+Identifica exactamente la revisión desplegada. Devuelve `gitSha`, `buildTime`,
+`version` y `environment`; el pipeline compara `gitSha` con `GITHUB_SHA` después
+del despliegue.
+
+Los endpoints GET son públicos. En `MAYAB_ENV=production`, todos los POST que mutan el simulador requieren `Authorization: Bearer <ADMIN_TOKEN>` o `X-Admin-Token`; el servidor no inicia si el token falta o tiene menos de 32 caracteres. En desarrollo local la autenticación es opcional. Una respuesta `401` usa el contrato JSON de error documentado por la API.
+
 ## `GET /healthz`
 Health check. Devuelve `{"ok": true}`.
 

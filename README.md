@@ -6,7 +6,10 @@ Feeds públicos multi-exchange, decisiones auditables y ejecución 100% simulada
 
 [Aplicación pública en Cloud Run](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app)
 
-![Tests](https://img.shields.io/badge/tests-73%20passing-16a34a)
+[![Rust CI](https://github.com/raulivan1200/mayab-btc-arbitrage/actions/workflows/rust.yml/badge.svg)](https://github.com/raulivan1200/mayab-btc-arbitrage/actions/workflows/rust.yml)
+[![Security](https://github.com/raulivan1200/mayab-btc-arbitrage/actions/workflows/security.yml/badge.svg)](https://github.com/raulivan1200/mayab-btc-arbitrage/actions/workflows/security.yml)
+[![Coverage](https://github.com/raulivan1200/mayab-btc-arbitrage/actions/workflows/coverage.yml/badge.svg)](https://github.com/raulivan1200/mayab-btc-arbitrage/actions/workflows/coverage.yml)
+[![Release](https://github.com/raulivan1200/mayab-btc-arbitrage/actions/workflows/release.yml/badge.svg)](https://github.com/raulivan1200/mayab-btc-arbitrage/actions/workflows/release.yml)
 ![Rust](https://img.shields.io/badge/Rust-2021-b7410e)
 ![Modo](https://img.shields.io/badge/ejecuci%C3%B3n-100%25%20simulada-2563eb)
 
@@ -48,7 +51,7 @@ El resto del README explica, en orden, el problema y la evidencia, arquitectura,
 | Optimización Genética Híbrida | Completado | Dashboard > Panel GA | Visualización de pesos, convergencia y fitness |
 | Evaluación y Backtest | Completado | `GET /api/paquete-evaluacion` | Scorecard, benchmark de latencia y exportaciones |
 
-Mayab Arbitraje BTC es un sistema inteligente de arbitraje de Bitcoin en tiempo real con optimización evolutiva mediante **algoritmo genético single-objetivo con metaheurísticas híbridas** (elitismo, recocido simulado, evolución diferencial, reinicio adaptativo). Monitorea libros públicos en 10 CEX simultáneamente y expone 2 adaptadores DEX de investigación claramente etiquetados como simulados; detecta oportunidades de arbitraje tradicional y triangular, simula ejecuciones con costos realistas, y **evoluciona automáticamente su estrategia de selección** usando un motor genético que optimiza pesos, umbrales y tolerancias.
+Mayab Arbitraje BTC es un sistema inteligente de arbitraje de Bitcoin en tiempo real con optimización evolutiva mediante **GA multiobjetivo con selección NSGA-II y metaheurísticas híbridas** (elitismo, recocido simulado, evolución diferencial, reinicio adaptativo). Monitorea libros públicos en 10 CEX simultáneamente y expone 2 adaptadores DEX de investigación claramente etiquetados como simulados; detecta oportunidades de arbitraje tradicional y triangular, simula ejecuciones con costos realistas, y **evoluciona automáticamente su estrategia de selección** usando un motor genético que optimiza pesos, umbrales y tolerancias.
 
 El sistema corre como un solo binario Rust: conexiones WebSocket concurrentes sobre Tokio, motor de decisión, simulador de carteras, optimización genética ligera, API Axum e interfaz web servida por el mismo proceso. Esa arquitectura reduce latencia operativa, simplifica el despliegue y permite demostrar el sistema en vivo sin una cadena pesada de servicios.
 
@@ -57,15 +60,15 @@ El sistema corre como un solo binario Rust: conexiones WebSocket concurrentes so
 1. Abre la [aplicación pública](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app) y revisa el badge LIVE/DEMO/REST, P&L, mapa de rutas, wallets, eventos y panel GA. Si prefieres una visita guiada, pulsa **Recorrido de 2 min** en el encabezado; es opcional.
 2. Abre `/api/jurado`: concentra rúbrica, scorecard, cobertura finalista, checks, evidencia clave y links de auditoría.
 3. Abre `/api/preflight`: confirma `judgeReadiness.status=ready`, checks completos y la rúbrica oficial de 5 criterios.
-4. Pulsa **Preparar demo auditada** en el resumen o **Preparar recorrido completo** en Demo controlada. Cada ejecución reinicia primero el estado simulado y después inyecta una dislocación sintética etiquetada, operaciones, PnL positivo, fill parcial, rebalanceo, auditoría y evolución genética; así una visita o doble clic no infla las métricas.
-5. Pulsa **Forzar rebalanceo**: demuestra gestión de wallets con movimiento interno auditado y costo explícito.
+4. La instancia pública queda precargada por el deploy con una demo auditada. Los controles que mutan el simulador son solo para el operador y solicitan `ADMIN_TOKEN`; un jurado sin credenciales puede revisar toda la evidencia mediante los endpoints GET.
+5. En local, o como operador autenticado, pulsa **Preparar demo auditada** y **Forzar rebalanceo** para reproducir la corrida y el movimiento interno con costo explícito.
 6. Abre `/api/paquete-evaluacion`: verás scorecard, huella de auditoría, recomendaciones finales, backtest reproducible, evidencia SQLite y diferenciadores listos para revisión.
 
 Validación automática equivalente:
 
 ```bash
 ./scripts/smoke-demo.sh
-BASE_URL=https://tu-url-publica ./scripts/smoke-demo.sh
+BASE_URL=https://tu-url-publica ADMIN_TOKEN="$ADMIN_TOKEN" ./scripts/smoke-demo.sh
 ```
 
 Lo importante: el proyecto no intenta impresionar con spreads brutos. Cada ruta pasa por costos, profundidad, inventario, latencia, riesgo, auditoría y estrategia GA; si el mercado real está plano, la demo rentable queda marcada como sintética para probar el flujo sin fingir profit live.
@@ -110,7 +113,7 @@ Contrato HTTP:
 
 ## Virtudes principales
 
-- **Algoritmo Genético Híbrido single-objetivo**: población en memoria, elitismo, torneo, cruce uniforme, mutación gaussiana, **recocido simulado**, **evolución diferencial** y **reinicio adaptativo** para evolucionar pesos, umbral, tamaño de orden y tolerancia a latencia.
+- **GA híbrido multiobjetivo**: non-dominated sorting, rank y crowding distance sobre PnL, Sharpe, drawdown y win rate; publica el frente de Pareto y elige de forma determinista el mayor fitness ajustado por riesgo del primer frente. Incluye cruce uniforme, mutación gaussiana, **recocido simulado**, **evolución diferencial** y **reinicio adaptativo**.
 - **Scoring adaptativo**: Los pesos de la función de puntuación (utilidad, frescura, liquidez, confiabilidad, Z-Score) son optimizados genéticamente, no fijos.
 - **Metaheurísticas híbridas**: Combina GA clásico con recocido simulado, evolución diferencial y reinicio por convergencia para escapar de óptimos locales.
 - **Detección de convergencia y reinicio adaptativo**: Cuando el fitness deja de mejorar, se inyecta diversidad y se aumenta la tasa de mutación.
@@ -521,10 +524,16 @@ compara la latencia *evento del exchange → ingestión regional* usando p50, p9
 p99 de `/api/latencias`. También registra el RTT HTTP desde la máquina que corre
 el script hasta el endpoint desplegado. 
 
-**Nota sobre p99 y rendimiento (300ms vs microsegundos):**
-La telemetría interna separa tres tiempos clave: *Ingesta de red*, *Espera de scheduling*, y *Cómputo puro del scanner*. 
-Mientras que el compute puro (hot path) opera consistentemente en el orden de microsegundos (p95 < 500µs), el `p99` end-to-end reportado en `/api/preflight` (~300ms) incluye intencionalmente pausas de scheduling de Tokio, escrituras síncronas de auditoría a SQLite y exportaciones periódicas de snapshot. El sistema está optimizado para decisiones instantáneas de liquidez, y aísla la carga de I/O en tareas de fondo para no bloquear el arbitraje.
-el script como métrica secundaria. Al terminar elimina las réplicas por defecto
+**Nota sobre latencia y rendimiento:**
+`telemetriaPipeline.compute*` conserva ese nombre por compatibilidad del contrato,
+pero actualmente mide el ciclo completo de análisis: adquisición de locks,
+construcción del snapshot, evaluación de rutas, auditoría y ejecución simulada
+cuando aplica. No representa "cómputo puro" ni sostiene un SLA de `<500 µs`.
+`quoteToDecision*` mide por separado la edad de la cotización más reciente al
+cerrar el ciclo, y `/api/latencias` reporta el transporte observado por exchange.
+Los percentiles deben citarse junto con la fecha, región, SHA y carga de la
+corrida; el script registra además el RTT HTTP como métrica secundaria. Al
+terminar elimina las réplicas por defecto
 para no dejar costo o estado duplicado.
 
 ```bash
@@ -554,6 +563,7 @@ fly deploy
 GET  /                     tablero web embebido
 GET  /healthz              verificación de salud para ejecución local
 GET  /api/healthz          verificación de salud canónica para Cloud Run y monitores externos
+GET  /api/version          SHA, fecha, versión y ambiente inmutables del build desplegado
 GET  /api/estado           captura JSON completa del estado (incluye estado genético)
 GET  /api/jurado           Jury Mode: rúbrica, scorecard, cobertura, checks y enlaces de auditoría
 GET  /api/preflight        checklist operativo de demo: feeds, riesgo, GA, UI y exportación
@@ -617,11 +627,12 @@ comandos no requieren permisos adicionales del bot.
 
 La IA requiere una key nueva y privada en `NVIDIA_API_KEY`. El agente intenta
 los modelos de `NVIDIA_MODELS` en orden y continúa con el siguiente ante errores,
-timeouts o respuestas inválidas. Los defaults son Nemotron 3 Nano Omni, Llama 4
-Maverick, Nemotron 3 Ultra y Kimi K2.6. Sus tools son:
+timeouts o respuestas inválidas. Los defaults comprobados son Nemotron 3 Nano
+Omni, Nemotron 3 Nano y Nemotron 3 Ultra. Sus tools son:
 
 - `get_state`: métricas, riesgo, operaciones y GA.
 - `get_config`: parámetros vigentes del motor.
+- `get_audit_history`: resumen SQLite y últimas operaciones, en modo solo lectura.
 - `prepare_demo`: escenario rentable estrictamente simulado.
 - `update_parameters`: modifica límites simples validados; solo aparece para
   miembros con `Manage Server` o `Administrator`.
@@ -638,15 +649,16 @@ Sandbox; no convierte este servidor público en un bot live. Su threat model,
 configuración fail-closed, ciclo de órdenes, ledger y despliegue privado están en
 [docs/TESTNET_EXECUTION.md](docs/TESTNET_EXECUTION.md).
 
-Los endpoints POST están abiertos en la demo pública porque no ejecutan operaciones reales ni acceden a cuentas de exchange. Su alcance se limita a cambiar parámetros del simulador en memoria: umbrales, costos asumidos, exchanges activos y configuración del GA.
+Los endpoints GET de evidencia permanecen públicos. En desarrollo local los POST pueden usarse sin token; en producción todos los endpoints que mutan el simulador requieren `ADMIN_TOKEN`, aunque no ejecuten operaciones reales ni accedan a cuentas de exchange. Esta barrera evita que una visita reinicie o altere la corrida que está evaluando otra persona.
 
-Para una versión con dinero real, estos endpoints tendrían que moverse detrás de autenticación fuerte y permisos explícitos antes de conectar cualquier API privada de exchange.
+El token se envía como `Authorization: Bearer <token>` o `X-Admin-Token`. No debe incluirse en capturas, URLs, código cliente versionado ni imágenes Docker. Una eventual versión con dinero real requeriría además autorización por acción, roles, límites de exposición y controles de secretos antes de conectar cualquier API privada.
 
 ### Ejemplo de activar/desactivar exchange
 
 ```bash
 curl -X POST http://localhost:8080/api/exchanges \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
   -d '{"exchange":"Coinbase","activo":false}'
 ```
 
@@ -690,9 +702,9 @@ El endpoint devuelve un scorecard con criterios de demo segura, datos en tiempo 
 Para convertir ese scorecard en una prueba repetible:
 
 ```bash
-curl -X POST http://localhost:8080/api/demo/reset
-curl -X POST http://localhost:8080/api/demo/caos
-curl -X POST http://localhost:8080/api/demo/final
+curl -X POST http://localhost:8080/api/demo/reset -H "Authorization: Bearer ${ADMIN_TOKEN}"
+curl -X POST http://localhost:8080/api/demo/caos -H "Authorization: Bearer ${ADMIN_TOKEN}"
+curl -X POST http://localhost:8080/api/demo/final -H "Authorization: Bearer ${ADMIN_TOKEN}"
 curl http://localhost:8080/api/lab/sweep
 curl http://localhost:8080/api/paquete-evaluacion
 ```
@@ -702,7 +714,7 @@ curl http://localhost:8080/api/paquete-evaluacion
 También puedes correr el smoke completo:
 
 ```bash
-./scripts/smoke-demo.sh
+ADMIN_TOKEN="$ADMIN_TOKEN" ./scripts/smoke-demo.sh
 ```
 
 ### Ejemplo de escenario adverso controlado
@@ -710,6 +722,7 @@ También puedes correr el smoke completo:
 ```bash
 curl -X POST http://localhost:8080/api/demo \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
   -d '{"escenario":"fallo_orden"}'
 ```
 
@@ -728,6 +741,7 @@ Escenarios disponibles:
 ```bash
 curl -X POST http://localhost:8080/api/ga/evolucionar \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
   -d '{"usarReplaySiVacio":true,"muestras":96}'
 ```
 

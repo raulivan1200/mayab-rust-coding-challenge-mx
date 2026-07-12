@@ -56,7 +56,7 @@ impl ConfigDiscord {
         let nvidia = env_optional("NVIDIA_API_KEY").map(|api_key| ConfigNvidia {
             api_key,
             models: env_optional("NVIDIA_MODELS")
-                .unwrap_or_else(|| "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning,meta/llama-4-maverick-17b-128e-instruct,nvidia/nemotron-3-ultra-550b-a55b,moonshotai/kimi-k2.6".into())
+                .unwrap_or_else(|| "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning,nvidia/nemotron-3-nano-30b-a3b,nvidia/nemotron-3-ultra-550b-a55b".into())
                 .split(',')
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
@@ -74,6 +74,17 @@ impl ConfigDiscord {
 
     pub fn habilitado(&self) -> bool {
         self.public_key.is_some()
+    }
+
+    pub fn registrar_estado(&self) {
+        tracing::info!(
+            interactions = self.public_key.is_some(),
+            application_id = self.application_id.is_some(),
+            bot_token = self.bot_token.is_some(),
+            guild_id = self.guild_id.is_some(),
+            nvidia = self.nvidia.is_some(),
+            "configuracion de Discord cargada"
+        );
     }
 }
 
@@ -117,15 +128,30 @@ pub async fn responder_interaccion(
     body: Bytes,
 ) -> Response {
     let Some(public_key) = config.public_key.as_ref() else {
+        tracing::warn!("interaccion de Discord rechazada: falta DISCORD_PUBLIC_KEY");
         return (StatusCode::SERVICE_UNAVAILABLE, "Discord no configurado").into_response();
     };
     if !firma_valida(public_key, headers, &body) {
+        tracing::warn!(
+            tiene_firma = headers.contains_key(SIGNATURE_HEADER),
+            tiene_timestamp = headers.contains_key(TIMESTAMP_HEADER),
+            body_bytes = body.len(),
+            "interaccion de Discord rechazada: firma invalida"
+        );
         return (StatusCode::UNAUTHORIZED, "Firma de Discord invalida").into_response();
     }
     let interaccion: Interaccion = match serde_json::from_slice(&body) {
         Ok(value) => value,
-        Err(_) => return (StatusCode::BAD_REQUEST, "Payload invalido").into_response(),
+        Err(error) => {
+            tracing::warn!(%error, body_bytes = body.len(), "payload de Discord invalido");
+            return (StatusCode::BAD_REQUEST, "Payload invalido").into_response();
+        }
     };
+    tracing::info!(
+        tipo = interaccion.tipo,
+        comando = interaccion.data.as_ref().map(|data| data.name.as_str()),
+        "interaccion de Discord validada"
+    );
     if interaccion.tipo == 1 {
         return Json(json!({ "type": 1 })).into_response();
     }
@@ -135,7 +161,7 @@ pub async fn responder_interaccion(
     let Some(data) = interaccion.data else {
         return respuesta("No se recibio un comando.", true);
     };
-    if data.name != "mayab" {
+    if data.name != "mayab" && data.name != "ask" {
         return ejecutar_comando(&motor, &data.name).await;
     }
     let Some(nvidia) = config.nvidia.clone() else {
@@ -242,11 +268,17 @@ pub async fn registrar_comandos(config: ConfigDiscord) {
         || format!("{base}/commands"),
         |guild| format!("{base}/guilds/{guild}/commands"),
     );
+    tracing::info!(
+        application_id = %application_id,
+        alcance = if url.contains("/guilds/") { "guild" } else { "global" },
+        "iniciando registro de slash commands"
+    );
     let commands = [
         json!({"name":"estado","type":1,"description":"Muestra PnL, riesgo, operaciones y GA"}),
         json!({"name":"resumen","type":1,"description":"Resumen compacto de Mayab Arbitraje BTC"}),
         json!({"name":"demo-rentable","type":1,"description":"Prepara el escenario rentable estrictamente simulado"}),
         json!({"name":"mayab","type":1,"description":"Consulta a la IA o ajusta la simulacion con tools","options":[{"name":"pregunta","description":"Ejemplo: muestra el riesgo o cambia el slippage a 0.5 bps","type":3,"required":true,"max_length":600}]}),
+        json!({"name":"ask","type":1,"description":"Pregunta cualquier cosa a Mayab IA","options":[{"name":"pregunta","description":"Pregunta general o sobre datos y configuracion de Mayab","type":3,"required":true,"max_length":1200}]}),
     ];
     let client = reqwest::Client::new();
     for command in commands {
@@ -261,7 +293,17 @@ pub async fn registrar_comandos(config: ConfigDiscord) {
                 tracing::info!(comando=%command["name"], "slash command registrado")
             }
             Ok(response) => {
-                tracing::warn!(comando=%command["name"], status=%response.status(), "Discord rechazo el comando")
+                let status = response.status();
+                let detalle = response
+                    .text()
+                    .await
+                    .unwrap_or_else(|_| "respuesta ilegible".into());
+                tracing::warn!(
+                    comando = %command["name"],
+                    %status,
+                    detalle = %truncar_log(&detalle),
+                    "Discord rechazo el comando"
+                )
             }
             Err(error) => {
                 tracing::warn!(comando=%command["name"], %error, "fallo el registro del comando")
@@ -277,7 +319,7 @@ async fn agente_nvidia(
     can_mutate: bool,
 ) -> String {
     let mut messages = vec![
-        json!({"role":"system","content":"Eres Mayab IA para una demo de arbitraje BTC estrictamente simulada. Responde en español y breve. Usa tools para datos actuales. Nunca afirmes trading real. Cambia parametros solo si se solicita explicitamente."}),
+        json!({"role":"system","content":"Eres Mayab IA, un asistente general dentro de Discord. Puedes responder preguntas generales con tu conocimiento y preguntas sobre Mayab Arbitraje BTC usando siempre las tools disponibles para datos actuales. Mayab es una demo estrictamente simulada: nunca afirmes trading real. La auditoria es de solo lectura. Solo cambia parametros si el usuario lo pide explicitamente y la tool esta disponible; explica brevemente cualquier cambio. No inventes datos que una tool pueda consultar. Responde en el idioma del usuario, de forma clara y concisa."}),
         json!({"role":"user","content":question}),
     ];
     let tools = tools_nvidia(can_mutate);
@@ -327,6 +369,11 @@ fn tools_nvidia(can_mutate: bool) -> Vec<Value> {
             json!({"type":"object","properties":{}}),
         ),
         tool(
+            "get_audit_history",
+            "Consulta en modo solo lectura el resumen de SQLite y las ultimas 20 operaciones simuladas",
+            json!({"type":"object","properties":{}}),
+        ),
+        tool(
             "prepare_demo",
             "Prepara una demo rentable simulada",
             json!({"type":"object","properties":{}}),
@@ -349,6 +396,7 @@ async fn ejecutar_tool_ia(motor: &Motor, name: &str, args: Value, can_mutate: bo
             json!({"generadoEn":state.generado_en,"metricas":state.metricas,"genetico":state.genetico,"cotizaciones":state.cotizaciones.len()})
         }
         "get_config" => json!(motor.estado().await.configuracion),
+        "get_audit_history" => motor.resumen_auditoria(),
         "prepare_demo" => {
             json!({"ok":true,"resultado":motor.activar_escenario_demo(EscenarioDemo::MercadoRentable).await})
         }
@@ -417,18 +465,36 @@ async fn chat_fallback(
 
 async fn completar_interaccion(application_id: &str, token: &str, content: &str) {
     if application_id.is_empty() || token.is_empty() {
+        tracing::warn!(
+            "no se pudo completar Discord: faltan application_id o token de interaccion"
+        );
         return;
     }
     let url =
         format!("https://discord.com/api/v10/webhooks/{application_id}/{token}/messages/@original");
-    if let Err(error) = reqwest::Client::new()
+    match reqwest::Client::new()
         .patch(url)
         .json(&json!({"content":truncar(content),"allowed_mentions":{"parse":[]}}))
         .send()
         .await
     {
-        tracing::warn!(%error, "no se pudo completar la respuesta de Discord");
+        Ok(response) if response.status().is_success() => {
+            tracing::info!("respuesta diferida de Discord completada");
+        }
+        Ok(response) => {
+            let status = response.status();
+            let detalle = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "respuesta ilegible".into());
+            tracing::warn!(%status, detalle = %truncar_log(&detalle), "Discord rechazo la respuesta diferida");
+        }
+        Err(error) => tracing::warn!(%error, "no se pudo completar la respuesta de Discord"),
     }
+}
+
+fn truncar_log(value: &str) -> String {
+    value.chars().take(500).collect()
 }
 
 fn truncar(value: &str) -> String {

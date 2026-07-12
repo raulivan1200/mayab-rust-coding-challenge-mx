@@ -7,12 +7,13 @@ Este documento indica cómo obtener evidencia vigente del binario que se está e
 `/api/jurado` y `/api/preflight` calculan sus checks desde el estado actual. Para preparar una corrida reproducible y consultar la evidencia:
 
 ```bash
-curl -sS -X POST http://127.0.0.1:8080/api/demo/final
+curl -sS -X POST http://127.0.0.1:8080/api/demo/final \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}"
 curl -sS http://127.0.0.1:8080/api/jurado | jq '{estado, checks, rubricaOficial}'
 curl -sS http://127.0.0.1:8080/api/preflight | jq '{listo, judgeReadiness, checks}'
 ```
 
-El gate automatizado completo es `./scripts/release-check.sh`; además de compilar y probar, exige PnL demo positivo, GA activo, fill parcial, rebalanceo, auditoría y reconciliación de segunda pierna sin exposición residual.
+El gate automatizado completo es `./scripts/release-check.sh`; crea un token efímero para su servidor local y, además de compilar y probar, exige PnL demo positivo, GA activo, fill parcial, rebalanceo, auditoría y reconciliación de segunda pierna sin exposición residual. Contra un deploy remoto, las mutaciones requieren el `ADMIN_TOKEN` del operador; los endpoints GET de evidencia siguen siendo públicos.
 
 ## 2. Análisis de sensibilidad (Genetic Algorithm)
 

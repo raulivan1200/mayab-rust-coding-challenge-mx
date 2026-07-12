@@ -149,6 +149,11 @@ grep -Eq '"ok"[[:space:]]*:[[:space:]]*true' "$TMP_DIR/healthz.json"
 smoke_get "/api/readyz" "$TMP_DIR/readyz.json"
 grep -Eq '"ready"[[:space:]]*:[[:space:]]*true' "$TMP_DIR/readyz.json"
 
+smoke_get "/api/version" "$TMP_DIR/version.json"
+if [ -n "${GITHUB_SHA:-}" ]; then
+  grep -Fq "\"gitSha\":\"${GITHUB_SHA}\"" "$TMP_DIR/version.json"
+fi
+
 smoke_get "/api/preflight" "$TMP_DIR/preflight.json"
 grep -q '"judgeReadiness"' "$TMP_DIR/preflight.json"
 

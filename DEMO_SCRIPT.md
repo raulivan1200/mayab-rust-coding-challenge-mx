@@ -2,6 +2,8 @@
 
 Este documento detalla el paso a paso para probar todas las funcionalidades principales, mecanismos de robustez y algoritmos del motor.
 
+La aplicación pública deja la evidencia GET disponible para el jurado, pero reserva los controles mutables al operador. Para ejecutar botones o POST en producción, configura `localStorage.mayabAdminToken` desde una sesión controlada o envía `Authorization: Bearer <ADMIN_TOKEN>`; nunca compartas el token en una URL o captura. En desarrollo local el token es opcional.
+
 ## Recorrido opcional de 2 minutos
 
 - **Acción:** En el encabezado del dashboard, pulse el botón flotante **Recorrido 2 min** (`#tutorialToggle`).
@@ -41,7 +43,7 @@ Este documento detalla el paso a paso para probar todas las funcionalidades prin
 ## 4.1 Prueba de caos completa
 - **Acción:** Presione **"Prueba de caos completa"**.
 - **Expectativa:** El motor encadena fill parcial, baja liquidez, fallo de segunda pierna con unwind, circuit breaker, rebalanceo y recuperación. El resultado debe mostrar `8/8 checks`, exposición residual `0 BTC` y circuit breaker restaurado.
-- **API equivalente:** `curl -X POST http://127.0.0.1:8080/api/demo/caos`.
+- **API equivalente:** `curl -X POST http://127.0.0.1:8080/api/demo/caos -H "Authorization: Bearer ${ADMIN_TOKEN}"`.
 
 ## 5. Escenario: Rebalanceo de Carteras
 - **Acción:** Presione **"Forzar rebalanceo"**.

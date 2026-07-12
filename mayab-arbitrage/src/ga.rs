@@ -10,7 +10,7 @@ use chrono::Utc;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 
-use crate::types::{EstadoGenetico, MoneyUnits, Operacion, QtyUnits};
+use crate::types::{EstadoGenetico, MoneyUnits, Operacion, PuntoPareto, QtyUnits};
 
 /// Score canónico compartido por ejecución, explicación y entrenamiento GA.
 /// Mantener esta transformación en un solo sitio evita que el campeón se
@@ -421,7 +421,16 @@ impl EstadoGa {
         });
 
         let fitness_anterior = self.mejor_fitness;
-        let mejor = self.poblacion[0].clone();
+        // Política operativa explícita: dentro del primer frente no dominado,
+        // el campeón es la mayor utilidad escalar ajustada por riesgo. Pareto
+        // conserva alternativas; crowding sólo preserva diversidad.
+        let mejor = self
+            .poblacion
+            .iter()
+            .filter(|g| g.rank == 0)
+            .max_by(|a, b| a.fitness.total_cmp(&b.fitness))
+            .cloned()
+            .unwrap_or_else(|| self.poblacion[0].clone());
         self.mejor_fitness = mejor.fitness;
         self.retador_fitness = self
             .poblacion
@@ -507,7 +516,12 @@ impl EstadoGa {
                     .unwrap_or(std::cmp::Ordering::Equal)
             }
         });
-        let mejor_hibrido = siguiente[0].clone();
+        let mejor_hibrido = siguiente
+            .iter()
+            .filter(|g| g.rank == 0)
+            .max_by(|a, b| a.fitness.total_cmp(&b.fitness))
+            .cloned()
+            .unwrap_or_else(|| siguiente[0].clone());
         let fitness_antes_hibrido = self.mejor_fitness;
         self.mejor_fitness = mejor_hibrido.fitness;
         self.retador_fitness = siguiente
@@ -551,7 +565,7 @@ impl EstadoGa {
             mejora_generacional: self.mejora_generacional,
             temperatura_annealing: self.temperatura_annealing,
             inyecciones_diferenciales: self.inyecciones_diferenciales,
-            frontera_pareto: vec![],
+            frontera_pareto: self.frontera_pareto(),
             metaheuristicas: vec![
                 "GA + recocido simulado".into(),
                 "GA + evolucion diferencial".into(),
@@ -583,6 +597,8 @@ impl EstadoGa {
             "mejoraGeneracional": self.mejora_generacional,
             "temperaturaAnnealing": self.temperatura_annealing,
             "inyeccionesDiferenciales": self.inyecciones_diferenciales,
+            "fronteraPareto": self.frontera_pareto(),
+            "politicaCampeon": "max_fitness_ajustado_riesgo_en_primer_frente",
             "metaheuristicas": [
                 "GA + recocido simulado",
                 "GA + evolucion diferencial"
@@ -601,7 +617,26 @@ impl EstadoGa {
         })
     }
 
-    pub fn ablacion(&self, operaciones: &[Operacion]) -> serde_json::Value {
+    fn frontera_pareto(&self) -> Vec<PuntoPareto> {
+        if self.generacion == 0 || self.operaciones_evaluadas == 0 {
+            return vec![];
+        }
+        self.poblacion
+            .iter()
+            .filter(|g| g.rank == 0)
+            .map(|g| PuntoPareto {
+                x: g.objetivos[1],
+                y: g.objetivos[0],
+                umbral: g.umbral_min_spread_bps,
+            })
+            .collect()
+    }
+
+    /// Compara reglas operativas fijas sobre las mismas operaciones.
+    ///
+    /// No es una ablación de operadores evolutivos: no vuelve a entrenar el
+    /// GA ni atribuye causalidad a recocido o evolución diferencial.
+    pub fn sensibilidad_reglas(&self, operaciones: &[Operacion]) -> serde_json::Value {
         let calcular_metricas = |g: &Genoma| -> serde_json::Value {
             let mut filtradas = Vec::new();
             for op in operaciones {
@@ -696,22 +731,13 @@ impl EstadoGa {
         let mut g_ev_fijo = base.clone();
         g_ev_fijo.pesos = [1.0, 1.0, 1.0, 1.0, 1.0];
 
-        let g_ga_simple = base.clone();
-
-        let mut g_ga_sin_annealing = base.clone();
-        g_ga_sin_annealing.umbral_min_spread_bps *= 1.1; // Simulando menor convergencia
-
-        let mut g_ga_sin_de = base.clone();
-        g_ga_sin_de.tolerancia_latencia_ms -= 50; // Simulando menos adaptabilidad
-
         serde_json::json!({
+            "tipoAnalisis": "sensibilidad_reglas",
+            "esAblacionOperadores": false,
             "solo_spread": calcular_metricas(&g_spread),
             "conservador": calcular_metricas(&g_conservador),
             "ev_fijo": calcular_metricas(&g_ev_fijo),
-            "ga_simple": calcular_metricas(&g_ga_simple),
-            "ga_hibrido": calcular_metricas(&base),
-            "ga_sin_annealing": calcular_metricas(&g_ga_sin_annealing),
-            "ga_sin_de": calcular_metricas(&g_ga_sin_de)
+            "configuracion_activa": calcular_metricas(&base)
         })
     }
 
@@ -1154,6 +1180,11 @@ mod tests {
         assert_eq!(estado.fallos_evaluados, 1);
         assert_eq!(estado.mejores_pesos.len(), 5);
         assert!(estado.umbral_optimizado >= 0.1);
+        assert!(!estado.frontera_pareto.is_empty());
+        assert_eq!(
+            ga.api_estado()["politicaCampeon"],
+            "max_fitness_ajustado_riesgo_en_primer_frente"
+        );
     }
 
     #[test]

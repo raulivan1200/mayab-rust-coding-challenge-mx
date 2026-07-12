@@ -129,6 +129,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let discord_config = discord::ConfigDiscord::from_env();
+    discord_config.registrar_estado();
     if discord_config.habilitado() {
         tracing::info!("endpoint de Discord Interactions habilitado");
         tokio::spawn(discord::registrar_comandos(discord_config));

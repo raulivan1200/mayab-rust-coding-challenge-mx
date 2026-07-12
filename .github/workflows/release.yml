@@ -15,21 +15,40 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact: mayab-arbitrage-linux-x86_64
+            archive: tar.gz
           - os: macos-latest
             artifact: mayab-arbitrage-macos-arm64
+            archive: tar.gz
+          - os: windows-latest
+            artifact: mayab-arbitrage-windows-x86_64
+            archive: zip
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
       - run: cargo build -p mayab-arbitrage --release --locked
       - name: Package binary
-        run: tar -C target/release -czf "${{ matrix.artifact }}.tar.gz" mayab-arbitrage
+        shell: bash
+        run: |
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            7z a "${{ matrix.artifact }}.zip" ./target/release/mayab-arbitrage.exe
+          else
+            tar -C target/release -czf "${{ matrix.artifact }}.tar.gz" mayab-arbitrage
+          fi
       - name: Generate checksum
         shell: bash
-        run: shasum -a 256 "${{ matrix.artifact }}.tar.gz" > "${{ matrix.artifact }}.tar.gz.sha256"
+        run: |
+          file="${{ matrix.artifact }}.${{ matrix.archive }}"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$file" > "$file.sha256"
+          else
+            shasum -a 256 "$file" > "$file.sha256"
+          fi
       - name: Generate CycloneDX SBOM
         uses: anchore/sbom-action@v0
         with:
@@ -40,7 +59,37 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: |
-            ${{ matrix.artifact }}.tar.gz
-            ${{ matrix.artifact }}.tar.gz.sha256
+            ${{ matrix.artifact }}.${{ matrix.archive }}
+            ${{ matrix.artifact }}.${{ matrix.archive }}.sha256
             ${{ matrix.artifact }}.cdx.json
           if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+      - name: Publish release and generated notes
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+            dist/*.cdx.json

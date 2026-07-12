@@ -380,6 +380,8 @@ button {
 .dictionary-table tbody tr:is(:hover, :focus-within) th { color: color-mix(in srgb, var(--blue) 78%, var(--ink)); }
 .dictionary-empty { padding: 28px; text-align: center; color: var(--muted); }
 .dictionary-credits { margin-top: 28px; padding: 22px; background: var(--ink); color: var(--bg); }
+.build-version { padding: 16px 24px 28px; text-align: center; color: var(--muted); font-size: .78rem; }
+.build-version a { color: inherit; text-underline-offset: 3px; }
 .dictionary-credits .ceja { color: var(--yellow); }
 
 @media (max-width: 640px) {

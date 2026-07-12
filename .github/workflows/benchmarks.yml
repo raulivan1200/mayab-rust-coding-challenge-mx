@@ -13,7 +13,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.0
       - uses: Swatinem/rust-cache@v2
       - name: Compile and run hot-path benchmarks
         run: cargo bench -p mayab-arbitrage --bench motor_benchmark --locked -- --noplot

@@ -343,6 +343,7 @@ iniciarPresets();
 iniciarDemo();
 
 async function arrancar() {
+  cargarVersion();
   try {
     const res = await fetch("/api/estado");
     if (res.ok) {
@@ -358,6 +359,21 @@ async function arrancar() {
     debugError("No se pudo cargar estado inicial REST", e);
   }
   conectar();
+}
+
+async function cargarVersion() {
+  try {
+    const res = await fetch("/api/version");
+    if (!res.ok) return;
+    const version = await res.json();
+    const link = $("buildVersionLink");
+    if (!link) return;
+    const sha = String(version.gitSha || "local");
+    link.textContent = `${sha.slice(0, 7)} · ${version.environment || "development"}`;
+    link.title = `Build ${version.version || ""} · ${version.buildTime || ""}`;
+  } catch (error) {
+    debugError("No se pudo cargar la versión desplegada", error);
+  }
 }
 iniciarHeaderColapsable();
 iniciarTutorial();

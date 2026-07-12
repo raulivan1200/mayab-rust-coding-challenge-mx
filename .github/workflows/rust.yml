@@ -118,7 +118,10 @@ jobs:
             ${{ runner.os }}-docker-
 
       - name: Build multi-stage image
-        run: docker build --tag mayab-btc-arbitrage:ci .
+        run: |
+          docker build --tag mayab-btc-arbitrage:ci \
+            --build-arg MAYAB_GIT_SHA="$GITHUB_SHA" \
+            --build-arg MAYAB_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" .
 
       - name: Verify non-root runtime metadata
         run: |
@@ -175,7 +178,11 @@ jobs:
           registry="${REGION}-docker.pkg.dev"
           image="${registry}/${PROJECT}/${GAR_REPOSITORY}/${SERVICE}:${GITHUB_SHA}"
           gcloud auth configure-docker "$registry" --quiet
-          docker build --tag "$image" .
+          docker build --tag "$image" \
+            --build-arg MAYAB_GIT_SHA="$GITHUB_SHA" \
+            --build-arg MAYAB_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --build-arg MAYAB_RELEASE_VERSION="1.0.0-final" \
+            --build-arg MAYAB_BUILD_ENV=production .
           docker push "$image"
           echo "uri=$image" >> "$GITHUB_OUTPUT"
 

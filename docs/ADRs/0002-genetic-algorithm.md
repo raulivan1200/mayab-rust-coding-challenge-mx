@@ -1,20 +1,17 @@
-# ADR 0002: Algoritmo Genético Single-Objetivo (no NSGA-II)
+# ADR 0002: GA multiobjetivo con selección NSGA-II
 
 ## Contexto
-El motor de arbitraje requiere optimizar los parámetros de trading según condiciones de mercado y aprender de la historia reciente.
+
+El motor debe equilibrar utilidad, Sharpe, drawdown y tasa de acierto sin esconder esos compromisos dentro de una sola cifra.
 
 ## Decisión
-Se implementó un algoritmo genético **single-objetivo** en Rust (`src/ga.rs`).
-Optimiza una única función de fitness escalar: utilidad neta esperada ajustada por riesgo y penalizaciones.
-El campo `frontera_pareto` en los contratos públicos (`types.rs`) permanece vacío (`vec![]`) documentado como no implementado.
+
+Se mantiene una población con cuatro objetivos: PnL, Sharpe, drawdown negado y win rate. La selección usa dominancia, non-dominated sorting, rank y crowding distance. El contrato público expone el primer frente en `frontera_pareto`.
+
+Para convertir el frente en una decisión operativa determinista, el campeón es el genoma con mayor fitness escalar ajustado por riesgo dentro del primer frente no dominado. La frontera conserva alternativas; el fitness decide el punto que usa el motor.
 
 ## Consecuencias
 
-### Positivas
-- Honesto: no promete multi-objetivo ni NSGA-II real.
-- La ejecución es determinística y veloz (< 500 ms).
-- Mantiene la premisa de "demo segura" sin dependencias pesadas de ML.
-
-### Negativas
-- No explora trade-offs multi-objetivo reales (solo un fitness escalar).
-- Puede sobreajustarse a ventanas cortas si no se gestiona bien la población.
+- El dashboard y `/api/ga/estado` muestran trade-offs reales y la política de selección del campeón.
+- Las pruebas cubren dominancia, crowding y publicación de una frontera no vacía tras evolucionar.
+- El resultado sigue siendo una simulación en memoria; no habilita trading real.

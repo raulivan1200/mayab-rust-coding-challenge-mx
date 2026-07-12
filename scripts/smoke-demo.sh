@@ -28,13 +28,25 @@ json_post() {
   path="$1"
   payload="$2"
   out="$3"
-  if [ -z "${ADMIN_TOKEN:-}" ]; then
-    echo "ADMIN_TOKEN es obligatorio para el smoke de mutaciones" >&2
-    return 2
+  if [ -n "${ADMIN_TOKEN:-}" ]; then
+    curl -fsS -X POST "$BASE_URL$path" \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+      -d "$payload" \
+      -o "$out"
+    return
   fi
+
+  case "$BASE_URL" in
+    http://127.0.0.1:*|http://localhost:*) ;;
+    *)
+      echo "ADMIN_TOKEN es obligatorio para mutaciones contra un servidor remoto" >&2
+      return 2
+      ;;
+  esac
+
   curl -fsS -X POST "$BASE_URL$path" \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer ${ADMIN_TOKEN}" \
     -d "$payload" \
     -o "$out"
 }

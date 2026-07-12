@@ -414,6 +414,10 @@ pub(crate) async fn jurado(State(app): State<EstadoApp>) -> Json<serde_json::Val
     Json(construir_modo_jurado(&estado))
 }
 
+pub(crate) async fn version() -> Json<crate::version::BuildVersion> {
+    Json(crate::version::current())
+}
+
 pub(crate) async fn resumen_llm(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
     let estado = app.motor.estado().await;
     Json(construir_resumen_llm(&estado))
@@ -842,7 +846,7 @@ pub(crate) async fn exportar_evidence(State(app): State<EstadoApp>) -> Response 
         - Cinta Hash (Eventos): `{}`\n\
         - Rechazos por Razón (Fallidas): {}\n\
         \n\
-        ## Ablación GA (Holdout)\n\
+        ## Sensibilidad de hiperparámetros GA (Holdout)\n\
         ```json\n\
         {}\n\
         ```\n\
@@ -2103,6 +2107,7 @@ fn construir_resumen_llm(estado: &EstadoPublico) -> serde_json::Value {
 
     json!({
         "generadoEn": estado.generado_en,
+        "version": crate::version::current(),
         "resumen": resumen,
         "markdown": markdown,
         "decision": decision,
@@ -2468,6 +2473,7 @@ fn construir_modo_jurado(estado: &EstadoPublico) -> serde_json::Value {
     json!({
         "generadoEn": estado.generado_en,
         "nombre": "Mayab Jury Mode",
+        "version": crate::version::current(),
         "objetivo": "Superficie unica para evaluar la demo contra el benchmark finalista sin navegar todo el dashboard.",
         "estado": {
             "status": readiness.get("status").cloned().unwrap_or_else(|| json!("review")),

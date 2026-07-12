@@ -17,10 +17,13 @@ use chrono::{DateTime, Utc};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::{
+    config::Config,
     ga::EstadoGa,
-    types::{CostosOperacion, Cotizacion, Operacion},
+    motor::calcular_costos_canonicos,
+    types::{CostosOperacion, Cotizacion, MapaCostos, Operacion},
 };
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -78,9 +81,11 @@ struct TapeEvent {
     ask: f64,
     bid: f64,
     available_btc: f64,
+    cost_quantity_btc: f64,
     latency_ms: i64,
     gross_bps: f64,
     base_cost_bps: f64,
+    costs: CostosOperacion,
     realized_move_bps: f64,
 }
 
@@ -145,6 +150,8 @@ struct Report {
     split: Split,
     event_counts: [usize; 3],
     partition_hashes: [String; 3],
+    config_hash: String,
+    engine_version: String,
     protocol: Protocol,
     ga_training: GaTraining,
     calibration: Calibration,
@@ -181,7 +188,8 @@ struct Calibration {
 
 pub fn evaluate_tape(cfg: &EvaluationConfig) -> Result<OutputPaths> {
     let quotes = load_quotes(&cfg.tape)?;
-    let events = materialize_events(&quotes);
+    let costs = Config::from_env().costos;
+    let events = materialize_events(&quotes, &costs);
     if events.len() < 10 {
         bail!(
             "la cinta produjo {} eventos comparables; se requieren al menos 10",
@@ -233,6 +241,8 @@ pub fn evaluate_tape(cfg: &EvaluationConfig) -> Result<OutputPaths> {
         split: cfg.split,
         event_counts: [a.len(), b.len(), c.len()],
         partition_hashes: [hash_events(a), hash_events(b), hash_events(c)],
+        config_hash: hash_config(&costs),
+        engine_version: env!("CARGO_PKG_VERSION").into(),
         protocol: Protocol {
             ga_sees_only_a: true,
             calibration_uses_only_b: true,
@@ -331,7 +341,7 @@ fn load_quotes(path: &Path) -> Result<Vec<Cotizacion>> {
     Ok(out)
 }
 
-fn materialize_events(quotes: &[Cotizacion]) -> Vec<TapeEvent> {
+fn materialize_events(quotes: &[Cotizacion], config: &MapaCostos) -> Vec<TapeEvent> {
     let mut latest: HashMap<String, &Cotizacion> = HashMap::new();
     let mut out = Vec::new();
     for q in quotes {
@@ -353,10 +363,21 @@ fn materialize_events(quotes: &[Cotizacion]) -> Vec<TapeEvent> {
             continue;
         }
         let gross = (sell.bid - buy.ask) / mid * 10_000.0;
-        // Cost schedule is observed once and embedded in the common tape.
-        let venue_fee = 20.0;
-        let base_cost =
-            venue_fee + 1.25 + (buy.latencia_ms.max(sell.latencia_ms) as f64 / 1000.0).min(4.0);
+        let available_btc = buy.ask_cantidad.min(sell.bid_cantidad).max(0.0);
+        let quantity = available_btc.min(config.max_operacion_btc);
+        let costs = calcular_costos_canonicos(
+            quantity,
+            buy,
+            sell,
+            buy.latencia_ms.max(sell.latencia_ms),
+            config,
+        );
+        let capital = buy.ask * quantity;
+        let base_cost = if capital > 0.0 {
+            costs.total_usd / capital * 10_000.0
+        } else {
+            0.0
+        };
         let realized = ((q.bid + q.ask) / 2.0 - mid) / mid * 10_000.0;
         out.push(TapeEvent {
             timestamp_ms: q.evento_unix_ms,
@@ -364,10 +385,12 @@ fn materialize_events(quotes: &[Cotizacion]) -> Vec<TapeEvent> {
             sell_exchange: sell.exchange.clone(),
             ask: buy.ask,
             bid: sell.bid,
-            available_btc: buy.ask_cantidad.min(sell.bid_cantidad).max(0.0),
+            available_btc,
+            cost_quantity_btc: quantity,
             latency_ms: buy.latencia_ms.max(sell.latencia_ms),
             gross_bps: gross,
             base_cost_bps: base_cost,
+            costs,
             realized_move_bps: realized,
         });
     }
@@ -379,9 +402,8 @@ fn operations_for_ga(events: &[TapeEvent]) -> Vec<Operacion> {
         .iter()
         .enumerate()
         .map(|(i, e)| {
-            let qty = e.available_btc.min(0.25);
+            let qty = e.cost_quantity_btc;
             let capital = e.ask * qty;
-            let costs = capital * e.base_cost_bps / 10_000.0;
             let expected = capital * (e.gross_bps - e.base_cost_bps) / 10_000.0;
             let realized = expected + capital * e.realized_move_bps / 10_000.0;
             Operacion {
@@ -396,12 +418,14 @@ fn operations_for_ga(events: &[TapeEvent]) -> Vec<Operacion> {
                 precio_venta: e.bid,
                 utilidad_usd: realized,
                 utilidad_esperada_usd: expected,
-                costos: CostosOperacion {
-                    fee_compra_usd: costs / 2.0,
-                    fee_venta_usd: costs / 2.0,
-                    total_usd: costs,
-                    ..Default::default()
-                },
+                costos: scale_costs(
+                    &e.costs,
+                    if e.cost_quantity_btc > 0.0 {
+                        qty / e.cost_quantity_btc
+                    } else {
+                        0.0
+                    },
+                ),
                 parcial: false,
                 ejecutada_en: DateTime::from_timestamp_millis(e.timestamp_ms)
                     .unwrap_or_else(Utc::now),
@@ -619,6 +643,41 @@ fn hash_events(events: &[TapeEvent]) -> String {
     }
     format!("fnv1a64:{h:016x}")
 }
+fn hash_config(config: &MapaCostos) -> String {
+    let mut value = serde_json::to_value(config).unwrap_or(Value::Null);
+    canonicalize_json(&mut value);
+    let bytes = serde_json::to_vec(&value).unwrap_or_default();
+    format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+/// Ordena recursivamente las llaves para que la huella no dependa del orden
+/// aleatorio de iteración de `HashMap` entre procesos.
+fn canonicalize_json(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            let mut entries: Vec<_> = std::mem::take(object).into_iter().collect();
+            entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+            for (_, child) in &mut entries {
+                canonicalize_json(child);
+            }
+            object.extend(entries);
+        }
+        Value::Array(values) => values.iter_mut().for_each(canonicalize_json),
+        _ => {}
+    }
+}
+
+fn scale_costs(costs: &CostosOperacion, factor: f64) -> CostosOperacion {
+    CostosOperacion {
+        fee_compra_usd: costs.fee_compra_usd * factor,
+        fee_venta_usd: costs.fee_venta_usd * factor,
+        deslizamiento_usd: costs.deslizamiento_usd * factor,
+        retiro_amort_usd: costs.retiro_amort_usd * factor,
+        latencia_riesgo_usd: costs.latencia_riesgo_usd * factor,
+        seleccion_adversa_usd: costs.seleccion_adversa_usd * factor,
+        total_usd: costs.total_usd * factor,
+    }
+}
 fn finite(x: f64) -> String {
     if x.is_finite() {
         format!("{x:.8}")
@@ -678,6 +737,8 @@ fn markdown_report(r: &Report) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::types::ExchangeConfig;
+
     use super::*;
     #[test]
     fn split_rejects_invalid() {
@@ -694,13 +755,51 @@ mod tests {
             ask: 100.0,
             bid: 100.0,
             available_btc: 1.0,
+            cost_quantity_btc: 1.0,
             latency_ms: 1,
             gross_bps: 30.0,
             base_cost_bps: 20.0,
+            costs: CostosOperacion {
+                total_usd: 0.2,
+                ..Default::default()
+            },
             realized_move_bps: -50.0,
         };
         let m = run(&s, &[e]);
         assert!(m.pnl_net_usd < 0.0);
         assert_eq!(m.negative_windows, 1);
+    }
+
+    #[test]
+    fn config_hash_is_independent_from_exchange_insertion_order() {
+        let mut first = MapaCostos::default();
+        first.exchanges.insert(
+            "Kraken".into(),
+            ExchangeConfig {
+                nombre: "Kraken".into(),
+                fee_taker: 0.0026,
+                retiro_btc: 0.0002,
+                confiabilidad: 0.97,
+            },
+        );
+        first.exchanges.insert(
+            "Binance".into(),
+            ExchangeConfig {
+                nombre: "Binance".into(),
+                fee_taker: 0.001,
+                retiro_btc: 0.0001,
+                confiabilidad: 0.98,
+            },
+        );
+
+        let mut second = MapaCostos::default();
+        for name in ["Binance", "Kraken"] {
+            second.exchanges.insert(
+                name.into(),
+                first.exchanges.get(name).expect("exchange fixture").clone(),
+            );
+        }
+
+        assert_eq!(hash_config(&first), hash_config(&second));
     }
 }

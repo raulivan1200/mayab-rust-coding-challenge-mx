@@ -26,15 +26,23 @@ Dashboard: `http://127.0.0.1:8080/?debug=1` (logs de consola + performance obser
 
 ## Comandos útiles
 
+En desarrollo local `ADMIN_TOKEN` es opcional. Para reproducir exactamente el comportamiento de producción, arranca el servidor con un token de al menos 32 caracteres y exporta el mismo valor en la terminal de operación:
+
+```bash
+export ADMIN_TOKEN='cambia-este-token-local-de-32-chars'
+```
+
 ```bash
 # Demo rentable
 curl -sS -X POST http://localhost:8080/api/demo \
   -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
   -d '{"escenario":"mercado_rentable"}'
 
 # GA
 curl -sS -X POST http://localhost:8080/api/ga/evolucionar \
   -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
   -d '{"usarReplaySiVacio":true,"muestras":96}'
 
 # Ver estado
@@ -59,7 +67,8 @@ gcloud logging read "resource.type=cloud_run_revision AND resource.labels.servic
 ## Reset
 
 ```bash
-curl -sS -X POST http://localhost:8080/api/demo/reset
+curl -sS -X POST http://localhost:8080/api/demo/reset \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}"
 rm -f /tmp/mayab-auditoria.sqlite  # borra auditoría local
 ```
 

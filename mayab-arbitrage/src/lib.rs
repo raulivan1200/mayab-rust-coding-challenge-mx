@@ -22,3 +22,4 @@ pub mod tape;
 #[cfg(feature = "testnet-execution")]
 pub mod testnet;
 pub mod types;
+pub mod version;

@@ -1,6 +1,15 @@
 # ── Stage 1: Builder ──
 FROM rust:1.96-slim-bookworm AS builder
 
+ARG MAYAB_GIT_SHA=local
+ARG MAYAB_BUILD_TIME=not-recorded
+ARG MAYAB_RELEASE_VERSION=0.1.0
+ARG MAYAB_BUILD_ENV=production
+ENV MAYAB_GIT_SHA=${MAYAB_GIT_SHA} \
+    MAYAB_BUILD_TIME=${MAYAB_BUILD_TIME} \
+    MAYAB_RELEASE_VERSION=${MAYAB_RELEASE_VERSION} \
+    MAYAB_BUILD_ENV=${MAYAB_BUILD_ENV}
+
 RUN rustup set profile minimal
 WORKDIR /build
 

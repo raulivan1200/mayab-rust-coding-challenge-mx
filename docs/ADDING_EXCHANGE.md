@@ -14,6 +14,7 @@ cargo run
 curl -sS http://127.0.0.1:8080/api/estado
 curl -sS -X POST http://127.0.0.1:8080/api/ga/evolucionar \
   -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
   -d '{"usarReplaySiVacio":true,"muestras":96}'
 ```
 

@@ -1,11 +1,23 @@
 #!/usr/bin/env sh
 set -eu
 
-PORT="${PORT:-18080}"
+if [ -n "${PORT:-}" ]; then
+  PORT="$PORT"
+else
+  PORT="$(python3 - <<'PY'
+import socket
+
+with socket.socket() as sock:
+    sock.bind(("127.0.0.1", 0))
+    print(sock.getsockname()[1])
+PY
+)"
+fi
 BASE_URL="http://127.0.0.1:${PORT}"
 TMP_DIR="${TMPDIR:-/tmp}/mayab-release-check.$$"
 DB_PATH="${TMP_DIR}/auditoria.sqlite"
 APP_PID=""
+CHECK_ADMIN_TOKEN="${CHECK_ADMIN_TOKEN:-mayab-release-check-token-32-chars}"
 
 cleanup() {
   if [ -n "$APP_PID" ]; then
@@ -41,6 +53,7 @@ echo "- servidor release temporal en ${BASE_URL}"
 PORT="$PORT" \
 RUST_LOG=error \
 AUDITORIA_DB_PATH="$DB_PATH" \
+ADMIN_TOKEN="$CHECK_ADMIN_TOKEN" \
 target/release/mayab-arbitrage &
 APP_PID=$!
 
@@ -63,8 +76,12 @@ for _ in $(seq 1 60); do
   fi
   if curl -fsS "${BASE_URL}/healthz" >/dev/null 2>&1 \
     && curl -fsS "${BASE_URL}/api/healthz" >/dev/null 2>&1 \
-    && curl -fsS -X POST "${BASE_URL}/api/demo/reset" -o "${TMP_DIR}/demo-reset.json" 2>/dev/null \
-    && curl -fsS -X POST "${BASE_URL}/api/demo/final" -o "${TMP_DIR}/demo-final.json" 2>/dev/null \
+    && curl -fsS -X POST "${BASE_URL}/api/demo/reset" \
+      -H "Authorization: Bearer ${CHECK_ADMIN_TOKEN}" \
+      -o "${TMP_DIR}/demo-reset.json" 2>/dev/null \
+    && curl -fsS -X POST "${BASE_URL}/api/demo/final" \
+      -H "Authorization: Bearer ${CHECK_ADMIN_TOKEN}" \
+      -o "${TMP_DIR}/demo-final.json" 2>/dev/null \
     && curl -fsS "${BASE_URL}/api/jurado" -o "${TMP_DIR}/jurado.json" 2>/dev/null \
     && curl -fsS "${BASE_URL}/api/preflight" -o "${TMP_DIR}/preflight.json" 2>/dev/null \
     && curl -fsS "${BASE_URL}/api/paquete-evaluacion" -o "${TMP_DIR}/paquete.json" 2>/dev/null \
@@ -129,6 +146,6 @@ if [ "$ready" -ne 1 ]; then
 fi
 
 echo "- smoke demo sobre binario release"
-BASE_URL="$BASE_URL" ./scripts/smoke-demo.sh
+BASE_URL="$BASE_URL" ADMIN_TOKEN="$CHECK_ADMIN_TOKEN" ./scripts/smoke-demo.sh
 
 echo "Release check OK"

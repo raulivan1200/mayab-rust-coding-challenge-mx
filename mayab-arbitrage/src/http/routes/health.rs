@@ -10,6 +10,7 @@ pub(crate) fn routes() -> Router<EstadoApp> {
         .route("/api/healthz", get(server::healthz))
         .route("/readyz", get(server::readyz))
         .route("/api/readyz", get(server::readyz))
+        .route("/api/version", get(server::version))
         .route(
             "/api/discord/interactions",
             post(server::discord_interactions),

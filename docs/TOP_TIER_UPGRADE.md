@@ -2,6 +2,12 @@
 
 Tracking the upgrade of Mayab BTC Arbitrage from "excellent challenge delivery" to "top 1-2 serious project".
 
+> **Status note (2026-07-12):** this is a roadmap, not a declaration that every
+> unchecked item is missing from the product. Checked items below are backed by
+> the repository; unchecked items remain post-challenge work or still require a
+> public CI/release run. The authoritative delivery evidence is
+> [`FINAL_EVIDENCE.md`](../FINAL_EVIDENCE.md).
+
 ## P0 — Security (Production Deployment)
 
 ### P0.1 Route Classification
@@ -171,10 +177,10 @@ src/
 ## P0 — CI & Supply Chain
 
 ### Quality
-- [ ] `cargo fmt --all -- --check`
-- [ ] `cargo clippy --workspace --all-targets --locked -- -D warnings`
-- [ ] `cargo test --workspace --all-targets --locked`
-- [ ] `cargo build --workspace --release --locked`
+- [x] `cargo fmt --all -- --check`
+- [x] `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- [x] `cargo test --workspace --all-targets --locked`
+- [x] `cargo build --workspace --release --locked`
 - [ ] `--all-features` when possible, separate compile for external deps
 
 ### Security
@@ -182,20 +188,20 @@ src/
 - [ ] Dependency Review on PRs
 - [ ] Dependabot for Cargo + GitHub Actions
 - [ ] `cargo audit`
-- [ ] `cargo deny`
-- [ ] Secret scanning
-- [ ] SBOM (CycloneDX or SPDX)
-- [ ] Minimal permissions per job
+- [x] `cargo deny`
+- [x] Secret scanning
+- [x] SBOM (CycloneDX)
+- [x] Minimal permissions per job
 - [ ] Official/trusted actions, pinned versions
 - [ ] No secrets in workflows
 
 ### Files
 - [ ] `.github/workflows/ci.yml`
-- [ ] `.github/workflows/security.yml`
-- [ ] `.github/workflows/benchmarks.yml`
-- [ ] `.github/workflows/release.yml`
-- [ ] `.github/dependabot.yml`
-- [ ] `deny.toml`
+- [x] `.github/workflows/security.yml`
+- [x] `.github/workflows/benchmarks.yml`
+- [x] `.github/workflows/release.yml`
+- [x] `.github/dependabot.yml`
+- [x] `deny.toml`
 
 ## P0 — Reproducible Benchmarks
 
@@ -226,7 +232,7 @@ src/
 
 ### README Order
 1. [ ] Title + one-line pitch
-2. [ ] Real badges
+2. [x] Real workflow badges
 3. [ ] Demo
 4. [ ] 3-5 min Quick Start
 5. [ ] Problem solved
@@ -275,10 +281,10 @@ src/
 - [x] `SECURITY.md` (supported versions, responsible disclosure channel, what not to publish, paper-only model, expected response)
 - [x] `CODE_OF_CONDUCT.md`
 - [x] `CHANGELOG.md` (Keep a Changelog + SemVer, start with Unreleased, reconstruct verifiable from Git)
-- [ ] `.github/ISSUE_TEMPLATE/bug_report.yml`
-- [ ] `.github/ISSUE_TEMPLATE/feature_request.yml`
-- [ ] `.github/ISSUE_TEMPLATE/config.yml`
-- [ ] `.github/pull_request_template.md`
+- [x] `.github/ISSUE_TEMPLATE/bug_report.yml`
+- [x] `.github/ISSUE_TEMPLATE/feature_request.yml`
+- [x] `.github/ISSUE_TEMPLATE/config.yml`
+- [x] `.github/pull_request_template.md`
 - [ ] GitHub labels + topics (commands provided if no auth)
 
 ## P1 — Releases & Packaging
@@ -286,12 +292,12 @@ src/
 - [x] Release workflow on SemVer tags
 - [x] Targets: Linux x86_64, macOS, Windows
 - [x] Archives + SHA-256 checksums
-- [ ] SBOM
+- [x] SBOM
 - [x] Release notes
-- [ ] Artifact provenance/attestations if available
+- [x] Artifact provenance/attestations
 - [ ] Docker tags: version, SHA, `latest` for stable only
 - [x] Native runners when more reliable than cross-compile
-- [ ] Workflow: test → build → package docs → checksums → SBOM → upload → publish on valid tag only
+- [x] Workflow: test → build → checksums → SBOM → provenance → publish on valid tag only
 - [x] No real release without authorization
 
 ## P2 — Operator Console
@@ -309,8 +315,8 @@ src/
 - [ ] Short lightweight GIF if material exists
 - [ ] "Why Mayab stands out" table with evidence links
 - [ ] Valid internal links
-- [ ] Working badges
-- [ ] No fake stars/coverage/versions/workflow status
+- [x] Working workflow badges
+- [x] No fake stars/coverage/versions/workflow status
 
 ---
 

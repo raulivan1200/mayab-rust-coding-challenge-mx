@@ -667,6 +667,21 @@ impl Motor {
         }
     }
 
+    /// Lectura acotada de la auditoría para consumidores como el agente de Discord.
+    pub fn resumen_auditoria(&self) -> serde_json::Value {
+        self.persistencia.as_ref().map_or_else(
+            || serde_json::json!({"activa": false}),
+            |persistencia| {
+                serde_json::json!({
+                    "activa": true,
+                    "estado": persistencia.estado(),
+                    "agregado": persistencia.resumen_agregado(),
+                    "ultimasOperaciones": persistencia.ultimas_operaciones(20),
+                })
+            },
+        )
+    }
+
     fn persistir_operacion(&self, op: &Operacion) {
         if let Some(persistencia) = &self.persistencia {
             if let Err(err) = persistencia.registrar_operacion(op) {
@@ -1243,7 +1258,7 @@ impl Motor {
         serde_json::json!({"ok": true, "ticksProcesados": procesados, "mensaje": "replay completado"})
     }
 
-    /// Devuelve tabla de ablación GA (baseline vs GA en holdout) para evidencia.
+    /// Devuelve un análisis de sensibilidad GA sobre un holdout común.
     pub async fn ga_ablacion(&self) -> serde_json::Value {
         use crate::ga::ConfigGa;
         let state = self.state.read().await;
@@ -1376,7 +1391,9 @@ impl Motor {
         }
 
         serde_json::json!({
-            "metodologia": "24 semillas holdout comunes; cada estrategia filtra por su umbral y tolerancia de latencia, y limita el PnL por su tamaño máximo",
+            "tipoAnalisis": "sensibilidad_hiperparametros",
+            "esAblacionOperadores": false,
+            "metodologia": "24 semillas holdout comunes; se varían población, cruce y mutación. No se afirma causalidad sobre recocido, evolución diferencial ni reinicio adaptativo",
             "resultados": resultados
         })
     }
@@ -1801,7 +1818,7 @@ fn calcular_oportunidad(
         dec(balance_venta.btc),
     ]);
     let cantidad = dec_to_f64(cantidad_dec);
-    let costo = calcular_costos(cantidad, compra, venta, latencia_max, costos);
+    let costo = calcular_costos_canonicos(cantidad, compra, venta, latencia_max, costos);
     let utilidad_dec = diferencial_bruto * cantidad_dec - dec(costo.total_usd);
     let utilidad = dec_to_f64(utilidad_dec);
     let diferencial_neto_unidad = if cantidad_dec > Decimal::ZERO {
@@ -1953,7 +1970,11 @@ fn revalidar_operacion(
     })
 }
 
-fn calcular_costos(
+/// Modelo canónico de costos usado por ejecución, replay y evaluación offline.
+///
+/// Mantenerlo público dentro del crate evita que los experimentos inventen un
+/// schedule paralelo al que decide las operaciones del motor.
+pub fn calcular_costos_canonicos(
     cantidad: f64,
     compra: &Cotizacion,
     venta: &Cotizacion,
@@ -3685,5 +3706,14 @@ mod tests {
             .any(|e| e.tipo == "kill_switch"));
         motor.set_kill_switch(false).await;
         assert!(!motor.estado().await.metricas.circuit_breaker_activo);
+    }
+
+    #[test]
+    fn resumen_auditoria_falla_cerrado_sin_backend() {
+        let motor = Motor::new(cfg_test(), 250_000.0, 2.5, "BTC/USD".into(), vec![], None);
+        assert_eq!(
+            motor.resumen_auditoria(),
+            serde_json::json!({"activa": false})
+        );
     }
 }
