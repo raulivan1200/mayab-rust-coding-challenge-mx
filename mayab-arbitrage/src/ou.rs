@@ -248,7 +248,7 @@ fn regression_ar1(x: &[f64]) -> (f64, f64, f64) {
 }
 
 fn stationarity_tests(x: &[f64]) -> StationarityTests {
-    let (alpha, beta, sigma) = regression_ar1(x);
+    let (_alpha, beta, sigma) = regression_ar1(x);
     let lag = &x[..x.len().saturating_sub(1)];
     let ml = mean(lag);
     let sxx = lag.iter().map(|v| (v - ml).powi(2)).sum::<f64>();
