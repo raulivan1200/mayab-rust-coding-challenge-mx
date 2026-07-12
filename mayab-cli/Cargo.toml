@@ -24,7 +24,7 @@ path = "src/testnet_executor.rs"
 required-features = ["testnet-execution"]
 
 [dependencies]
-mayab-arbitrage = { path = "../mayab-arbitrage" }
+mayab-arbitrage = { version = "0.1.0", path = "../mayab-arbitrage" }
 anyhow = "1.0"
 axum = "0.7"
 dotenvy = "0.15"

@@ -9,6 +9,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 - Read-only `/operator` console backed by live engine state.
 - Architecture, security, exchange-extension and operations documentation.
 - Community health files and multi-platform release automation.
+- Structured issue and pull-request templates with explicit simulation safety checks.
+- Reproducible LCOV coverage workflow with artifact retention and optional Codecov publishing.
+- SHA-256 checksums and CycloneDX SBOMs for release artifacts.
+- Audited `TOP2_CHECKLIST.md` mapping finalist recommendations to verifiable evidence.
 - Open Graph and social preview metadata using repository screenshots.
 
 ## [0.1.0] - 2026-07-12
