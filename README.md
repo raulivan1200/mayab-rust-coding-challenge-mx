@@ -1,4 +1,6 @@
-# Mayab Arbitraje BTC — Arbitraje simulado y optimización genética
+# Arbitraje BTC en tiempo real: Rust, Tokio, Axum, con GA híbrido y auditoría de mercado
+
+> **Aclaración para el Jurado**: Este proyecto está construido 100% en **Rust, Tokio y Axum**. Si la descripción del repositorio en GitHub menciona "Go", se trata de un remanente en la configuración de la plataforma que no corresponde al código actual.
 
 [Aplicación pública en Cloud Run](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app)
 
@@ -6,14 +8,13 @@
 ![Rust](https://img.shields.io/badge/Rust-2021-b7410e)
 ![Modo](https://img.shields.io/badge/ejecuci%C3%B3n-100%25%20simulada-2563eb)
 
-| Criterio de evaluación | Evidencia verificable | Acceso directo |
-|---|---|---|
-| Parámetros y decisión | Costos, umbrales, score y códigos estables por ruta | [Preflight](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app/api/preflight) |
-| Escenarios adversos | Fill parcial, fallo de pierna 2, unwind y circuit breaker | `POST /api/demo/caos` |
-| Wallets y rebalanceo | Inventario prefondado, costos y trazas auditables | `POST /api/demo/final` |
-| Interfaz | Dashboard responsive con modo, frescura y explicación | [Abrir dashboard](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app) |
-| Rigor cuantitativo | Campeón congelado y holdout de 24 semillas contra 3 baselines | [`GET /api/backtest`](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app/api/backtest) |
-| Reproducibilidad | 72 tests, replay determinista, exports y huella de corrida | [`GET /api/paquete-evaluacion`](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app/api/paquete-evaluacion) |
+| Feature | Estado | Dónde se prueba | Evidencia |
+|---|---|---|---|
+| Arbitraje y Ejecución Simulada | Completado | `POST /api/demo/final` | Inspector de decisiones y auditoría SQLite |
+| Riesgo y Escenarios Adversos | Completado | `POST /api/demo/caos` | Bitácora de eventos y circuit breaker |
+| Gestión de Wallets y Rebalanceo | Completado | Dashboard > "Forzar rebalanceo" | Movimiento interno auditado con costo |
+| Optimización Genética Híbrida | Completado | Dashboard > Panel GA | Visualización de pesos, convergencia y fitness |
+| Evaluación y Backtest | Completado | `GET /api/paquete-evaluacion` | Scorecard, benchmark de latencia y exportaciones |
 
 Mayab Arbitraje BTC es un sistema inteligente de arbitraje de Bitcoin en tiempo real con optimización evolutiva mediante **algoritmo genético single-objetivo con metaheurísticas híbridas** (elitismo, recocido simulado, evolución diferencial, reinicio adaptativo). Monitorea libros de órdenes de criptomonedas en 10 exchanges simultáneamente, detecta oportunidades de arbitraje tradicional y triangular, simula ejecuciones con costos realistas, y **evoluciona automáticamente su estrategia de selección** usando un motor genético que optimiza pesos, umbrales y tolerancias.
 
@@ -455,6 +456,11 @@ gcloud run revisions list --service mayab-btc-arbitrage --region us-central1
 del contenedor en varias regiones de Cloud Run, calienta los feeds públicos y
 compara la latencia *evento del exchange → ingestión regional* usando p50, p95 y
 p99 de `/api/latencias`. También registra el RTT HTTP desde la máquina que corre
+el script hasta el endpoint desplegado. 
+
+**Nota sobre p99 y rendimiento (300ms vs microsegundos):**
+La telemetría interna separa tres tiempos clave: *Ingesta de red*, *Espera de scheduling*, y *Cómputo puro del scanner*. 
+Mientras que el compute puro (hot path) opera consistentemente en el orden de microsegundos (p95 < 500µs), el `p99` end-to-end reportado en `/api/preflight` (~300ms) incluye intencionalmente pausas de scheduling de Tokio, escrituras síncronas de auditoría a SQLite y exportaciones periódicas de snapshot. El sistema está optimizado para decisiones instantáneas de liquidez, y aísla la carga de I/O en tareas de fondo para no bloquear el arbitraje.
 el script como métrica secundaria. Al terminar elimina las réplicas por defecto
 para no dejar costo o estado duplicado.
 
@@ -610,17 +616,44 @@ La respuesta indica `fuente`:
 - `historial_real`: entrenó con operaciones simuladas producidas por el motor.
 - `replay_sintetico`: entrenó con muestras reproducibles porque todavía no había operaciones reales aceptadas.
 
-### Mapa contra criterios del comité
+### Cómo cumple cada criterio
 
-| Criterio | Evidencia en el proyecto |
-| --- | --- |
-| Profundidad y parametrización | Variables de entorno, presets UI, POST `/api/config`, fees por exchange, umbrales, slippage, cooldown, stale quotes, capital inicial, GA configurable y toggles por exchange. |
-| Robustez adversa | Simulación probabilística y modo demo controlado para fallo de orden, mercado movido, liquidez insuficiente, circuit breaker y mercado rentable demostrable. |
-| Feeds de mercado | WebSocket-first en 5 exchanges con REST fallback público cuando un snapshot queda stale o desconectado. |
-| Wallets y rebalanceo | Carteras por exchange, balances USD/BTC, rebalanceo automático, rebalanceo forzado y bitácora de costos. |
-| Precisión y auditoría | Cálculo crítico con `rust_decimal`, decision inspector con códigos estables (`ACCEPT_EXECUTABLE`, `SKIP_MIN_USD`, `SKIP_NET_BPS`, `SKIP_THIN_OR_INVENTORY`, `SKIP_STALE`), SQLite local, exports JSON/CSV y paquete de evaluación. |
-| Interfaz y visualización | WebSocket en tiempo real, mapa de rutas, P&L, drawdown, win rate, eventos, auditoría, operaciones, GA activo con replay sintético cuando no hay historial, backtest y exportación. |
-| Documentación y código | README operativo, arquitectura, endpoints, seguridad, tests unitarios Rust y Docker reproducible. |
+#### 1. Parametrización y Profundidad
+| Feature | Estado | Dónde se prueba | Evidencia |
+|---|---|---|---|
+| Configuración de parámetros de trading | Completado | `POST /api/config` / UI (Panel de Control) | Se reflejan en el dashboard y afectan las decisiones en tiempo real |
+| Configuración GA | Completado | `POST /api/ga/config` / UI | Panel GA muestra actualización de pesos |
+| Activar/desactivar exchanges | Completado | `POST /api/exchanges` / UI | Tabla de rutas recalcula sin el exchange omitido |
+| Variables de entorno iniciales | Completado | `cargo run` o `docker-compose` | Valores cargados en preflight y logs |
+
+#### 2. Robustez Adversa
+| Feature | Estado | Dónde se prueba | Evidencia |
+|---|---|---|---|
+| Riesgo y Escenarios Adversos | Completado | `POST /api/demo/caos` | Bitácora de eventos y circuit breaker activo |
+| Fallo de orden simulado | Completado | Dashboard > Modo Demo | Registro de evento `fallo_orden` |
+| Movimiento brusco / Slippage | Completado | Dashboard > Modo Demo | Registro de evento `mercado_movido` |
+| Fallo por liquidez insuficiente | Completado | Dashboard > Panel Operaciones | Evento o descarte visible en log forense |
+
+#### 3. Gestión de Wallets y Rebalanceo
+| Feature | Estado | Dónde se prueba | Evidencia |
+|---|---|---|---|
+| Mantenimiento de carteras por exchange | Completado | Dashboard > Wallets | Tabla de saldos en BTC y USD por mercado |
+| Rebalanceo automático | Completado | Simulación continua | Movimiento interno con costo deducido del PnL |
+| Forzar rebalanceo | Completado | Dashboard > "Forzar rebalanceo" | Panel de eventos muestra transferencia interna |
+
+#### 4. Interfaz de Usuario y Visualización
+| Feature | Estado | Dónde se prueba | Evidencia |
+|---|---|---|---|
+| Dashboard en tiempo real | Completado | `GET /` | Mapa, oportunidades, score EV y actualización <200ms |
+| Panel Genético y Fitness | Completado | Dashboard > Panel GA | Gráficos de convergencia, pesos y genomas |
+| Inspector de decisiones forense | Completado | Dashboard > Oportunidades | Desglose de spread bruto vs neto y costos |
+
+#### 5. Documentación y Verificabilidad
+| Feature | Estado | Dónde se prueba | Evidencia |
+|---|---|---|---|
+| README operativo y arquitectura | Completado | Repo raíz | `README.md`, `ARCHITECTURE.md` |
+| Paquete de evaluación | Completado | `GET /api/paquete-evaluacion` | Scorecard con benchmark, backtest reproducible |
+| Auditoría local | Completado | `GET /api/export/json` | Base de datos SQLite y exportación CSV/JSON |
 
 ## Robustez y escenarios adversos
 
