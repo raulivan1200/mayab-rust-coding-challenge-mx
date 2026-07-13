@@ -66,7 +66,9 @@ checks = readiness.get("checks") or []
 ok = (
     preflight.get("listo") is True
     and readiness.get("status") == "ready"
-    and checks
+    and readiness.get("passed") == 12
+    and readiness.get("total") == 12
+    and len(checks) == 12
     and all(check.get("ok") is True for check in checks)
 )
 sys.exit(0 if ok else 1)
@@ -103,6 +105,10 @@ json_get "/api/mcp/manifest" "$TMP_DIR/mcp-manifest.json"
 json_post "/api/mcp/call" '{"tool":"summarize_for_llm"}' "$TMP_DIR/mcp-summary.json"
 json_get "/api/backtest" "$TMP_DIR/backtest.json"
 json_get "/api/lab/sweep" "$TMP_DIR/lab-sweep.json"
+json_get "/api/version" "$TMP_DIR/version.json"
+json_get "/api/research/economics" "$TMP_DIR/economics.json"
+json_get "/api/research/execution-matrix" "$TMP_DIR/execution-matrix.json"
+json_get "/api/research/ledger-audit" "$TMP_DIR/ledger-audit.json"
 json_get "/api/ga/sensibilidad" "$TMP_DIR/ga-sensibilidad.json"
 json_get "/api/export/json" "$TMP_DIR/export.json"
 json_get "/api/export/csv" "$TMP_DIR/export.csv"
@@ -142,6 +148,10 @@ mcp_manifest = load("mcp-manifest.json")
 mcp_summary = load("mcp-summary.json")
 backtest = load("backtest.json")
 lab = load("lab-sweep.json")
+version = load("version.json")
+economics = load("economics.json")
+execution_matrix = load("execution-matrix.json")
+ledger_audit = load("ledger-audit.json")
 sensibilidad = load("ga-sensibilidad.json")
 export_json = load("export.json")
 demo_liquidez = load("demo-liquidez.json")
@@ -268,6 +278,30 @@ if lab.get("tipo") != "research_lab_sweep" or len(lab.get("resultados") or []) <
 if not lab.get("ganador"):
     errors.append("/api/lab/sweep no reporta ganador")
 
+for key in ["datasetHash", "configHash"]:
+    if not str(version.get(key, "")).startswith("sha256:"):
+        errors.append(f"/api/version no expone {key} canónico")
+if not version.get("schemaVersion") or not version.get("evidenceSessionId"):
+    errors.append("/api/version no vincula schema y sesión de evidencia")
+
+if economics.get("available") is not True:
+    errors.append("/api/research/economics no quedó disponible")
+if len((economics.get("edgeWaterfall") or {}).get("items") or []) < 7:
+    errors.append("economics no expone waterfall completo")
+if len((economics.get("capacityCurve") or {}).get("points") or []) < 6:
+    errors.append("economics no expone curva de capacidad")
+
+if not (
+    execution_matrix.get("allPassed") is True
+    and execution_matrix.get("passed") == 12
+    and execution_matrix.get("total") == 12
+):
+    errors.append("matriz forense no concilia los 12 escenarios")
+
+ledger_checks = ledger_audit.get("checks") or {}
+if not ledger_checks or not all(ledger_checks.values()):
+    errors.append("auditoría de ledger no dejó todos sus invariantes en verde")
+
 filas_sensibilidad = sensibilidad.get("resultados") or []
 if len(filas_sensibilidad) != 7 or "24 semillas holdout" not in sensibilidad.get("metodologia", ""):
     errors.append("/api/ga/sensibilidad no expone las 7 configuraciones y metodología holdout")
@@ -306,6 +340,8 @@ if not preflight_final.get("listo"):
     errors.append("el smoke no dejo preflight listo=true al terminar")
 if any(check.get("ok") is not True for check in readiness_final.get("checks") or []):
     errors.append("el smoke dejo checks de readiness incompletos al terminar")
+if readiness_final.get("passed") != 12 or readiness_final.get("total") != 12:
+    errors.append("el smoke no terminó con preflight exacto 12/12")
 
 if errors:
     print("Smoke fallido:")

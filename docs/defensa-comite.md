@@ -16,11 +16,11 @@ La demo es segura: no usa llaves API, no firma órdenes, no custodia fondos y to
 
 2. Abrir `/api/preflight`.
    - Confirmar `judgeReadiness.status=ready`.
-   - Confirmar 10/10 checks.
+   - Confirmar `passed=12`, `total=12` y todos los checks en verde.
    - Mostrar `rubricaOficial` con los 5 criterios del correo.
 
 3. Ejecutar demo rentable.
-   - Botón: **Preparar recorrido completo**.
+   - Botón: **Ejecutar prueba completa**.
    - Evidencia esperada: operaciones, PnL positivo, eventos `demo_rentable`, auditoría y GA activo.
 
 4. Ejecutar rebalanceo.
@@ -32,7 +32,7 @@ La demo es segura: no usa llaves API, no firma órdenes, no custodia fondos y to
 
 6. Cerrar con export.
    - Descargar `/api/export/json` o `/api/export/csv`.
-   - Explicar que SQLite conserva operaciones, oportunidades, eventos, auditorías y rebalanceos durante la vida de la instancia.
+   - Explicar que el export sella la corrida y que producción conserva operaciones, ejecuciones, oportunidades, eventos, auditorías y rebalanceos en TimescaleDB.
 
 ## Smoke verificable
 
@@ -87,7 +87,7 @@ Optimiza pesos de scoring, umbral mínimo, tamaño máximo y tolerancia de laten
 
 ### ¿Cómo se audita la decisión?
 
-`auditoriaDecisiones` registra ruta, par, decisión, `decisionCode`, `decisionReason`, score, pesos GA, utilidad, net bps, costo total, latencia, Z-Score y balances previos. También se exporta a JSON/CSV y se persiste en SQLite.
+`auditoriaDecisiones` registra ruta, par, decisión, `decisionCode`, `decisionReason`, score, pesos GA, utilidad, net bps, costo total, latencia, Z-Score y balances previos. También se exporta a JSON/CSV y se persiste en SQLite local o TimescaleDB productivo.
 
 ### ¿Qué diferencia a Mayab de una demo web común?
 

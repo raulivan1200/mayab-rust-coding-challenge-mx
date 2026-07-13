@@ -15,6 +15,22 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 use mayab_arbitrage::persistencia_timescale;
 use mayab_arbitrage::{auditoria, config, discord, mercado, motor, persistencia, server};
 
+async fn esperar_apagado() {
+    #[cfg(unix)]
+    {
+        let mut terminate = signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("no se pudo instalar handler SIGTERM");
+        tokio::select! {
+            _ = signal::ctrl_c() => {},
+            _ = terminate.recv() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = signal::ctrl_c().await;
+    }
+}
+
 fn abrir_dashboard_local(url: &str) {
     if !cfg!(debug_assertions)
         || std::env::var("MAYAB_OPEN_BROWSER").is_ok_and(|valor| valor == "0" || valor == "false")
@@ -86,14 +102,16 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     };
-    let persistencia = persistencia.map(|backend| {
+    let persistencia_cola = persistencia.map(|backend| {
         let capacidad = std::env::var("PERSISTENCE_QUEUE_CAPACITY")
             .ok()
             .and_then(|valor| valor.parse().ok())
             .unwrap_or(2048);
         Arc::new(auditoria::AuditoriaEnCola::nueva(backend, capacidad))
-            as Arc<dyn auditoria::Auditoria>
     });
+    let persistencia = persistencia_cola
+        .clone()
+        .map(|cola| cola as Arc<dyn auditoria::Auditoria>);
     let motor = Arc::new(motor::Motor::new(
         cfg.costos.clone(),
         cfg.capital_inicial_usd,
@@ -135,9 +153,17 @@ async fn main() -> anyhow::Result<()> {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(async {
-        let _ = signal::ctrl_c().await;
-    })
+    .with_graceful_shutdown(esperar_apagado())
     .await?;
+    if let Some(cola) = persistencia_cola {
+        let drenada = tokio::task::spawn_blocking(move || {
+            cola.esperar_drenado(std::time::Duration::from_secs(10))
+        })
+        .await
+        .unwrap_or(false);
+        if !drenada {
+            tracing::error!("la cola de persistencia no drenó antes del shutdown");
+        }
+    }
     Ok(())
 }

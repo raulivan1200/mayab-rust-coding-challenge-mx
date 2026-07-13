@@ -1483,7 +1483,17 @@ async function reiniciarDemoJurado() {
   }
 }
 
-async function prepararDemoFinal() {
+let demoFinalEnCurso = null;
+function prepararDemoFinal() {
+  if (!demoFinalEnCurso) {
+    demoFinalEnCurso = ejecutarDemoFinal().finally(() => {
+      demoFinalEnCurso = null;
+    });
+  }
+  return demoFinalEnCurso;
+}
+
+async function ejecutarDemoFinal() {
   const btn = $("btnDemoFinal");
   const btnTop = $("btnDemoFinalTop");
   const btnHero = $("btnJuryProofHero");
@@ -1518,7 +1528,7 @@ async function prepararDemoFinal() {
       mostrarFeedback(feedback, `No se pudo cargar la demo ganadora: ${await mensajeErrorApi(res, "error de API")}`, false);
       if (estado) estado.textContent = "rechazado";
       if (minuteStatus) minuteStatus.textContent = "La instancia rechazó la prueba; abre el checklist para ver el bloqueo exacto.";
-      return;
+      return false;
     }
     const body = await res.json();
     if (estado) estado.textContent = "evidencia lista";
@@ -1536,17 +1546,20 @@ async function prepararDemoFinal() {
     }
     preflightCache = body?.preflight || null;
     ultimoPreflightMs = preflightCache ? Date.now() : 0;
-    try {
-      const lab = await fetch("/api/lab/sweep");
-      if (lab.ok) renderLabSweep(await lab.json());
-    } catch (_) {}
+    fetch("/api/lab/sweep")
+      .then(async (lab) => {
+        if (lab.ok) renderLabSweep(await lab.json());
+      })
+      .catch(() => {});
     if ($("tab-evidence")?.classList.contains("activo")) {
-      await cargarEvidenceLab();
+      cargarEvidenceLab();
     }
+    return true;
   } catch (e) {
     if (estado) estado.textContent = "error";
     mostrarFeedback(feedback, "Error de red al cargar la demo ganadora", false);
     if (minuteStatus) minuteStatus.textContent = "La prueba no terminó; revisa la conexión y vuelve a intentarlo.";
+    return false;
   } finally {
     if (btn) {
       btn.disabled = false;
@@ -4052,11 +4065,20 @@ document.addEventListener("DOMContentLoaded", () => {
       const target = control.getAttribute("data-tab-target");
       const tab = document.querySelector(`.tab-btn[data-tab="${target}"]`);
       if (!tab) return;
-      tab.click();
+      const abrirTab = () => {
+        tab.click();
+        // Usar el contenedor que realmente hace scroll evita dos animaciones
+        // compitiendo entre sí, especialmente en Safari/Chrome móvil.
+        requestAnimationFrame(() => irAlDashboard());
+      };
+      if (control.hasAttribute("data-prepare-jury") && target === "tab-evidence") {
+        prepararDemoFinal().then((lista) => {
+          if (lista) abrirTab();
+        });
+        return;
+      }
+      abrirTab();
       if (control.hasAttribute("data-prepare-jury")) prepararDemoFinal();
-      // Usar el contenedor que realmente hace scroll evita dos animaciones
-      // compitiendo entre sí, especialmente en Safari/Chrome móvil.
-      requestAnimationFrame(() => irAlDashboard());
     };
     control.addEventListener("click", activar);
     if (!control.matches("a, button, input, select, textarea")) {
@@ -4256,14 +4278,12 @@ function iniciarTutorial() {
 }
 
 function iniciarLanding() {
-  // El header es una referencia estructural del dashboard: animarlo con scale
-  // hace que el contenedor y su grid parezcan encogerse al entrar en el scroll.
-  const elementsToReveal = document.querySelectorAll('.panel, .ga-panel, .metricas article, .landing-card, .llm-strip, .tabs-nav');
+  // Solo las cards marcadas en el HTML participan en el reveal por scroll.
+  // Paneles, metricas, graficas y navegacion conservan sus animaciones propias
+  // de entrada, pero no vuelven a un estado oculto mientras esperan al observer.
+  const elementsToReveal = document.querySelectorAll(".reveal-card");
   const ordenPorGrupo = new Map();
   elementsToReveal.forEach(el => {
-    if (!el.classList.contains('reveal-card')) {
-      el.classList.add('reveal-card');
-    }
     const grupo = el.parentElement;
     const orden = ordenPorGrupo.get(grupo) || 0;
     el.style.setProperty("--reveal-delay", `${Math.min(orden * 45, 135)}ms`);

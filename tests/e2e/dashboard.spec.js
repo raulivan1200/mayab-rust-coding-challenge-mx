@@ -21,15 +21,30 @@ test("dashboard carga sin errores ni logs de debug por defecto", async ({ page }
 });
 
 test("debug requiere exactamente debug=1", async ({ page }) => {
-  const debugMessages = [];
+  const consoleMessages = [];
   page.on("console", message => {
-    if (message.text().includes("[mayab-debug]")) debugMessages.push(message.text());
+    consoleMessages.push(`${message.type()}:${message.text()}`);
   });
 
   await page.goto("/?debug=0");
   await expect(page.locator("html")).not.toHaveAttribute("data-mayab-debug", "1");
   expect(await page.evaluate(() => window.mayabDebugMetrics)).toBeUndefined();
-  expect(debugMessages).toEqual([]);
+  expect(consoleMessages).toEqual([]);
+});
+
+test("controles usan relleno vertical sin salto escala ni sombra", async ({ page }) => {
+  await page.goto("/");
+  const cta = page.locator("#btnJuryProofHero");
+  await cta.hover();
+  await expect(cta).toHaveCSS("background-size", "100% 100%");
+  await expect(cta).toHaveCSS("transform", "none");
+  await expect(cta).toHaveCSS("box-shadow", "none");
+
+  const tab = page.locator(".tab-btn").first();
+  await tab.hover();
+  await expect(tab).toHaveCSS("background-size", "100% 100%");
+  await expect(tab).toHaveCSS("transform", "none");
+  await expect(tab).toHaveCSS("box-shadow", "none");
 });
 
 test("replay y consola operativa cargan sin errores de navegador", async ({ page }) => {
@@ -138,35 +153,51 @@ test("selector superior separa mercado, replay, demo y escala del corpus", async
   await expect(page.locator("#dataLensScale")).toHaveAttribute("title", /IC Wilson 95%.*netas con liquidez/);
 });
 
-test("al cambiar entre mercado y demo el contenido se revela sin hover", async ({ page }) => {
+test("al cambiar entre mercado y demo los datos permanecen visibles sin reveal", async ({ page }) => {
   await page.goto("/");
+  const revealCard = page.locator(".landing-grid .landing-card.reveal-card").first();
+  await revealCard.scrollIntoViewIfNeeded();
+  await expect(revealCard).toHaveClass(/is-visible/);
 
   await page.locator('[data-data-lens="live"]').click();
   await expect(page.locator("#tab-mercado")).toHaveClass(/activo/);
-  await expect(page.locator("#tab-mercado .panel").first()).toHaveClass(/is-visible/);
+  await expect(page.locator("#tab-mercado .panel").first()).not.toHaveClass(/reveal-card/);
   await expect(page.locator("#tab-mercado .panel").first()).toHaveCSS("opacity", "1");
 
   await page.locator('[data-data-lens="demo"]').click();
   await expect(page.locator("#tab-riesgo")).toHaveClass(/activo/);
-  await expect(page.locator("#tab-riesgo .panel").first()).toHaveClass(/is-visible/);
+  await expect(page.locator("#tab-riesgo .panel").first()).not.toHaveClass(/reveal-card/);
   await expect(page.locator("#tab-riesgo .panel").first()).toHaveCSS("opacity", "1");
+
+  await expect(page.locator(".metricas article").first()).not.toHaveClass(/reveal-card/);
+  await expect(page.locator(".llm-strip")).not.toHaveClass(/reveal-card/);
+  await expect(page.locator(".tabs-nav")).not.toHaveClass(/reveal-card/);
+  await expect(revealCard).toHaveClass(/is-visible/);
   await page.close();
 });
 
 test("las seis pruebas aceptan clic en su texto y preparan evidencia dentro del dashboard", async ({ page }) => {
   let demoFinalCalls = 0;
-  await page.route("**/api/demo/final", route => {
-    demoFinalCalls += 1;
+  await page.route("**/api/**", route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/demo/final") {
+      demoFinalCalls += 1;
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json; charset=utf-8",
+        body: JSON.stringify({
+          corridaId: "jury-navigation-test",
+          metricas: { utilidadAcumuladaUsd: 1 },
+          riesgoSegundaPierna: { estadoFinal: "conciliada" },
+          mlEdge: { version: "test" },
+          preflight: { judgeReadiness: { passed: 12, total: 12 } },
+        }),
+      });
+    }
     return route.fulfill({
       status: 200,
       contentType: "application/json; charset=utf-8",
-      body: JSON.stringify({
-        corridaId: "jury-navigation-test",
-        metricas: { utilidadAcumuladaUsd: 1 },
-        riesgoSegundaPierna: { estadoFinal: "conciliada" },
-        mlEdge: { version: "test" },
-        preflight: { judgeReadiness: { passed: 12, total: 12 } },
-      }),
+      body: "{}",
     });
   });
   await page.goto("/");

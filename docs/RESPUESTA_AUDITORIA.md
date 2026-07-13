@@ -25,7 +25,7 @@ reproducible y separa claramente lo implementado de lo que sigue fuera de alcanc
 - Un replay demuestra comportamiento reproducible bajo sus datos y supuestos; no demuestra
   rentabilidad futura.
 - Los rebalanceos son movimientos contables simulados con settlement y costo, no retiros reales.
-- SQLite en Cloud Run es efímero salvo que se configure persistencia externa.
+- SQLite local es efímero por defecto; el deploy productivo exige TimescaleDB externo y bloquea readiness si deja de estar saludable.
 - Una cotización REST fallback está identificada como tal y no se presenta como WebSocket live.
 
 ## Verificación mínima para jurado

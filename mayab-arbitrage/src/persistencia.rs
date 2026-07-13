@@ -20,6 +20,10 @@ const LIMITE_REBALANCEOS: usize = 5_000;
 const LIMITE_EJECUCIONES: usize = 10_000;
 const MANTENIMIENTO_CADA_ESCRITURAS: usize = 256;
 
+fn sqlite_storage_persistent(storage_mode: &str) -> bool {
+    matches!(storage_mode, "sqlite_persistent" | "volume")
+}
+
 use anyhow::{anyhow, Context};
 use rusqlite::{params, Connection};
 
@@ -87,7 +91,7 @@ impl Persistencia {
             .map(|value| value.trim().to_ascii_lowercase())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "sqlite_ephemeral".to_string());
-        let storage_persistent = matches!(storage_mode.as_str(), "sqlite_persistent" | "volume");
+        let storage_persistent = sqlite_storage_persistent(&storage_mode);
         EstadoPersistencia {
             activa: true,
             backend: "sqlite".to_string(),
@@ -548,6 +552,14 @@ impl Auditoria for Persistencia {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sqlite_no_puede_declararse_timescaledb_ni_durable() {
+        assert!(!sqlite_storage_persistent("timescaledb"));
+        assert!(!sqlite_storage_persistent("sqlite_ephemeral"));
+        assert!(sqlite_storage_persistent("sqlite_persistent"));
+        assert!(sqlite_storage_persistent("volume"));
+    }
 
     #[test]
     fn retencion_conserva_solo_las_auditorias_mas_recientes() {

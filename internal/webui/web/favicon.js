@@ -1,7 +1,7 @@
 // Favicon SVG reactivo de Mayab Edge.
 // El navegador conserva el formato vectorial; no se rasteriza mediante canvas.
 const DEBUG_ACTIVO =
-  new URLSearchParams(location.search).has("debug") ||
+  new URLSearchParams(location.search).get("debug") === "1" ||
   localStorage.getItem("mayabDebug") === "1";
 
 class FaviconAnimator {

@@ -20,7 +20,7 @@ use rust_decimal::{
     Decimal,
 };
 use sha2::{Digest, Sha256};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::{
     auditoria::Auditoria,
@@ -40,6 +40,7 @@ pub struct Motor {
     ops_ejecutadas: AtomicU64,
     ops_fallidas: AtomicU64,
     ejecucion_en_curso: AtomicBool,
+    ga_evolucion_en_curso: Mutex<()>,
 }
 
 struct State {
@@ -224,6 +225,7 @@ impl Motor {
             ops_ejecutadas: AtomicU64::new(0),
             ops_fallidas: AtomicU64::new(0),
             ejecucion_en_curso: AtomicBool::new(false),
+            ga_evolucion_en_curso: Mutex::new(()),
         }
     }
 
@@ -308,7 +310,16 @@ impl Motor {
     async fn analizar(&self, ahora: DateTime<Utc>) {
         let inicio_scan = Instant::now();
         let evento_actual = self.eventos.load(Ordering::SeqCst);
-        let (cotizaciones, costos, carteras, activo, historial, enfriamiento, pesos) = {
+        let (
+            cotizaciones,
+            costos,
+            carteras,
+            activo,
+            historial,
+            enfriamiento,
+            pesos,
+            evolucionar_ga_automaticamente,
+        ) = {
             let mut state = self.state.write().await;
             procesar_transferencias(&mut state, ahora);
             if evento_actual == state.ultimo_evento_analizado {
@@ -375,8 +386,16 @@ impl Motor {
                 state.historial_rutas.clone(),
                 state.enfriamiento.clone(),
                 pesos,
+                state.ciclos % 500 == 0 && !state.operaciones.is_empty(),
             )
         };
+
+        if evolucionar_ga_automaticamente {
+            let resultado = self.evolucionar_ga(false, 240).await;
+            if resultado.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+                tracing::warn!(resultado = %resultado, "evolución automática del GA omitida");
+            }
+        }
 
         let cotizacion_mas_reciente = cotizaciones.values().map(|c| c.recibida_en).max();
         let por_par = agrupar_por_par(cotizaciones);
@@ -634,11 +653,6 @@ impl Motor {
             state.eventos_ejecucion.truncate(128);
             self.ops_fallidas.fetch_add(1, Ordering::SeqCst);
             tracing::warn!(ruta = %format!("{}->{}", op.compra_en, op.venta_en), cantidad = op.cantidad_btc, "operación simulada fallida por saldo insuficiente");
-        }
-        if state.ciclos % 500 == 0 {
-            let mut operaciones = state.operaciones.clone();
-            let fallos = self.ops_fallidas.load(Ordering::SeqCst) as usize;
-            state.ga.evolucionar(operaciones.make_contiguous(), fallos);
         }
     }
 
@@ -910,44 +924,78 @@ impl Motor {
         usar_replay_si_vacio: bool,
         muestras: usize,
     ) -> serde_json::Value {
-        let mut state = self.state.write().await;
+        let _ga_guard = self.ga_evolucion_en_curso.lock().await;
+        let limite_muestras = muestras.clamp(12, 240);
+        let (mut ga, mut operaciones, costos, precio_base) = {
+            let state = self.state.read().await;
+            (
+                state.ga.clone(),
+                state
+                    .operaciones
+                    .iter()
+                    .take(limite_muestras)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                state.costos.clone(),
+                precio_referencia(state.cotizaciones.values()),
+            )
+        };
         let mut fuente = "historial_real";
-        let mut operaciones = state.operaciones.clone();
         let mut fallos = self.ops_fallidas.load(Ordering::SeqCst) as usize;
         if operaciones.is_empty() && usar_replay_si_vacio {
-            let seed = (state.ga.generacion as u64)
+            let seed = (ga.generacion as u64)
                 .wrapping_mul(1_103_515_245)
                 .wrapping_add(0x4d41594142);
             let replay = operaciones_sinteticas_ga(
-                &state.costos,
-                muestras.clamp(12, 240),
-                precio_referencia(state.cotizaciones.values()),
+                &costos,
+                limite_muestras,
+                precio_base,
                 seed,
                 Utc::now(),
                 true,
             );
-            operaciones = replay.operaciones.into();
+            operaciones = replay.operaciones;
             fallos = replay.fallos;
             fuente = "replay_sintetico";
         }
         let muestras = operaciones.len();
-        state.ga.evolucionar(operaciones.make_contiguous(), fallos);
-        let ga = state.ga.api_estado();
+        let evolucion = tokio::task::spawn_blocking(move || {
+            ga.evolucionar(&operaciones, fallos);
+            let api = ga.api_estado();
+            (ga, api)
+        })
+        .await;
+        let (ga_evolucionado, ga_api) = match evolucion {
+            Ok(resultado) => resultado,
+            Err(error) => {
+                tracing::error!(%error, "fallo la tarea de evolucion del GA");
+                return serde_json::json!({
+                    "ok": false,
+                    "error": "ga_evolution_task_failed",
+                    "fuente": fuente,
+                    "muestras": muestras,
+                    "fallos": fallos,
+                });
+            }
+        };
+        let generacion = ga_evolucionado.generacion;
+        let fitness = ga_evolucionado.mejor_fitness;
+        self.state.write().await.ga = ga_evolucionado;
         tracing::debug!(
             fuente,
             muestras,
             fallos,
-            generacion = state.ga.generacion,
-            fitness = state.ga.mejor_fitness,
+            generacion,
+            fitness,
             "ga evolucionado"
         );
         serde_json::json!({
             "ok": true,
-            "generacion": state.ga.generacion,
+            "generacion": generacion,
             "fuente": fuente,
             "muestras": muestras,
             "fallos": fallos,
-            "ga": ga,
+            "ga": ga_api,
         })
     }
 
@@ -1265,7 +1313,36 @@ impl Motor {
                 let replay =
                     operaciones_sinteticas_ga(&state.costos, 18, precio, seed, ahora, false);
                 let mut insertadas = 0usize;
-                for op in replay.operaciones {
+                for mut op in replay.operaciones {
+                    // La demo rentable no debe agotar las wallets que después
+                    // usan los escenarios forenses. Conservamos inventario
+                    // suficiente para al menos 0.025 BTC y su compra simulada.
+                    let buy_wallet = state.carteras.balance(&op.compra_en);
+                    let sell_wallet = state.carteras.balance(&op.venta_en);
+                    let btc_reservado_demo = 0.05;
+                    let usd_reservado_demo = op.precio_compra * btc_reservado_demo * 1.02;
+                    let capacidad_btc = (sell_wallet.btc - btc_reservado_demo).max(0.0);
+                    let capacidad_usd = ((buy_wallet.usd - usd_reservado_demo).max(0.0)
+                        / (op.precio_compra * 1.02).max(f64::EPSILON))
+                    .max(0.0);
+                    let cantidad_original = op.cantidad_btc;
+                    let cantidad_ajustada = cantidad_original.min(capacidad_btc.min(capacidad_usd));
+                    if cantidad_ajustada <= 0.0 {
+                        continue;
+                    }
+                    if cantidad_ajustada < cantidad_original {
+                        let factor = cantidad_ajustada / cantidad_original;
+                        op.cantidad_btc = cantidad_ajustada;
+                        op.utilidad_usd *= factor;
+                        op.utilidad_esperada_usd *= factor;
+                        op.costos.fee_compra_usd *= factor;
+                        op.costos.fee_venta_usd *= factor;
+                        op.costos.deslizamiento_usd *= factor;
+                        op.costos.retiro_amort_usd *= factor;
+                        op.costos.latencia_riesgo_usd *= factor;
+                        op.costos.seleccion_adversa_usd *= factor;
+                        op.costos.total_usd *= factor;
+                    }
                     let Ok(report) = simular_ejecucion_dos_piernas(
                         &state,
                         &op,
@@ -1315,9 +1392,14 @@ impl Motor {
                 state.trazas_ejecucion.truncate(160);
                 truncar_primeros(&mut state.serie_pnl, 240);
 
-                let mut operaciones = state.operaciones.clone();
-                let fallos = self.ops_fallidas.load(Ordering::SeqCst) as usize;
-                state.ga.evolucionar(operaciones.make_contiguous(), fallos);
+                let ga_evolucionada = if let Ok(_ga_guard) = self.ga_evolucion_en_curso.try_lock() {
+                    let mut operaciones = state.operaciones.clone();
+                    let fallos = self.ops_fallidas.load(Ordering::SeqCst) as usize;
+                    state.ga.evolucionar(operaciones.make_contiguous(), fallos);
+                    true
+                } else {
+                    false
+                };
                 tracing::debug!(
                     operaciones_insertadas = insertadas,
                     generacion = state.ga.generacion,
@@ -1327,7 +1409,11 @@ impl Motor {
                 insertar_evento_sistema(
                     &mut state,
                     "demo_rentable",
-                    "demo: se inyectaron operaciones rentables y se entrenó el GA con ese historial",
+                    if ga_evolucionada {
+                        "demo: se inyectaron operaciones rentables y se entrenó el GA con ese historial"
+                    } else {
+                        "demo: se inyectaron operaciones rentables; otra evolución GA seguía en curso"
+                    },
                     "normal",
                     ahora,
                 );
@@ -1339,6 +1425,7 @@ impl Motor {
                     "modo": "instantaneo",
                     "operacionesInsertadas": insertadas,
                     "generacionGa": state.ga.generacion,
+                    "gaEvolucionada": ga_evolucionada,
                 })
             }
         }
@@ -1488,9 +1575,19 @@ impl Motor {
         );
 
         let sandbox = Motor::new(costos, 250_000.0, 2.5, par_base, pares_extra, None);
+        // El motor live analiza por intervalos, no después de cada mensaje del
+        // WebSocket. Repetir el scan completo por cada tick vuelve cuadrática la
+        // ventana de volatilidad y hace que una ráfaga corta de mercado parezca
+        // congelar el endpoint. El sandbox conserva e ingiere todos los ticks,
+        // pero ejecuta decisiones sobre un reloj periódico y determinista.
+        const INTERVALO_ANALISIS_REPLAY_MS: i64 = 70;
+        const TICKS_ANTES_DE_CEDER: usize = 256;
+        let total_datos = datos.len();
         let mut procesados = 0;
+        let mut ciclos_analisis = 0;
         let mut reloj_anterior: Option<DateTime<Utc>> = None;
-        for cot in datos {
+        let mut ultimo_analisis: Option<DateTime<Utc>> = None;
+        for (indice, cot) in datos.into_iter().enumerate() {
             let reloj_capturado = cot.recibida_en;
             let reloj = reloj_anterior.map_or(reloj_capturado, |anterior| {
                 if reloj_capturado > anterior {
@@ -1500,9 +1597,20 @@ impl Motor {
                 }
             });
             sandbox.recibir_cotizacion_en(cot, reloj, false).await;
-            sandbox.analizar(reloj).await;
+            let es_ultimo = indice + 1 == total_datos;
+            let toca_analizar = ultimo_analisis.is_none_or(|ultimo| {
+                (reloj - ultimo).num_milliseconds() >= INTERVALO_ANALISIS_REPLAY_MS
+            });
+            if toca_analizar || es_ultimo {
+                sandbox.analizar(reloj).await;
+                ultimo_analisis = Some(reloj);
+                ciclos_analisis += 1;
+            }
             reloj_anterior = Some(reloj);
             procesados += 1;
+            if procesados % TICKS_ANTES_DE_CEDER == 0 {
+                tokio::task::yield_now().await;
+            }
         }
         let resultado = sandbox.estado().await;
         serde_json::json!({
@@ -1514,6 +1622,8 @@ impl Motor {
             "reloj": "timestamps_capturados_monotonizados",
             "adversidadAleatoria": false,
             "ticksProcesados": procesados,
+            "ciclosAnalisis": ciclos_analisis,
+            "intervaloAnalisisMs": INTERVALO_ANALISIS_REPLAY_MS,
             "operaciones": resultado.operaciones.len(),
             "pnlUsd": resultado.metricas.utilidad_acumulada_usd,
             "oportunidades": resultado.oportunidades.len(),
@@ -4010,6 +4120,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn evolucion_ga_respeta_ventana_solicitada_con_historial_real() {
+        let config = cfg_test();
+        let replay = operaciones_sinteticas_ga(&config, 40, 95_000.0, 17, Utc::now(), true);
+        let motor = Motor::new(config, 250_000.0, 2.5, "BTC/USD".to_string(), vec![], None);
+        motor.state.write().await.operaciones = replay.operaciones.into();
+
+        let resultado = motor.evolucionar_ga(false, 12).await;
+
+        assert_eq!(
+            resultado.get("ok").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            resultado.get("fuente").and_then(serde_json::Value::as_str),
+            Some("historial_real")
+        );
+        assert_eq!(
+            resultado
+                .get("muestras")
+                .and_then(serde_json::Value::as_u64),
+            Some(12)
+        );
+        assert_eq!(
+            motor.estado().await.genetico.unwrap().operaciones_evaluadas,
+            12
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn evolucion_ga_replay_96_termina_antes_del_timeout_http() {
+        let motor = Motor::new(
+            cfg_test(),
+            250_000.0,
+            2.5,
+            "BTC/USD".to_string(),
+            vec![],
+            None,
+        );
+
+        let resultado =
+            tokio::time::timeout(Duration::from_secs(5), motor.evolucionar_ga(true, 96))
+                .await
+                .expect("la evolución de jurado debe caber holgadamente en el timeout HTTP");
+
+        assert_eq!(resultado["ok"], true);
+        assert_eq!(resultado["muestras"], 96);
+    }
+
+    #[tokio::test]
+    async fn evoluciones_ga_concurrentes_no_pierden_generaciones() {
+        let motor = Arc::new(Motor::new(
+            cfg_test(),
+            250_000.0,
+            2.5,
+            "BTC/USD".to_string(),
+            vec![],
+            None,
+        ));
+
+        let (primera, segunda) = tokio::join!(
+            motor.evolucionar_ga(true, 12),
+            motor.evolucionar_ga(true, 12)
+        );
+
+        assert_eq!(primera["ok"], true);
+        assert_eq!(segunda["ok"], true);
+        assert_eq!(motor.estado().await.genetico.unwrap().generacion, 2);
+    }
+
+    #[tokio::test]
+    async fn evolucion_ga_automatica_ocurre_en_el_ciclo_500_sin_requerir_trade_nuevo() {
+        let config = cfg_test();
+        let replay = operaciones_sinteticas_ga(&config, 12, 95_000.0, 23, Utc::now(), true);
+        let motor = Motor::new(config, 250_000.0, 2.5, "BTC/USD".to_string(), vec![], None);
+        {
+            let mut state = motor.state.write().await;
+            state.operaciones = replay.operaciones.into();
+            state.ciclos = 499;
+        }
+        let ahora = Utc::now();
+        motor
+            .recibir_cotizacion_en(cot("A", 100.0, 101.0, 1.0, 1.0), ahora, false)
+            .await;
+
+        motor.analizar(ahora).await;
+
+        assert_eq!(motor.estado().await.genetico.unwrap().generacion, 1);
+    }
+
+    #[tokio::test]
     async fn recorrido_jurado_funciona_con_solo_dos_exchanges_habilitados() {
         let mut config = cfg_test();
         config
@@ -4338,6 +4538,34 @@ mod tests {
             antes.metricas.utilidad_acumulada_usd,
             despues.metricas.utilidad_acumulada_usd
         );
+    }
+
+    #[tokio::test]
+    async fn replay_de_alta_frecuencia_acota_los_ciclos_de_analisis() {
+        let motor = Motor::new(cfg_test(), 250_000.0, 2.5, "BTC/USD".into(), vec![], None);
+        let inicio = Utc::now();
+        motor.iniciar_captura().await;
+        for indice in 0..6_000 {
+            let exchange = if indice % 2 == 0 { "A" } else { "B" };
+            motor
+                .recibir_cotizacion_en(
+                    cot(exchange, 100.0, 101.0, 1.0, 1.0),
+                    inicio + chrono::Duration::milliseconds(indice * 4),
+                    false,
+                )
+                .await;
+        }
+        motor.detener_captura().await;
+
+        let resultado =
+            tokio::time::timeout(Duration::from_secs(5), motor.ejecutar_replay_capturado())
+                .await
+                .expect("el replay de una ráfaga corta no debe parecer congelado");
+
+        assert_eq!(resultado["ok"], true);
+        assert_eq!(resultado["ticksProcesados"], 6_000);
+        assert_eq!(resultado["intervaloAnalisisMs"], 70);
+        assert!(resultado["ciclosAnalisis"].as_u64().unwrap_or(u64::MAX) <= 350);
     }
 
     #[tokio::test]

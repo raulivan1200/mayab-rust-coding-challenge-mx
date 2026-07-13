@@ -203,10 +203,10 @@ La revision rapida y reproducible esta en [docs/EVIDENCE_MATRIX.md](docs/EVIDENC
 - **Permite activar/desactivar exchanges individualmente** desde la UI en tiempo real.
 - Permite cambiar el perfil operativo con presets: Balanceado, Agresivo, Seguro y Estrés.
 - Expone un tablero web en tiempo real con mapa de rutas, score por oportunidad, panel genético, tablas, balances, rebalanceos, timeline operativo, modo demo/live/rest, backtest y gráficas.
-- Expone `/api/preflight` para verificar si la demo está operable antes de presentarla: feeds frescos, riesgo, GA, estáticos y exportaciones.
+- Expone `/api/preflight` como gate 12/12 de operación, evidencia, conciliación y persistencia.
 - Expone un snapshot compacto para agentes y scripts en `/api/resumen-llm`, incluyendo decisión actual, mejor ruta, GA, riesgo, PnL y últimos eventos.
 - Expone `/api/paquete-evaluacion` como evidencia autocontenida para jueces: score por criterio, guion de demo, resumen ejecutivo, backtest y enlaces de auditoría.
-- Persiste evidencia en SQLite local configurable con `AUDITORIA_DB_PATH`; la imagen usa `/data/mayab-auditoria.sqlite`. `STORAGE_MODE` declara si ese directorio está respaldado por almacenamiento persistente.
+- Persiste evidencia en SQLite para desarrollo local y en TimescaleDB durable para producción.
 
 ## Tecnologías utilizadas
 
@@ -216,6 +216,7 @@ La revision rapida y reproducible esta en [docs/EVIDENCE_MATRIX.md](docs/EVIDENC
 - tokio-tungstenite para conexiones WebSocket con exchanges
 - rust_decimal para aritmética financiera interna
 - SQLite/rusqlite para auditoría durable local
+- PostgreSQL/TimescaleDB con TLS para auditoría durable de producción
 - Serde/serde_json para normalización de payloads y contratos JSON
 - HTML, CSS y JavaScript sin framework ni paso de compilación
 - Canvas 2D para gráficas y mapa de arbitraje
@@ -741,7 +742,7 @@ El endpoint devuelve:
 - `mejorRuta`: ruta con mayor diferencial neto y razón de ejecución o descarte.
 - `ga`: generación, fitness, diversidad y parámetros optimizados.
 - `mlEdge`: EV, confianza, survival probability, fill probability, adverse selection y contribuciones por feature.
-- `persistencia`: backend SQLite, ruta y conteos de operaciones, oportunidades, eventos, auditorías y rebalanceos guardados.
+- `persistencia`: backend efectivo, durabilidad, ruta redactada y conteos de operaciones, ejecuciones, oportunidades, eventos, auditorías y rebalanceos guardados.
 
 ### Bridge MCP-lite para agentes
 
@@ -872,7 +873,7 @@ El motor no asume fills perfectos. Cada ejecución puede atravesar escenarios ad
 
 El dashboard muestra la bitácora de eventos de ejecución y rebalanceos para auditar la respuesta del sistema.
 
-Además, `auditoriaDecisiones` en `/api/estado` registra el score, `decisionCode` y los motivos de cada ruta reciente. Esto permite explicar si una operación no ocurrió por costos, latencia, balance, cooldown o umbral configurado sin parsear texto libre. `/api/resumen-llm` expone el mismo inspector compacto en `decisionInspector` para revisores automáticos. La misma evidencia se persiste en SQLite junto con operaciones, oportunidades, eventos y rebalanceos para auditoría local y revisión posterior.
+Además, `auditoriaDecisiones` en `/api/estado` registra el score, `decisionCode` y los motivos de cada ruta reciente. Esto permite explicar si una operación no ocurrió por costos, latencia, balance, cooldown o umbral configurado sin parsear texto libre. `/api/resumen-llm` expone el mismo inspector compacto en `decisionInspector` para revisores automáticos. La misma evidencia se persiste en el backend seleccionado junto con operaciones, ejecuciones de dos piernas, oportunidades, eventos y rebalanceos.
 
 ## Algoritmo Genético
 

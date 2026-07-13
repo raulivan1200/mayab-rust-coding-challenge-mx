@@ -148,7 +148,9 @@ jobs:
       vars.GCP_PROJECT_ID != '' &&
       vars.WIF_PROVIDER != '' &&
       vars.WIF_SERVICE_ACCOUNT != '' &&
-      vars.GAR_REPOSITORY != ''
+      vars.GAR_REPOSITORY != '' &&
+      vars.ADMIN_TOKEN_SECRET != '' &&
+      vars.DATABASE_URL_SECRET != ''
     needs: [ci, container]
     runs-on: ubuntu-latest
     timeout-minutes: 30

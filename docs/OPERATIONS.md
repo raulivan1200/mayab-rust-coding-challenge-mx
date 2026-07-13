@@ -35,9 +35,9 @@ Histograms use bounded stage names and millisecond buckets: 0.1, 0.5, 1, 2.5, 5,
 1. Check `/healthz`, then `/readyz` and `/operator`.
 2. Confirm feed count, quote freshness, circuit breaker and risk state.
 3. Inspect error rate and p95 stage latency. A healthy process with zero feeds is not ready.
-4. Export `/api/export/json` before restarting if ephemeral audit evidence matters.
+4. Verify `persistencia.storagePersistent=true`; export `/api/export/json` before restarting local ephemeral instances.
 5. Restart only after capturing logs and state; never interpret a reset metric as recovery proof.
 
 ## Deploy and rollback
 
-Deploy with `./scripts/deploy-cloud-run.sh` using an immutable image. Smoke `/healthz`, `/api/preflight`, `/api/resumen-llm`, `/api/ga/estado`, `/operator`, and the dashboard. Roll back by deploying the previous immutable image digest, then repeat the smoke. Releases are built by `.github/workflows/release.yml` from a `v*` tag.
+Initialize `scripts/timescaledb/schema.sql`, configure `ADMIN_TOKEN_SECRET` and `DATABASE_URL_SECRET`, then deploy with `./scripts/deploy-cloud-run.sh` using an immutable image. The smoke requires the TimescaleDB backend and durable storage. Roll back by deploying the previous immutable image digest, then repeat the smoke. Releases are built by `.github/workflows/release.yml` from a `v*` tag.

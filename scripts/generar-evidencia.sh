@@ -25,13 +25,16 @@ echo "[OK] Benchmark de latencias guardado."
 
 # 5. Evidencia experimental separada por metodología.
 curl -fsS "$BASE_URL/api/backtest" -o "$OUT_DIR/backtest.json"
+curl -fsS "$BASE_URL/api/version" -o "$OUT_DIR/version.json"
 curl -fsS "$BASE_URL/api/ga/sensibilidad" -o "$OUT_DIR/ga-sensibilidad.json"
 curl -fsS "$BASE_URL/api/research/bootstrap" -o "$OUT_DIR/bootstrap.json"
 curl -fsS "$BASE_URL/api/research/walk-forward" -o "$OUT_DIR/walk-forward.json"
+curl -fsS "$BASE_URL/api/research/economics" -o "$OUT_DIR/economics.json"
 curl -fsS "$BASE_URL/api/research/execution-matrix" -o "$OUT_DIR/execution-matrix.json"
+curl -fsS "$BASE_URL/api/research/ledger-audit" -o "$OUT_DIR/ledger-audit.json"
 curl -fsS "$BASE_URL/api/research/microstructure" -o "$OUT_DIR/microestructura.json"
 curl -fsS "$BASE_URL/api/preflight" -o "$OUT_DIR/preflight.json"
-echo "[OK] Backtest, holdout, bootstrap, sensibilidad y preflight guardados."
+echo "[OK] Proveniencia, economía, ejecución, ledger, holdout y preflight guardados."
 
 # 6. Generar un manifiesto de procedencia. Los resultados conservan su
 # clasificación de origen; este script no convierte replay/demo en datos reales.

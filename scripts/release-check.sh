@@ -118,8 +118,11 @@ ok = (
     and jurado.get("nombre") == "Mayab Jury Mode"
     and jury_state.get("status") == "ready"
     and readiness.get("status") == "ready"
-    and len(checks) >= 9
+    and readiness.get("passed") == 12
+    and readiness.get("total") == 12
+    and len(checks) == 12
     and all(check.get("ok") is True for check in checks)
+    and (((readiness.get("twoLegEvidence") or {}).get("invariants") or {}).get("allPassed") is True)
     and rubric_contract_ok
     and metrics.get("operaciones", 0) > 0
     and metrics.get("pnlUsd", 0) > 0

@@ -3555,33 +3555,9 @@ h2 {
   padding: 12px 0;
 }
 
-/* Minimal motion and status treatment. */
-.tab-content.activo {
-  animation: pageIn 360ms ease both;
-}
-
-.barra-superior,
-.llm-strip,
-.metricas article,
-.panel,
-.ga-panel {
-  animation: surfaceIn 420ms ease both;
-}
-
-.metricas article:nth-child(2),
-.panel:nth-of-type(2) {
-  animation-delay: 45ms;
-}
-
-.metricas article:nth-child(3),
-.panel:nth-of-type(3) {
-  animation-delay: 90ms;
-}
-
-.metricas article:nth-child(4),
-.panel:nth-of-type(4) {
-  animation-delay: 135ms;
-}
+/* Minimal motion and status treatment.
+   La entrada visual vive en .reveal-card: al conservar is-visible tras el
+   primer reveal, cambiar de tab no vuelve a ocultar superficies ya vistas. */
 
 .llm-lista li {
   animation: none;
@@ -3787,26 +3763,6 @@ h2 {
 .pulse-verde,
 .pulse-rojo {
   animation-duration: 700ms;
-}
-
-@keyframes surfaceIn {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes pageIn {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
 }
 
 @keyframes listIn {
@@ -6383,28 +6339,6 @@ body::after {
 
 
 
-@keyframes aparecer {
-  0% { opacity: 0; transform: translateY(20px); }
-  100% { opacity: 1; transform: translateY(0); }
-}
-
-.panel, .ga-panel {
-  animation: aparecer 0.6s cubic-bezier(0.16, 1, 0.3, 1) backwards;
-}
-
-.panel:nth-child(1), .ga-panel:nth-child(1) { animation-delay: 0.05s; }
-.panel:nth-child(2), .ga-panel:nth-child(2) { animation-delay: 0.1s; }
-.panel:nth-child(3), .ga-panel:nth-child(3) { animation-delay: 0.15s; }
-.panel:nth-child(4), .ga-panel:nth-child(4) { animation-delay: 0.2s; }
-.panel:nth-child(5), .ga-panel:nth-child(5) { animation-delay: 0.25s; }
-.panel:nth-child(6), .ga-panel:nth-child(6) { animation-delay: 0.3s; }
-.panel:nth-child(7), .ga-panel:nth-child(7) { animation-delay: 0.35s; }
-.panel:nth-child(8), .ga-panel:nth-child(8) { animation-delay: 0.4s; }
-.panel:nth-child(9), .ga-panel:nth-child(9) { animation-delay: 0.45s; }
-.panel:nth-child(10), .ga-panel:nth-child(10) { animation-delay: 0.5s; }
-.panel:nth-child(11), .ga-panel:nth-child(11) { animation-delay: 0.55s; }
-.panel:nth-child(12), .ga-panel:nth-child(12) { animation-delay: 0.6s; }
-
 /* --- Micro-interacciones (Hovers ligeros) --- */
 .llm-lista li,
 .estado-live,
@@ -8712,6 +8646,22 @@ a,
   .btn-cerrar-notif {
     background-image: none;
   }
+}
+
+/* Los controles no saltan, escalan ni cambian sombra: el único feedback de
+   hover por defecto es el relleno vertical definido arriba. */
+:is(
+  button:not(.btn-cerrar-notif, .dictionary-close),
+  .btn-link,
+  .tab-btn,
+  .btn-primario,
+  .btn-secundario,
+  .preset-btn,
+  .switch-btn,
+  .tema-toggle
+) {
+  transform: none !important;
+  box-shadow: none !important;
 }
 
 /* Mercado: tabla de latencias legible, sin columnas que "sangren" entre sí. */

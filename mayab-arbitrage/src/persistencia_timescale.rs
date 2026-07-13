@@ -11,7 +11,8 @@ use anyhow::Context;
 use serde_json::json;
 use std::{
     future::Future,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::Mutex;
 use tokio_postgres::{config::SslMode, Client, Config as PgConfig, NoTls, Row};
@@ -32,6 +33,8 @@ pub struct TimescaleDbAuditoria {
     eventos: AtomicUsize,
     rebalanceos: AtomicUsize,
     ejecuciones: AtomicUsize,
+    health_ok: AtomicBool,
+    health_checked_at_ms: AtomicI64,
 }
 
 impl TimescaleDbAuditoria {
@@ -91,6 +94,8 @@ impl TimescaleDbAuditoria {
             eventos,
             rebalanceos,
             ejecuciones,
+            health_ok: AtomicBool::new(true),
+            health_checked_at_ms: AtomicI64::new(epoch_millis()),
         })
     }
 
@@ -101,6 +106,14 @@ impl TimescaleDbAuditoria {
             self.runtime.block_on(future)
         }
     }
+}
+
+fn epoch_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64
 }
 
 async fn contar_tabla(c: &Client, tabla: &str) -> anyhow::Result<AtomicUsize> {
@@ -279,11 +292,21 @@ impl Auditoria for TimescaleDbAuditoria {
     }
 
     fn estado(&self) -> EstadoPersistencia {
-        let health = self.block_on(async {
-            let c = self.cliente.lock().await;
-            c.simple_query("SELECT 1").await
-        });
-        let activa = health.is_ok();
+        let now = epoch_millis();
+        let last = self.health_checked_at_ms.load(Ordering::Relaxed);
+        if now.saturating_sub(last) >= 5_000
+            && self
+                .health_checked_at_ms
+                .compare_exchange(last, now, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+        {
+            let health_ok = self.block_on(async {
+                let c = self.cliente.lock().await;
+                c.simple_query("SELECT 1").await.is_ok()
+            });
+            self.health_ok.store(health_ok, Ordering::Release);
+        }
+        let activa = self.health_ok.load(Ordering::Acquire);
         EstadoPersistencia {
             activa,
             backend: "timescaledb".to_string(),
@@ -295,9 +318,7 @@ impl Auditoria for TimescaleDbAuditoria {
             rebalanceos: self.rebalanceos.load(Ordering::Relaxed),
             ejecuciones: self.ejecuciones.load(Ordering::Relaxed),
             db_bytes: 0,
-            error: health
-                .err()
-                .map(|error| format!("TimescaleDB no saludable: {error}")),
+            error: (!activa).then(|| "TimescaleDB no saludable".to_string()),
             storage_mode: "timescaledb".to_string(),
             storage_status: if activa { "persistent" } else { "unavailable" }.to_string(),
             storage_persistent: activa,
