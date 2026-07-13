@@ -33,7 +33,7 @@ reproducible y separa claramente lo implementado de lo que sigue fuera de alcanc
 ```bash
 cargo fmt -- --check
 cargo test --workspace
-./scripts/smoke-demo.sh http://127.0.0.1:8080
+BASE_URL=http://127.0.0.1:8080 ./scripts/smoke-demo.sh
 curl -sS http://127.0.0.1:8080/metrics | grep mayab_feed_
 curl -sS http://127.0.0.1:8080/api/preflight
 curl -sS http://127.0.0.1:8080/api/resumen-llm

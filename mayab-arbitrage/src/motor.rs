@@ -44,8 +44,6 @@ pub struct Motor {
     ga_evolucion_en_curso: Mutex<()>,
 }
 
-const JURY_REFERENCE_PRICE_USD: f64 = 50_000.0;
-
 struct State {
     costos: MapaCostos,
     inicio: DateTime<Utc>,
@@ -239,15 +237,16 @@ impl Motor {
         self.carril_simulacion.clone().lock_owned().await
     }
 
-    /// Inicia el ciclo periódico de análisis.
-    pub async fn start(self: Arc<Self>, intervalo: Duration) {
+    /// Inicia el ciclo periódico de análisis y devuelve su tarea para que el
+    /// proceso anfitrión pueda detener al productor antes de drenar auditoría.
+    pub fn start(self: Arc<Self>, intervalo: Duration) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(intervalo);
             loop {
                 ticker.tick().await;
                 self.analizar(Utc::now()).await;
             }
-        });
+        })
     }
 
     /// Recibe una cotización normalizada desde un adaptador de mercado.
@@ -1659,13 +1658,14 @@ impl Motor {
         })
     }
 
-    /// Devuelve un análisis de sensibilidad GA sobre un holdout común.
+    /// Devuelve sensibilidad GA con entrenamiento y holdout separados.
     pub async fn ga_ablacion(&self) -> serde_json::Value {
         use crate::ga::ConfigGa;
         let state = self.state.read().await;
         let costos = state.costos.clone();
         let precio_ref = precio_referencia(state.cotizaciones.values());
         let cfg = state.ga.config;
+        drop(state);
 
         // Configuraciones reproducibles a comparar. Los nombres describen
         // exactamente lo que cambia; no se presentan como ablaciones de
@@ -1722,19 +1722,43 @@ impl Motor {
             ("Configuración activa", cfg),
         ];
 
+        // Todas las configuraciones reciben exactamente los mismos pares. El
+        // genoma se ajusta sólo con la semilla train; la semilla holdout genera
+        // un corpus distinto y se consulta una sola vez después de congelar la
+        // estrategia de esa corrida.
+        let semillas_entrenamiento: Vec<u64> = (101..=124).collect();
         let semillas_holdout: Vec<u64> = (401..=424).collect();
+        let reloj_fijo = DateTime::<Utc>::from_timestamp(1_700_000_000, 0)
+            .expect("timestamp reproducible válido");
         let mut resultados = Vec::new();
 
         for (nombre, ga_cfg) in estrategias {
             let mut pnls = Vec::new();
-            for &s in &semillas_holdout {
-                let replay =
-                    operaciones_sinteticas_ga(&costos, 24, precio_ref, s, Utc::now(), true);
+            let mut trades_holdout = 0usize;
+            for (&semilla_train, &semilla_holdout) in
+                semillas_entrenamiento.iter().zip(&semillas_holdout)
+            {
+                let train = operaciones_sinteticas_ga(
+                    &costos,
+                    48,
+                    precio_ref,
+                    semilla_train,
+                    reloj_fijo,
+                    true,
+                );
+                let holdout = operaciones_sinteticas_ga(
+                    &costos,
+                    48,
+                    precio_ref,
+                    semilla_holdout,
+                    reloj_fijo,
+                    true,
+                );
                 let mut ga = crate::ga::EstadoGa::default();
                 ga.config = ga_cfg;
-                ga.evolucionar(&replay.operaciones[..], replay.fallos);
+                ga.evolucionar(&train.operaciones, train.fallos);
                 let estrategia = ga.estrategia();
-                let pnl: f64 = replay
+                let seleccionadas = holdout
                     .operaciones
                     .iter()
                     .filter(|op| {
@@ -1747,12 +1771,16 @@ impl Motor {
                         capital > 0.0
                             && neto_bps >= estrategia.umbral_min_spread_bps
                             && op.latencia_max_ms <= estrategia.tolerancia_latencia_ms
-                    })
+                    });
+                let mut trades_corrida = 0usize;
+                let pnl: f64 = seleccionadas
                     .map(|op| {
+                        trades_corrida += 1;
                         let cantidad_aplicada = op.cantidad_btc.min(estrategia.max_operacion_btc);
                         op.utilidad_usd * cantidad_aplicada / op.cantidad_btc.max(0.000_000_01)
                     })
                     .sum();
+                trades_holdout += trades_corrida;
                 pnls.push(pnl);
             }
             pnls.sort_by(f64::total_cmp);
@@ -1783,18 +1811,29 @@ impl Motor {
                 "worstRunLoss": (peor_perdida * 100.0).round() / 100.0,
                 "sharpe": 0.0,
                 "runs": trades,
-                "trades": trades,
+                "trades": trades_holdout,
                 "medianaPnL": (mediana * 100.0).round() / 100.0,
                 "p05": (p05 * 100.0).round() / 100.0,
                 "p95": (p95 * 100.0).round() / 100.0,
                 "p05_p95": format!("{:.0} / {:.0}", p05, p95),
+                "config": {
+                    "tamanoPoblacion": ga_cfg.tamano_poblacion,
+                    "tasaMutacion": ga_cfg.tasa_mutacion,
+                    "tasaCruce": ga_cfg.tasa_cruce,
+                },
             }));
         }
 
         serde_json::json!({
             "tipoAnalisis": "sensibilidad_hiperparametros",
             "esAblacionOperadores": false,
-            "metodologia": "24 semillas holdout comunes; se varían población, cruce y mutación. No se afirma causalidad sobre recocido, evolución diferencial ni reinicio adaptativo",
+            "metodologia": "24 pares comunes: entrenamiento en semillas 101..124 y evaluación única en 24 semillas holdout 401..424 no vistas; se varían población, cruce y mutación. No se afirma causalidad sobre recocido, evolución diferencial ni reinicio adaptativo",
+            "sinFugaHoldout": true,
+            "seleccionAntesHoldout": true,
+            "semillasEntrenamiento": semillas_entrenamiento,
+            "semillasHoldoutNoVistas": semillas_holdout,
+            "muestrasEntrenamientoPorRun": 48,
+            "muestrasHoldoutPorRun": 48,
             "resultados": resultados
         })
     }
@@ -3552,7 +3591,7 @@ fn precio_referencia<'a>(cotizaciones: impl IntoIterator<Item = &'a Cotizacion>)
 
 fn precio_referencia_demo(state: &State) -> f64 {
     if state.corrida.modo == "demo_controlada" {
-        JURY_REFERENCE_PRICE_USD
+        crate::version::DEMO_JURY_REFERENCE_PRICE_USD
     } else {
         precio_referencia(state.cotizaciones.values())
     }
@@ -4321,6 +4360,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ciclo_periodico_devuelve_una_tarea_cancelable() {
+        let motor = Arc::new(Motor::new(
+            cfg_test(),
+            250_000.0,
+            2.5,
+            "BTC/USD".to_string(),
+            vec![],
+            None,
+        ));
+        let tarea = motor.start(Duration::from_secs(60));
+
+        tarea.abort();
+        let resultado = tokio::time::timeout(Duration::from_secs(1), tarea)
+            .await
+            .expect("la tarea cancelada debe terminar sin bloquear el shutdown");
+
+        assert!(resultado
+            .expect_err("un ciclo infinito no debe finalizar por sí solo")
+            .is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn carril_simulado_serializa_recorridos_completos() {
+        let motor = Motor::new(
+            cfg_test(),
+            250_000.0,
+            2.5,
+            "BTC/USD".to_string(),
+            vec![],
+            None,
+        );
+        let primer_recorrido = motor.bloquear_recorrido_simulado().await;
+
+        assert!(tokio::time::timeout(
+            Duration::from_millis(20),
+            motor.bloquear_recorrido_simulado()
+        )
+        .await
+        .is_err());
+
+        drop(primer_recorrido);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), motor.bloquear_recorrido_simulado())
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
     async fn reset_jurado_limpia_simulacion_y_conserva_configuracion() {
         let motor = Motor::new(
             cfg_test(),
@@ -4344,6 +4432,65 @@ mod tests {
         assert!(!estado.metricas.circuit_breaker_activo);
         assert_eq!(estado.configuracion, config_antes);
         assert_eq!(estado.eventos_ejecucion.front().unwrap().tipo, "jury_reset");
+    }
+
+    #[tokio::test]
+    async fn reset_jurado_no_libera_una_ejecucion_ajena() {
+        let motor = Motor::new(
+            cfg_test(),
+            250_000.0,
+            2.5,
+            "BTC/USD".to_string(),
+            vec![],
+            None,
+        );
+        motor.ejecucion_en_curso.store(true, Ordering::SeqCst);
+
+        motor.reiniciar_demo_jurado().await;
+
+        assert!(motor.ejecucion_en_curso.load(Ordering::SeqCst));
+        motor.ejecucion_en_curso.store(false, Ordering::SeqCst);
+    }
+
+    #[tokio::test]
+    async fn demo_rentable_falla_cerrado_si_no_hay_capacidad_en_wallets() {
+        let motor = Motor::new(
+            cfg_test(),
+            250_000.0,
+            2.5,
+            "BTC/USD".to_string(),
+            vec![],
+            None,
+        );
+        {
+            let mut state = motor.state.write().await;
+            for balance in state.carteras.balances.values_mut() {
+                balance.usd = 0.0;
+                balance.btc = 0.0;
+            }
+        }
+
+        let resultado = motor
+            .activar_escenario_demo(EscenarioDemo::MercadoRentable)
+            .await;
+        let estado = motor.estado().await;
+
+        assert_eq!(
+            resultado.get("ok").and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            resultado
+                .get("operacionesInsertadas")
+                .and_then(|value| value.as_u64()),
+            Some(0)
+        );
+        assert!(estado.operaciones.is_empty());
+        assert_eq!(estado.metricas.utilidad_acumulada_usd, 0.0);
+        assert!(estado
+            .eventos_ejecucion
+            .iter()
+            .any(|evento| { evento.tipo == "demo_rentable" && evento.severidad == "alta" }));
     }
 
     #[tokio::test]

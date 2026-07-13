@@ -31,7 +31,7 @@ jobs:
           toolchain: 1.96.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
-      - run: cargo build -p mayab-arbitrage --release --locked
+      - run: cargo build -p mayab-cli --bin mayab-arbitrage --release --locked
       - name: Package binary
         shell: bash
         run: |

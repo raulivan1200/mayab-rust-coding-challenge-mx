@@ -145,9 +145,11 @@ paths:
   /api/demo/reset:
     post:
       summary: Reinicia el estado simulado sin tumbar los feeds
+      description: Requiere token salvo cuando MAYAB_JUDGE_MODE=true, que abre únicamente este recorrido determinista.
       security:
         - AdminBearer: []
         - AdminHeader: []
+        - {}
       responses:
         '200':
           description: Simulación reiniciada
@@ -156,9 +158,11 @@ paths:
   /api/demo/final:
     post:
       summary: Prepara la corrida auditada completa
+      description: Requiere token salvo cuando MAYAB_JUDGE_MODE=true, que abre únicamente este recorrido determinista.
       security:
         - AdminBearer: []
         - AdminHeader: []
+        - {}
       responses:
         '200':
           description: GA, escenarios, conciliación, rebalanceo y preflight
@@ -167,9 +171,11 @@ paths:
   /api/demo/caos:
     post:
       summary: Ejecuta degradación, protección y recuperación simuladas
+      description: Requiere token salvo cuando MAYAB_JUDGE_MODE=true, que abre únicamente este recorrido determinista.
       security:
         - AdminBearer: []
         - AdminHeader: []
+        - {}
       responses:
         '200':
           description: Resultado y checks de la prueba de caos
@@ -183,7 +189,8 @@ paths:
           description: OK
   /api/ga/sensibilidad:
     get:
-      summary: Compara siete configuraciones GA sobre 24 semillas holdout comunes
+      summary: Compara siete configuraciones GA con train y 24 semillas holdout no vistas
+      description: Cada configuración se entrena sobre 24 semillas comunes 101..124; después se congela y evalúa una sola vez sobre los 24 holdouts pareados 401..424.
       responses:
         '200':
           description: Metodología y resultados por configuración

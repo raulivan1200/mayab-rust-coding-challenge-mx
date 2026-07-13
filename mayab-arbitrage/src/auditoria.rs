@@ -98,7 +98,6 @@ impl AuditoriaEnCola {
                         }
                         EscrituraAuditoria::Ejecucion(v) => backend_worker.registrar_ejecucion(&v),
                     };
-                    pendientes_worker.fetch_sub(1, Ordering::Relaxed);
                     if let Err(error) = resultado {
                         fallidas_worker.fetch_add(1, Ordering::Relaxed);
                         if let Ok(mut last) = ultimo_error_worker.lock() {
@@ -106,6 +105,10 @@ impl AuditoriaEnCola {
                         }
                         tracing::warn!(%error, "fallo del worker de persistencia");
                     }
+                    // Publicar la finalización sólo después de registrar el
+                    // resultado. `flush` usa este release/acquire como barrera:
+                    // nunca puede observar cero pendientes y omitir un fallo.
+                    pendientes_worker.fetch_sub(1, Ordering::Release);
                 }
             })
             .expect("no se pudo iniciar worker de persistencia");
@@ -121,7 +124,7 @@ impl AuditoriaEnCola {
     }
 
     fn encolar(&self, escritura: EscrituraAuditoria) -> Result<()> {
-        self.pendientes.fetch_add(1, Ordering::Relaxed);
+        self.pendientes.fetch_add(1, Ordering::AcqRel);
         match self.tx.try_send(escritura) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => {
@@ -346,6 +349,7 @@ mod tests {
         release(&backend);
         wait_pending(&queue, 0);
         assert_eq!(backend.writes.load(Ordering::SeqCst), 2);
+        assert!(!queue.flush(Duration::from_secs(1)));
     }
 
     #[test]
@@ -360,6 +364,7 @@ mod tests {
         assert_eq!(backend.writes.load(Ordering::SeqCst), 1);
         assert_eq!(queue.estado().queue_failed, 1);
         assert_eq!(queue.estado().storage_status, "degraded");
+        assert!(!queue.flush(Duration::from_secs(1)));
     }
 
     #[test]

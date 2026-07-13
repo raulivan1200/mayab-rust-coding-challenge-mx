@@ -40,7 +40,10 @@ use crate::{
     impacto::{LadoOrden, ModeloImpacto, OrdenImpacto},
     metricas::Metricas,
     motor::{EscenarioDemo, Motor},
-    types::{Cotizacion, EstadoPublico, ExchangeConfig, MapaCostos, NivelOrden, ReglaRebalanceo},
+    types::{
+        Cotizacion, EstadoPersistencia, EstadoPublico, ExchangeConfig, MapaCostos, NivelOrden,
+        ReglaRebalanceo,
+    },
 };
 
 #[derive(Clone)]
@@ -235,6 +238,19 @@ pub(crate) async fn healthz() -> Json<serde_json::Value> {
     }))
 }
 
+fn persistencia_saludable(persistencia: Option<&EstadoPersistencia>, production: bool) -> bool {
+    persistencia.is_some_and(|p| {
+        p.activa
+            && p.queue_dropped == 0
+            && p.queue_failed == 0
+            && !matches!(p.storage_status.as_str(), "degraded" | "unavailable")
+            && (!production
+                || (p.storage_persistent
+                    && p.backend == "timescaledb"
+                    && p.storage_mode == "timescaledb"))
+    })
+}
+
 pub(crate) async fn readyz(State(app): State<EstadoApp>) -> Response {
     let estado = match tokio::time::timeout(Duration::from_secs(2), app.motor.estado()).await {
         Ok(estado) => estado,
@@ -252,26 +268,30 @@ pub(crate) async fn readyz(State(app): State<EstadoApp>) -> Response {
     let mut checks = Vec::new();
     let mut ready = true;
 
-    let persistencia_activa = estado
-        .persistencia
-        .as_ref()
-        .map(|p| p.activa)
-        .unwrap_or(false);
-    let persistencia_durable = estado
-        .persistencia
-        .as_ref()
-        .map(|p| p.activa && p.storage_persistent)
-        .unwrap_or(false);
     let production = matches!(
         crate::config::Environment::from_env(),
         crate::config::Environment::Production
     );
-    let persistencia_ok = persistencia_activa && (!production || persistencia_durable);
+    let persistencia_ok = persistencia_saludable(estado.persistencia.as_ref(), production);
     let persistencia_error = estado.persistencia.as_ref().and_then(|p| p.error.clone());
+    let persistencia_reason = estado.persistencia.as_ref().map_or_else(
+        || "persistence not configured".to_string(),
+        |p| {
+            format!(
+                "backend={} status={} durable={} pending={} dropped={} failed={}",
+                p.backend,
+                p.storage_status,
+                p.storage_persistent,
+                p.queue_pending,
+                p.queue_dropped,
+                p.queue_failed
+            )
+        },
+    );
     checks.push(json!({
         "name": "persistence",
         "ok": persistencia_ok,
-        "reason": if persistencia_ok { "SQLite active" } else { "persistence not available" },
+        "reason": persistencia_reason,
         "detail": persistencia_error
     }));
     if !persistencia_ok {
@@ -752,7 +772,7 @@ pub(crate) async fn research_ledger_audit(State(app): State<EstadoApp>) -> Json<
         .find(|report| report.selected_recovery.is_some());
     let checks = json!({
         "operationIdsUnique": unicos == ids.len(),
-        "operationsMatchMetric": estado.operaciones.len() == estado.metricas.operaciones_totales,
+        "visibleOperationsWithinTotal": estado.operaciones.len() <= estado.metricas.operaciones_totales,
         "noRealExecution": !estado.corrida.ejecucion_real,
         "terminalReconciled": execution.is_some_and(|report| report.invariants.terminal_reconciled),
         "residualBtcZero": execution.is_some_and(|report| report.invariants.residual_within_tolerance),
@@ -781,6 +801,9 @@ pub(crate) async fn research_ledger_audit(State(app): State<EstadoApp>) -> Json<
         "checks": checks,
         "counts": {
             "operations": estado.operaciones.len(),
+            "operationsTotal": estado.metricas.operaciones_totales,
+            "retainedWindow": 80,
+            "truncated": estado.metricas.operaciones_totales > estado.operaciones.len(),
             "decisionAudits": estado.auditoria_decisiones.len(),
             "executionTransitions": estado.trazas_ejecucion.len(),
             "forensicExecutions": estado.ejecuciones_dos_piernas.len(),
@@ -1484,13 +1507,25 @@ pub async fn preparar_evidencia_jurado(motor: &Motor) -> serde_json::Value {
             == Some(12);
     let matrix_ok = execution_matrix.get("allPassed").and_then(Value::as_bool) == Some(true)
         && execution_matrix.get("passed").and_then(Value::as_u64) == Some(12);
+    let runtime_invariants_ok = riesgo_pierna
+        .pointer("/invariantes/allPassed")
+        .and_then(Value::as_bool)
+        == Some(true)
+        && riesgo_pierna.get("estadoFinal").and_then(Value::as_str) == Some("RECONCILED")
+        && riesgo_pierna
+            .get("exposicionFinalBtc")
+            .and_then(Value::as_f64)
+            .is_some_and(|residual| residual.abs() < 1e-9);
 
     let mut resultado = json!({
-        "ok": pasos_ok && preflight_ok && matrix_ok && persistencia_drenada,
+        // La receta determinista debe poder verificarse sin red. La salud de
+        // feeds públicos conserva su señal independiente en `preflightReady`.
+        "ok": pasos_ok && runtime_invariants_ok && matrix_ok && persistencia_drenada,
         "modo": "demo_final",
         "corridaLimpia": true,
         "corridaId": corrida_id,
         "persistenciaDrenada": persistencia_drenada,
+        "preflightReady": preflight_ok,
         "provenance": provenance,
         "pasos": [
             "estado simulado restablecido conservando feeds y configuración",
@@ -1513,10 +1548,14 @@ pub async fn preparar_evidencia_jurado(motor: &Motor) -> serde_json::Value {
         "preflight": preflight,
         "deterministicProof": {
             "recipeDatasetHash": estado.corrida.dataset_hash,
+            "recipeVersion": crate::version::DEMO_RECIPE_VERSION,
+            "recipeSteps": crate::version::DEMO_RECIPE_STEPS,
+            "referencePriceUsd": crate::version::DEMO_JURY_REFERENCE_PRICE_USD,
             "matrixSha256": execution_matrix.get("matrixSha256"),
             "matrixPassed": execution_matrix.get("passed"),
             "matrixTotal": execution_matrix.get("total"),
-            "allPassed": matrix_ok,
+            "runtimeInvariantsPassed": runtime_invariants_ok,
+            "allPassed": matrix_ok && runtime_invariants_ok,
             "scope": "receta sintética versionada y matriz forense pura; timestamps de la corrida sólo identifican la sesión"
         },
         "evidencia": {
@@ -3050,20 +3089,11 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
         })
         .unwrap_or(false);
     let export_ok = true;
-    let persistencia_ok = estado
-        .persistencia
-        .as_ref()
-        .map(|p| {
-            let production = matches!(
-                crate::config::Environment::from_env(),
-                crate::config::Environment::Production
-            );
-            p.activa
-                && p.queue_dropped == 0
-                && p.queue_failed == 0
-                && (!production || p.storage_persistent)
-        })
-        .unwrap_or(false);
+    let production = matches!(
+        crate::config::Environment::from_env(),
+        crate::config::Environment::Production
+    );
+    let persistencia_ok = persistencia_saludable(estado.persistencia.as_ref(), production);
     let rest_fallbacks = estado
         .cotizaciones
         .iter()

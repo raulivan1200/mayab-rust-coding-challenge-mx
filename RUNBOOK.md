@@ -19,7 +19,7 @@ export DATABASE_URL_SECRET=mayab-database-url:latest
 Inicializa una sola vez el secreto de base de datos antes del deploy:
 
 ```bash
-psql "$DATABASE_URL" -f scripts/timescaledb/schema.sql
+psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f scripts/timescaledb/schema.sql
 printf '%s' "$DATABASE_URL" | gcloud secrets versions add mayab-database-url --data-file=-
 ```
 
@@ -29,6 +29,8 @@ La conexión administrada usa TLS por defecto (`sslmode=require`). El modo
 Validación automática: `/healthz`, `/readyz`, `/api/version`, `/api/preflight`,
 `/api/resumen-llm`, el tape versionado, los exports y los estáticos del dashboard.
 En producción, preflight no queda verde si `storagePersistent` es falso.
+Cloud Run se despliega con `TRUST_PROXY_HEADERS=false`; no lo habilites sin un
+proxy o WAF que elimine encabezados de cliente y reconstruya la cadena confiable.
 
 ## Debug
 

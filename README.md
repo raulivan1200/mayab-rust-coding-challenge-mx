@@ -401,7 +401,7 @@ Con el servidor activo, el smoke de demo valida salud, preflight, GA, demo renta
 
 ```bash
 make smoke
-BASE_URL=https://tu-url-publica ./scripts/smoke-demo.sh
+BASE_URL=https://tu-url-publica ADMIN_TOKEN="$ADMIN_TOKEN" ./scripts/smoke-demo.sh
 ```
 
 Para simular la entrega completa sin depender de un servidor ya levantado:
@@ -421,12 +421,17 @@ cargo build --release
 ### Salud, readiness y límites HTTP
 
 `GET /healthz` confirma que el proceso responde. `GET /readyz` devuelve 200
-cuando SQLite está activo, el motor tiene cotizaciones, existen al menos dos feeds
-frescos y no hay circuit breaker, riesgo crítico ni ejecución en curso; si no,
-devuelve 503 con un arreglo `checks` explicativo.
+cuando el backend de auditoría seleccionado está activo, su cola no ha perdido
+escrituras, la persistencia es TimescaleDB durable en producción, el motor tiene
+cotizaciones, existen al menos dos feeds frescos y no hay circuit breaker,
+riesgo crítico ni ejecución en curso; si no, devuelve 503 con un arreglo
+`checks` explicativo.
 
 Límites configurables: `HTTP_MAX_BODY_BYTES` (1 MiB), `HTTP_TIMEOUT_SECS` (30 s),
 `HTTP_MAX_CONCURRENCY` (128), `HTTP_READ_RPM` (300) y `HTTP_MUTATION_RPM` (30).
+El deploy de Cloud Run mantiene `TRUST_PROXY_HEADERS=false`: la aplicación no
+confía en un `X-Forwarded-For` aportado por el cliente. Sólo debe activarse detrás
+de un perímetro que sanee la cadena y aplique su propio rate limit.
 API, métricas y WebSocket usan `Cache-Control: no-store`; HTML revalida y los
 assets estáticos se cachean una hora.
 
@@ -485,7 +490,7 @@ El binario rechaza valores desconocidos de `STORAGE_MODE` y, cuando
 `MAYAB_ENV=production`, no arranca con SQLite: exige `timescaledb`.
 
 ```bash
-psql "$DATABASE_URL" -f scripts/timescaledb/schema.sql
+psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f scripts/timescaledb/schema.sql
 cargo run -p mayab-cli --bin mayab-arbitrage --features timescaledb
 ```
 
@@ -545,7 +550,7 @@ IMAGE=us-central1-docker.pkg.dev/PROYECTO/REPO/IMAGEN:SHA \
 Después del deploy:
 
 ```bash
-BASE_URL=https://tu-url-publica ./scripts/smoke-demo.sh
+BASE_URL=https://tu-url-publica ADMIN_TOKEN="$ADMIN_TOKEN" ./scripts/smoke-demo.sh
 curl -sS https://tu-url-publica/api/preflight
 ```
 
@@ -570,7 +575,13 @@ CLOUD_RUN_SERVICE
 GAR_REPOSITORY
 WIF_PROVIDER
 WIF_SERVICE_ACCOUNT
+ADMIN_TOKEN_SECRET
+DATABASE_URL_SECRET
 ```
+
+`ADMIN_TOKEN_SECRET` y `DATABASE_URL_SECRET` son referencias `nombre:versión`
+de Secret Manager. El workflow lee el mismo `ADMIN_TOKEN_SECRET` desplegado para
+el smoke; no necesita duplicar el token como GitHub Actions Secret.
 
 Los pull requests nunca despliegan. La identidad federada está condicionada al
 repositorio y a `refs/heads/master`. Para revisar el último rollout:
@@ -858,7 +869,7 @@ La respuesta indica `fuente`:
 #### 4. Interfaz de Usuario y Visualización
 | Feature | Estado | Dónde se prueba | Evidencia |
 |---|---|---|---|
-| Dashboard en tiempo real | Completado | `GET /` | Mapa, oportunidades, score EV y actualización <200ms |
+| Dashboard en tiempo real | Completado | `GET /` | Mapa, oportunidades y score EV por WebSocket cada 450 ms; latencias runtime en `/api/latencias` |
 | Panel Genético y Fitness | Completado | Dashboard > Panel GA | Gráficos de convergencia, pesos y genomas |
 | Inspector de decisiones forense | Completado | Dashboard > Oportunidades | Desglose de spread bruto vs neto y costos |
 

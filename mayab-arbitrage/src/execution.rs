@@ -491,9 +491,13 @@ pub fn standard_matrix() -> Result<Vec<ExecutionReport>, ExecutionError> {
         .map(|scenario| {
             let mut request = standard_request(scenario);
             if scenario == ExecutionScenario::RehedgeCheaper {
+                request.prices.rehedge_price_usd = Decimal::new(50_050, 0);
+                request.prices.unwind_price_usd = Decimal::new(49_950, 0);
                 request.costs.rehedge_cost_usd = Decimal::ONE;
                 request.costs.unwind_cost_usd = Decimal::TEN;
             } else if scenario == ExecutionScenario::UnwindCheaper {
+                request.prices.rehedge_price_usd = Decimal::new(49_950, 0);
+                request.prices.unwind_price_usd = Decimal::new(50_050, 0);
                 request.costs.rehedge_cost_usd = Decimal::TEN;
                 request.costs.unwind_cost_usd = Decimal::ONE;
             }
@@ -899,10 +903,16 @@ impl Simulator {
     fn select_recovery(&self, residual: Decimal) -> Result<RecoveryAction, ExecutionError> {
         let mut feasible = Vec::new();
         if self.recovery_feasible(RecoveryAction::Rehedge, residual)? {
-            feasible.push((RecoveryAction::Rehedge, self.request.costs.rehedge_cost_usd));
+            feasible.push((
+                RecoveryAction::Rehedge,
+                self.recovery_cash_cost(RecoveryAction::Rehedge, residual),
+            ));
         }
         if self.recovery_feasible(RecoveryAction::Unwind, residual)? {
-            feasible.push((RecoveryAction::Unwind, self.request.costs.unwind_cost_usd));
+            feasible.push((
+                RecoveryAction::Unwind,
+                self.recovery_cash_cost(RecoveryAction::Unwind, residual),
+            ));
         }
         feasible
             .into_iter()
@@ -911,6 +921,20 @@ impl Simulator {
             .ok_or(ExecutionError::NoFeasibleRecovery {
                 residual_btc: residual,
             })
+    }
+
+    /// Impacto de caja all-in comparable entre recuperaciones factibles. Para
+    /// vender, más proceeds netos producen un costo menor (más negativo); para
+    /// comprar, gana el menor desembolso incluyendo fee.
+    fn recovery_cash_cost(&self, action: RecoveryAction, residual: Decimal) -> Decimal {
+        let quantity = residual.abs();
+        let (_, price, fee, _) = self.recovery_terms(action, residual);
+        let notional = quantity * price;
+        if residual > Decimal::ZERO {
+            -(notional - fee)
+        } else {
+            notional + fee
+        }
     }
 
     fn recovery_feasible(
@@ -1387,6 +1411,8 @@ mod tests {
     #[test]
     fn selector_elige_rehedge_y_unwind_por_costo() {
         let mut rehedge = request(ExecutionScenario::RehedgeCheaper);
+        rehedge.prices.rehedge_price_usd = Decimal::new(50_050, 0);
+        rehedge.prices.unwind_price_usd = Decimal::new(49_950, 0);
         rehedge.costs.rehedge_cost_usd = Decimal::ONE;
         rehedge.costs.unwind_cost_usd = Decimal::TEN;
         let rehedge_report = simulate(rehedge).expect("rehedge debe ser factible");
@@ -1396,6 +1422,8 @@ mod tests {
         );
 
         let mut unwind = request(ExecutionScenario::UnwindCheaper);
+        unwind.prices.rehedge_price_usd = Decimal::new(49_950, 0);
+        unwind.prices.unwind_price_usd = Decimal::new(50_050, 0);
         unwind.costs.rehedge_cost_usd = Decimal::TEN;
         unwind.costs.unwind_cost_usd = Decimal::ONE;
         let unwind_report = simulate(unwind).expect("unwind debe ser factible");

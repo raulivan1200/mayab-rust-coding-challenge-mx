@@ -1,5 +1,32 @@
 const { test, expect } = require("@playwright/test");
 
+async function mantenerWebSocketSilencioso(page) {
+  await page.routeWebSocket("**/tiempo-real", () => {});
+}
+
+function cotizacionFixture(exchange, recibidaEn, ultimoMensaje = "book_ticker") {
+  return {
+    exchange,
+    par: "BTC/USD",
+    bid: exchange === "Binance" ? 50_010 : 50_020,
+    bidCantidad: 2,
+    ask: exchange === "Binance" ? 50_012 : 50_022,
+    askCantidad: 2,
+    eventoUnixMs: Date.parse(recibidaEn),
+    recibidaEn,
+    latenciaMs: 12,
+    secuencia: 1,
+    integrityStatus: "valid",
+    resyncs: 0,
+    sequenceGaps: 0,
+    checksumFailures: 0,
+    invalidatedMs: 0,
+    timestampConfiable: true,
+    conectado: true,
+    ultimoMensaje,
+  };
+}
+
 test("dashboard carga sin errores ni logs de debug por defecto", async ({ page }) => {
   const errors = [];
   const logs = [];
@@ -12,7 +39,7 @@ test("dashboard carga sin errores ni logs de debug por defecto", async ({ page }
   await page.goto("/");
   await expect(page.locator("#pnl")).toBeVisible();
   await expect(page.locator("#balances")).toBeAttached();
-  await expect(page.locator(".landing-stack-phrase")).toContainText("Rust en el camino crítico");
+  await expect(page.locator(".landing-stack-phrase")).toContainText("Rust lleva el pulso");
   // Cierra explícitamente el stream antes de que Playwright destruya el
   // contexto; el dashboard mantiene un WebSocket vivo por diseño.
   await page.close();
@@ -153,6 +180,41 @@ test("selector superior separa mercado, replay, demo y escala del corpus", async
   await expect(page.locator("#dataLensScale")).toHaveAttribute("title", /IC Wilson 95%.*netas con liquidez/);
 });
 
+test("el badge LIVE exige al menos una cotización WebSocket fresca", async ({ page }) => {
+  await mantenerWebSocketSilencioso(page);
+  let cotizacionesFrescas = false;
+
+  await page.route("**/api/estado", async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    const generadoEn = new Date();
+    const staleMs = 1_000;
+    const recibidaEn = new Date(
+      generadoEn.getTime() - (cotizacionesFrescas ? 50 : staleMs + 5_000),
+    ).toISOString();
+    body.generadoEn = generadoEn.toISOString();
+    body.configuracion = { ...body.configuracion, staleMs };
+    body.exchangesActivos = { Binance: true, Kraken: true };
+    body.cotizaciones = [
+      cotizacionFixture("Binance", recibidaEn),
+      cotizacionFixture("Kraken", recibidaEn),
+    ];
+    body.eventosEjecucion = [];
+    body.metricas = { ...body.metricas, utilidadAcumuladaUsd: 0 };
+    await route.fulfill({ response, body: JSON.stringify(body) });
+  });
+
+  await page.goto("/");
+  await expect(page.locator("#juryProofMarket")).toContainText("0 WS frescos");
+  await expect(page.locator("#modoOperacionBadge")).toHaveText("WS STALE");
+  await expect(page.locator("#modoOperacionBadge")).not.toHaveText("LIVE WS");
+
+  cotizacionesFrescas = true;
+  await page.reload();
+  await expect(page.locator("#juryProofMarket")).toContainText("2 WS frescos");
+  await expect(page.locator("#modoOperacionBadge")).toHaveText("LIVE WS");
+});
+
 test("al cambiar entre mercado y demo los datos permanecen visibles sin reveal", async ({ page }) => {
   await page.goto("/");
   const revealCard = page.locator(".landing-grid .landing-card.reveal-card").first();
@@ -186,11 +248,12 @@ test("las seis pruebas aceptan clic en su texto y preparan evidencia dentro del 
         status: 200,
         contentType: "application/json; charset=utf-8",
         body: JSON.stringify({
+          ok: true,
           corridaId: "jury-navigation-test",
           metricas: { utilidadAcumuladaUsd: 1 },
           riesgoSegundaPierna: { estadoFinal: "conciliada" },
           mlEdge: { version: "test" },
-          preflight: { judgeReadiness: { passed: 12, total: 12 } },
+          preflight: { judgeReadiness: { status: "ready", passed: 12, total: 12 } },
         }),
       });
     }
@@ -214,6 +277,135 @@ test("las seis pruebas aceptan clic en su texto y preparan evidencia dentro del 
   await expect(page.locator("#juryMinuteStatus")).toContainText("12/12 checks verdes");
 
   await expect(page.locator('[data-jury-proof="download"]')).toHaveAttribute("download", "");
+});
+
+test("la prueba de un clic no pinta éxito con una respuesta casi lista", async ({ page }) => {
+  const respuestasInvalidas = [
+    { ok: false, status: "ready", passed: 12, total: 12 },
+    { ok: true, status: "blocked", passed: 12, total: 12 },
+    { ok: true, status: "ready", passed: 11, total: 12 },
+  ];
+  let llamada = 0;
+  await page.route("**/api/demo/final", route => {
+    const caso = respuestasInvalidas[llamada++];
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json; charset=utf-8",
+      body: JSON.stringify({
+        ok: caso.ok,
+        corridaId: `jury-blocked-${llamada}`,
+        metricas: { utilidadAcumuladaUsd: 10 },
+        riesgoSegundaPierna: { estadoFinal: "conciliada" },
+        mlEdge: { version: "test" },
+        preflight: {
+          judgeReadiness: {
+            status: caso.status,
+            passed: caso.passed,
+            total: caso.total,
+          },
+        },
+      }),
+    });
+  });
+
+  await page.goto("/");
+  const status = page.locator("#juryMinuteStatus");
+  for (const _ of respuestasInvalidas) {
+    await page.locator("#btnJuryProofHero").click();
+    await expect(status).toContainText("BLOCKED");
+    await expect(status).not.toHaveClass(/\bok\b/);
+    await expect(page.locator("#demoEstado")).toHaveText("evidencia bloqueada");
+    await expect(page.locator("#demoFeedback")).toContainText("incompleta");
+    await expect(page.locator("#demoFeedback")).toHaveAttribute("style", /var\(--rojo\)/);
+    await expect(page.locator("#btnJuryProofHero")).toBeEnabled();
+  }
+  expect(llamada).toBe(respuestasInvalidas.length);
+});
+
+test("Evidence Lab no aprueba un ledger ausente", async ({ page }) => {
+  await page.route("**/api/research/**", route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/research/ledger-audit") {
+      return route.fulfill({
+        status: 503,
+        contentType: "application/json; charset=utf-8",
+        body: JSON.stringify({ error: "ledger unavailable" }),
+      });
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json; charset=utf-8",
+      body: "{}",
+    });
+  });
+  await page.route("**/api/readiness/live", route => route.fulfill({
+    status: 200,
+    contentType: "application/json; charset=utf-8",
+    body: "{}",
+  }));
+
+  await page.goto("/");
+  await page.locator('.tab-btn[data-tab="tab-evidence"]').click();
+  await expect(page.locator("#evidenceStatus")).toContainText("9 de 10 contratos respondieron");
+  const ledger = page.locator(".evidence-lab-card").filter({
+    hasText: "CORE · Auditoría del ledger",
+  });
+  await expect(ledger.locator("strong")).toHaveText("Revisión requerida");
+  await expect(ledger.locator("code")).toHaveText("sin hash");
+  await expect(ledger).not.toContainText("Checks del snapshot pasan");
+});
+
+test("diccionario y tutorial confinan el foco y vuelven inerte el fondo", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/");
+
+  const fondo = page.locator(".pantalla");
+  const dictionary = page.locator("#dictionaryPanel");
+  const dictionaryClose = page.locator("#dictionaryClose");
+  await page.locator("#dictionaryToggle").click();
+  await expect(dictionary).toBeVisible();
+  await expect(page.locator("#dictionarySearch")).toBeFocused();
+  await expect.poll(() => fondo.evaluate(elemento => elemento.inert)).toBe(true);
+
+  const ultimoDictionary = dictionary.locator([
+    "a[href]",
+    "button:not([disabled])",
+    "input:not([disabled])",
+    "select:not([disabled])",
+    "textarea:not([disabled])",
+    "[tabindex]:not([tabindex='-1'])",
+  ].join(",")).last();
+  await ultimoDictionary.focus();
+  await page.keyboard.press("Tab");
+  await expect(dictionaryClose).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(ultimoDictionary).toBeFocused();
+  await page.evaluate(() => document.getElementById("btnJuryProofHero").focus());
+  await expect.poll(() => page.evaluate(() => (
+    document.getElementById("dictionaryPanel").contains(document.activeElement)
+  ))).toBe(true);
+
+  await page.keyboard.press("Escape");
+  await expect(dictionary).toBeHidden();
+  await expect(page.locator("#dictionaryToggle")).toBeFocused();
+  await expect.poll(() => fondo.evaluate(elemento => elemento.inert)).toBe(false);
+
+  const tutorial = page.locator("#tutorialPanel");
+  const tutorialClose = page.locator("#tutorialClose");
+  const tutorialNext = page.locator("#tutorialNext");
+  await page.locator("#tutorialToggle").click();
+  await expect(tutorial).toBeVisible();
+  await expect(tutorialNext).toBeFocused();
+  await expect.poll(() => fondo.evaluate(elemento => elemento.inert)).toBe(true);
+  await page.keyboard.press("Tab");
+  await expect(tutorialClose).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(tutorialNext).toBeFocused();
+
+  await page.keyboard.press("Escape");
+  await expect(tutorial).toBeHidden();
+  await expect(page.locator("#tutorialToggle")).toBeFocused();
+  await expect.poll(() => fondo.evaluate(elemento => elemento.inert)).toBe(false);
 });
 
 test("el header y su grid conservan su tamaño al hacer scroll", async ({ page }) => {
@@ -260,7 +452,7 @@ test("prueba completa deja preflight 12 de 12 y evidencia económica", async ({ 
   test.setTimeout(120_000);
   await page.goto("/");
   await expect(page.locator("#juryMinute li")).toHaveCount(6);
-  await expect(page.locator("#btnJuryProofHero")).toContainText("Ejecutar prueba completa");
+  await expect(page.locator("#btnJuryProofHero")).toContainText("Pon a Mayab contra las cuerdas");
   await page.locator("#btnJuryProofHero").click();
   await expect(page.locator("#juryMinuteStatus")).toContainText("12/12 checks verdes", { timeout: 120_000 });
 

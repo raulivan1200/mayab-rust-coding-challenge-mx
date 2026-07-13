@@ -52,7 +52,7 @@ make release-check
 Contra URL pública después de deploy:
 
 ```bash
-BASE_URL=https://tu-url-publica ./scripts/smoke-demo.sh
+BASE_URL=https://tu-url-publica ADMIN_TOKEN="$ADMIN_TOKEN" ./scripts/smoke-demo.sh
 ```
 
 El smoke falla si no hay salud, preflight, rúbrica oficial, GA, PnL positivo, eventos demo, rebalanceo, paquete de evaluación o persistencia activa.
@@ -99,6 +99,6 @@ Tiene un camino completo de evaluación: motor Rust, WebSocket-first con REST fa
 2. `cargo build --release --locked`
 3. `make release-check`
 4. Deploy Cloud Run.
-5. `BASE_URL=https://url-publica ./scripts/smoke-demo.sh`
+5. `BASE_URL=https://url-publica ADMIN_TOKEN="$ADMIN_TOKEN" ./scripts/smoke-demo.sh`
 6. Abrir dashboard público y revisar mobile/desktop.
 7. Actualizar envío con repo y URL pública.

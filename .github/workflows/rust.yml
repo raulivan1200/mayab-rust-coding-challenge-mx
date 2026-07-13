@@ -280,16 +280,26 @@ jobs:
       - name: Public smoke test - full demo
         env:
           BASE_URL: ${{ steps.service.outputs.url }}
-          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
-        run: ./scripts/smoke-demo.sh
+        run: |
+          set -euo pipefail
+          secret_name="${ADMIN_TOKEN_SECRET%%:*}"
+          secret_version="${ADMIN_TOKEN_SECRET#*:}"
+          if [[ "$secret_version" == "$ADMIN_TOKEN_SECRET" ]]; then secret_version=latest; fi
+          ADMIN_TOKEN="$(gcloud secrets versions access "$secret_version" --secret "$secret_name" --project "$PROJECT")"
+          test -n "$ADMIN_TOKEN"
+          export ADMIN_TOKEN
+          ./scripts/smoke-demo.sh
 
       - name: Leave jury demo ready
         if: always() && steps.service.outputs.url != ''
         env:
           BASE_URL: ${{ steps.service.outputs.url }}
-          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
         run: |
           set -euo pipefail
+          secret_name="${ADMIN_TOKEN_SECRET%%:*}"
+          secret_version="${ADMIN_TOKEN_SECRET#*:}"
+          if [[ "$secret_version" == "$ADMIN_TOKEN_SECRET" ]]; then secret_version=latest; fi
+          ADMIN_TOKEN="$(gcloud secrets versions access "$secret_version" --secret "$secret_name" --project "$PROJECT")"
           test -n "$ADMIN_TOKEN"
           curl -fsS -X POST "$BASE_URL/api/demo/final" \
             -H 'Content-Type: application/json' \

@@ -47,4 +47,4 @@ publishes atomically with a verified `SHA256SUMS` file.
 
 ## Deploy and rollback
 
-Initialize `scripts/timescaledb/schema.sql`, configure `ADMIN_TOKEN_SECRET` and `DATABASE_URL_SECRET`, then deploy with `./scripts/deploy-cloud-run.sh` using an immutable image. The smoke requires the TimescaleDB backend and durable storage. Roll back by deploying the previous immutable image digest, then repeat the smoke. CI and deploy gates live in `.github/workflows/rust.yml`.
+Initialize `scripts/timescaledb/schema.sql` with `psql -v ON_ERROR_STOP=1`, configure `ADMIN_TOKEN_SECRET` and `DATABASE_URL_SECRET`, then deploy with `./scripts/deploy-cloud-run.sh` using an immutable image. The smoke requires the TimescaleDB backend and durable storage. Cloud Run keeps `TRUST_PROXY_HEADERS=false`; enable it only behind an edge that sanitizes the forwarded chain and enforces its own rate limit. Roll back by deploying the previous immutable image digest, then repeat the smoke. CI and deploy gates live in `.github/workflows/rust.yml`.

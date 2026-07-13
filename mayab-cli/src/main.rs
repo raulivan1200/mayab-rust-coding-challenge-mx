@@ -134,7 +134,7 @@ async fn main() -> anyhow::Result<()> {
     for par in &estado.pares_activos {
         mercado::start_feeds(motor.clone(), par.clone()).await;
     }
-    motor.clone().start(cfg.intervalo_analisis).await;
+    let motor_task = motor.clone().start(cfg.intervalo_analisis);
     if cfg.demo_rentable_inicial || cfg.judge_mode {
         let evidencia = server::preparar_evidencia_jurado(&motor).await;
         tracing::info!(
@@ -159,12 +159,26 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(url = %dashboard_url, "servidor iniciado");
     abrir_dashboard_local(&dashboard_url);
 
-    axum::serve(
+    let server_result = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(esperar_apagado())
-    .await?;
+    .await;
+
+    // Axum ya dejó de aceptar y terminó las solicitudes activas. Detenemos el
+    // analizador antes del flush para que no pueda encolar auditoría nueva entre
+    // la confirmación de drenado y la salida del proceso.
+    motor_task.abort();
+    match motor_task.await {
+        Ok(()) => {}
+        Err(error) if error.is_cancelled() => {
+            tracing::info!("ciclo periódico del motor detenido");
+        }
+        Err(error) => {
+            tracing::warn!(%error, "el ciclo periódico del motor terminó con error");
+        }
+    }
     if let Some(cola) = persistencia_cola {
         let drenada =
             tokio::task::spawn_blocking(move || cola.flush(std::time::Duration::from_secs(10)))
@@ -174,5 +188,6 @@ async fn main() -> anyhow::Result<()> {
             tracing::error!("la cola de persistencia no drenó sin pérdidas antes del shutdown");
         }
     }
+    server_result?;
     Ok(())
 }

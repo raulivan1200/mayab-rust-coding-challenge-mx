@@ -1004,10 +1004,31 @@ function renderizar(datos) {
   aplicarFiltrosTablas();
 }
 
+function coberturaMercado(datos) {
+  const exchanges = datos?.exchangesActivos || {};
+  const configurados = Object.keys(exchanges).length;
+  const activos = Object.values(exchanges).filter(Boolean).length;
+  const staleMs = Number(datos?.configuracion?.staleMs || 0);
+  const generadoMs = Date.parse(datos?.generadoEn || "");
+  const unicos = (quotes) => new Set(quotes.map((cot) => cot.exchange).filter(Boolean)).size;
+  const quotes = (datos?.cotizaciones || []).filter((cot) => exchanges[cot.exchange] !== false);
+  const esFresco = (cot) => {
+    const recibidoMs = Date.parse(cot.recibidaEn || "");
+    return cot.conectado === true && staleMs > 0 && Number.isFinite(recibidoMs)
+      && Number.isFinite(generadoMs) && Math.max(0, generadoMs - recibidoMs) <= staleMs;
+  };
+  const wsFrescos = unicos(quotes.filter((cot) => esFresco(cot) && cot.ultimoMensaje !== "rest_fallback"));
+  const restFallback = unicos(quotes.filter((cot) => esFresco(cot) && cot.ultimoMensaje === "rest_fallback"));
+  const ruteables = unicos(quotes.filter((cot) => esFresco(cot) && Number(cot.bid) > 0 && Number(cot.ask) > Number(cot.bid)));
+  return { configurados, activos, quotes: quotes.length, wsFrescos, restFallback, ruteables };
+}
+
 function actualizarModoOperacion(datos) {
   const badge = $("modoOperacionBadge");
   if (!badge) return;
-  const usaFallback = (datos.cotizaciones || []).some((c) => c.ultimoMensaje === "rest_fallback");
+  const cobertura = coberturaMercado(datos);
+  const usaFallback = cobertura.restFallback > 0;
+  const usaWsFresco = cobertura.wsFrescos > 0;
   const ahora = Date.now();
   const eventos = datos.eventosEjecucion || [];
   const demoActivo = eventos.some((e) => {
@@ -1027,14 +1048,23 @@ function actualizarModoOperacion(datos) {
   } else if (demoActivo && usaFallback) {
     badge.textContent = "DEMO + REST";
     badge.classList.add("fallback");
-  } else if (demoActivo) {
+  } else if (demoActivo && usaWsFresco) {
     badge.textContent = "DEMO + LIVE";
+    badge.classList.add("demo");
+  } else if (demoActivo) {
+    badge.textContent = "DEMO · SIN FEEDS";
     badge.classList.add("demo");
   } else if (usaFallback) {
     badge.textContent = "REST FALLBACK";
     badge.classList.add("fallback");
-  } else {
+  } else if (usaWsFresco) {
     badge.textContent = "LIVE WS";
+  } else if (cobertura.quotes > 0) {
+    badge.textContent = "WS STALE";
+    badge.classList.add("fallback");
+  } else {
+    badge.textContent = "SIN FEEDS";
+    badge.classList.add("fallback");
   }
   
   const conservadorBadge = $("modoConservadorBadge");
@@ -1048,21 +1078,9 @@ function actualizarModoOperacion(datos) {
 }
 
 function renderProvenance(datos) {
-  const exchanges = datos.exchangesActivos || {};
-  const configurados = Object.keys(exchanges).length;
-  const activos = Object.values(exchanges).filter(Boolean).length;
-  const staleMs = Number(datos.configuracion?.staleMs || 0);
-  const generadoMs = Date.parse(datos.generadoEn || "");
-  const unicos = (quotes) => new Set(quotes.map((cot) => cot.exchange).filter(Boolean)).size;
-  const quotes = (datos.cotizaciones || []).filter((cot) => exchanges[cot.exchange] !== false);
-  const esFresco = (cot) => {
-    const recibidoMs = Date.parse(cot.recibidaEn || "");
-    return cot.conectado === true && Number.isFinite(recibidoMs) && Number.isFinite(generadoMs)
-      && Math.max(0, generadoMs - recibidoMs) <= staleMs;
-  };
-  const frescos = unicos(quotes.filter((cot) => esFresco(cot) && cot.ultimoMensaje !== "rest_fallback"));
-  const restFallback = unicos(quotes.filter((cot) => esFresco(cot) && cot.ultimoMensaje === "rest_fallback"));
-  const ruteables = unicos(quotes.filter((cot) => esFresco(cot) && Number(cot.bid) > 0 && Number(cot.ask) > Number(cot.bid)));
+  const {
+    configurados, activos, wsFrescos: frescos, restFallback, ruteables,
+  } = coberturaMercado(datos);
   const rutas = Math.max(0, ruteables * Math.max(0, ruteables - 1));
   const textoDin = `${configurados} adaptadores · ${activos} habilitados · ${frescos} WS frescos · ${restFallback} REST · ${ruteables} ruteables`;
   
@@ -1078,8 +1096,11 @@ function renderProvenance(datos) {
   const inicio = corrida.iniciadaEn ? new Date(corrida.iniciadaEn).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—";
   setText("provenanceRunMeta", `${corrida.fuentePnl || "simulación"} · ${inicio} · real=${corrida.ejecucionReal ? "sí" : "no"}`);
 
-  const esDemoRentable = (datos.eventosEjecucion || []).some((e) => String(e.tipo || "") === "demo_rentable");
-  setText("provenanceResultTag", esDemoRentable ? "Synthetic demo result" : "Real-market paper result");
+  const fuentePnl = String(corrida.fuentePnl || "").toLowerCase();
+  const esSintetica = String(corrida.modo || "").includes("demo")
+    || fuentePnl.includes("demo")
+    || (datos.eventosEjecucion || []).some((e) => String(e.tipo || "").startsWith("demo"));
+  setText("provenanceResultTag", esSintetica ? "Synthetic paper result" : "Live-market paper result");
   const reconciliada = (datos.trazasEjecucion || []).find((trace) =>
     ["RECONCILED", "RECONCILED_LOSS"].includes(String(trace.estado || ""))
       && Math.abs(Number(trace.exposicionBtc || 0)) <= 1e-8,
@@ -1609,6 +1630,7 @@ async function ejecutarDemoFinal() {
   const textoOriginal = btn?.textContent || "Cargar demo ganadora";
   const textoTopOriginal = btnTop?.textContent || "Provocar recorrido auditado";
   const textoHeroOriginal = btnHero?.textContent || "Pon a Mayab contra las cuerdas";
+  minuteStatus?.classList.remove("ok");
   if (btn) {
     btn.disabled = true;
     btn.textContent = "Cargando...";
@@ -1637,18 +1659,26 @@ async function ejecutarDemoFinal() {
       return false;
     }
     const body = await res.json();
-    if (estado) estado.textContent = "evidencia lista";
+    const checks = body?.preflight?.judgeReadiness || {};
+    const lista = body?.ok === true
+      && checks.status === "ready"
+      && checks.passed === 12
+      && checks.total === 12;
+    if (estado) estado.textContent = lista ? "evidencia lista" : "evidencia bloqueada";
     const pnl = body?.metricas?.utilidadAcumuladaUsd ?? 0;
     const gen = body?.metricas ? body?.ga?.generacion : null;
     mostrarFeedback(
       feedback,
-      `Corrida ${body?.corridaId || "de jurado"} lista: PnL ${dinero.format(pnl)}, segunda pierna ${body?.riesgoSegundaPierna?.estadoFinal || "conciliada"}, score evolutivo ${body?.mlEdge?.version || "ok"}, GA ${gen ?? body?.mercadoRentable?.generacionGa ?? "activo"}.`,
-      true,
+      lista
+        ? `Corrida ${body?.corridaId || "de jurado"} lista: PnL ${dinero.format(pnl)}, segunda pierna ${body?.riesgoSegundaPierna?.estadoFinal || "conciliada"}, score evolutivo ${body?.mlEdge?.version || "ok"}, GA ${gen ?? body?.mercadoRentable?.generacionGa ?? "activo"}.`
+        : `Corrida ${body?.corridaId || "de jurado"} incompleta: ${checks.passed || 0}/${checks.total || 12} checks. Revisa preflight antes de presentar evidencia.`,
+      lista,
     );
     if (minuteStatus) {
-      const checks = body?.preflight?.judgeReadiness;
-      minuteStatus.textContent = `${checks?.passed || 0}/${checks?.total || 12} checks verdes · corrida ${body?.corridaId || "jury"} · evidencia SHA-256 lista para descargar.`;
-      minuteStatus.classList.add("ok");
+      minuteStatus.textContent = lista
+        ? `12/12 checks verdes · corrida ${body?.corridaId || "jury"} · evidencia SHA-256 lista para descargar.`
+        : `BLOCKED · ${checks.passed || 0}/${checks.total || 12} checks · abre preflight para ver el bloqueo exacto.`;
+      minuteStatus.classList.toggle("ok", lista);
     }
     preflightCache = body?.preflight || null;
     ultimoPreflightMs = preflightCache ? Date.now() : 0;
@@ -1659,14 +1689,18 @@ async function ejecutarDemoFinal() {
         })
         .catch(() => {});
     }
-    if ($("tab-evidence")?.classList.contains("activo")) {
+    const evidenceTab = $("tab-evidence");
+    if (evidenceTab?.classList.contains("activo") && evidenceTab.dataset.deferEvidence !== "true") {
       cargarEvidenceLab();
     }
-    return true;
+    return lista;
   } catch (e) {
     if (estado) estado.textContent = "error";
     mostrarFeedback(feedback, "Error de red al cargar la demo ganadora", false);
-    if (minuteStatus) minuteStatus.textContent = "La prueba no terminó; revisa la conexión y vuelve a intentarlo.";
+    if (minuteStatus) {
+      minuteStatus.classList.remove("ok");
+      minuteStatus.textContent = "La prueba no terminó; revisa la conexión y vuelve a intentarlo.";
+    }
     return false;
   } finally {
     if (btn) {
@@ -2340,6 +2374,10 @@ async function cargarEvidenceLab() {
     const ou = evidencia.ou?.report || {};
     const economics = evidencia.economics || {};
     const execution = evidencia.execution || {};
+    const ledgerChecks = Object.values(ledger.checks || {});
+    const ledgerOk = ledger.allPassed === true
+      && ledgerChecks.length > 0
+      && ledgerChecks.every((value) => value === true);
     const cards = [
       ["CORE · Proveniencia y hash del tape", tape
         ? `<strong>${escapeHtml(tape.provenance)}</strong><code>${escapeHtml(tape.sha256)}</code><small>${numero.format(tape.events || 0)} eventos · ${numero.format(tape.bytes || 0)} bytes</small>`
@@ -2350,7 +2388,7 @@ async function cargarEvidenceLab() {
       ["CORE · Bootstrap CI", `<strong>Δ PnL IC 95%: ${pnlCi.length === 2 ? `${dinero.format(pnlCi[0])} a ${dinero.format(pnlCi[1])}` : "no disponible"}</strong><small>${numero.format(evidencia.bootstrap?.bootstrap?.remuestras || 0)} remuestras · bloque principal ${numero.format(evidencia.bootstrap?.bootstrap?.bloquePrincipalSegundos || 0)} s</small>`, "/api/research/bootstrap"],
       ["EXPERIMENTAL · Microestructura", `<strong>${escapeHtml(micro.winnerByBrier || "sin resultado")}</strong><small>${numero.format(micro.observations || 0)} observaciones · ${escapeHtml(micro.sourceKind || "fuente desconocida")} · Brier ${formato(winnerCalibration?.brierScore || 0, 4)}</small><small>Research fuera del score core: quote age, OFI, markouts y Wilson 95%.</small>`, "/api/research/microstructure"],
       ["EXPERIMENTAL · OU fuera de muestra", `<strong>${escapeHtml(ou.decision || "sin resultado")}</strong><small>${numero.format(ou.observations || 0)} spreads · ${escapeHtml(ou.sourceKind || "fuente desconocida")} · ADF ${formato(ou.stationarity?.adfTStat || 0, 3)} · KPSS ${formato(ou.stationarity?.kpssStat || 0, 3)}</small><small>Research separado del GA y fuera del score core.</small>`, "/api/research/ou"],
-      ["CORE · Auditoría del ledger", `<strong>${Object.values(ledger.checks || {}).every(Boolean) ? "Checks del snapshot pasan" : "Revisión requerida"}</strong><code>${escapeHtml(ledger.snapshotSha256 || "sin hash")}</code><small>${numero.format(ledger.counts?.operations || 0)} operaciones · ${numero.format(ledger.counts?.decisionAudits || 0)} decisiones auditadas</small>`, "/api/research/ledger-audit"],
+      ["CORE · Auditoría del ledger", `<strong>${ledgerOk ? "Checks del snapshot pasan" : "Revisión requerida"}</strong><code>${escapeHtml(ledger.snapshotSha256 || "sin hash")}</code><small>${numero.format(ledger.counts?.operations || 0)} operaciones · ${numero.format(ledger.counts?.decisionAudits || 0)} decisiones auditadas</small>`, "/api/research/ledger-audit"],
       ["CORE · Matriz forense de ejecución", `<strong>${execution.allPassed ? `${numero.format(execution.passed || 0)}/${numero.format(execution.total || 12)} escenarios conciliados` : "Revisión requerida"}</strong><code>${escapeHtml(execution.matrixSha256 || "sin hash")}</code><small>fills parciales · timeouts · duplicados · restart · retry · re-hedge/unwind · 10 invariantes por caso</small>`, "/api/research/execution-matrix"],
       ["ALCANCE · Limitaciones conocidas", `<strong>${escapeHtml(evidencia.readiness?.status || "estado desconocido")}</strong><ul>${(evidencia.readiness?.limitations || []).map(x => `<li>${escapeHtml(x)}</li>`).join("")}</ul>`, "/api/readiness/live"],
     ];
@@ -4131,7 +4169,9 @@ document.addEventListener("DOMContentLoaded", () => {
           $("btnBacktest")?.click();
           $("btnLabSweep")?.click();
         }
-        if (targetId === "tab-evidence" && !targetContent.dataset.loaded) {
+        if (targetId === "tab-evidence"
+          && targetContent.dataset.deferEvidence !== "true"
+          && !targetContent.dataset.loaded) {
           targetContent.dataset.loaded = "true";
           cargarEvidenceLab();
         }
@@ -4186,8 +4226,16 @@ document.addEventListener("DOMContentLoaded", () => {
         requestAnimationFrame(() => irAlDashboard());
       };
       if (control.hasAttribute("data-prepare-jury") && target === "tab-evidence") {
-        prepararDemoFinal().then((lista) => {
-          if (lista) abrirTab();
+        const evidenceTab = document.getElementById(target);
+        if (evidenceTab) evidenceTab.dataset.deferEvidence = "true";
+        abrirTab();
+        prepararDemoFinal().then(() => {
+          if (!evidenceTab) return;
+          delete evidenceTab.dataset.deferEvidence;
+          if (!evidenceTab.dataset.loaded) {
+            evidenceTab.dataset.loaded = "true";
+            cargarEvidenceLab();
+          }
         });
         return;
       }
@@ -4213,6 +4261,49 @@ document.addEventListener("DOMContentLoaded", () => {
   actualizarVisibilidadNotificaciones();
 });
 
+const MODAL_FOCUSABLE = [
+  "a[href]", "button:not([disabled])", "input:not([disabled])", "select:not([disabled])",
+  "textarea:not([disabled])", "[tabindex]:not([tabindex='-1'])",
+].join(",");
+
+function activarModalAccesible(panel, backdrop) {
+  const exteriores = [...document.body.children]
+    .filter((elemento) => elemento !== panel && elemento !== backdrop && !elemento.matches("script"))
+    .map((elemento) => [elemento, elemento.inert]);
+  exteriores.forEach(([elemento]) => { elemento.inert = true; });
+
+  const enfocables = () => [...panel.querySelectorAll(MODAL_FOCUSABLE)]
+    .filter((elemento) => !elemento.hidden && elemento.getAttribute("aria-hidden") !== "true");
+  const confinarTab = (event) => {
+    if (event.key !== "Tab") return;
+    const items = enfocables();
+    if (items.length === 0) {
+      event.preventDefault();
+      panel.focus();
+      return;
+    }
+    const primero = items[0];
+    const ultimo = items[items.length - 1];
+    if (event.shiftKey && (document.activeElement === primero || !panel.contains(document.activeElement))) {
+      event.preventDefault();
+      ultimo.focus();
+    } else if (!event.shiftKey && (document.activeElement === ultimo || !panel.contains(document.activeElement))) {
+      event.preventDefault();
+      primero.focus();
+    }
+  };
+  const recuperarFoco = (event) => {
+    if (!panel.hidden && !panel.contains(event.target)) enfocables()[0]?.focus();
+  };
+  panel.addEventListener("keydown", confinarTab);
+  document.addEventListener("focusin", recuperarFoco);
+  return () => {
+    panel.removeEventListener("keydown", confinarTab);
+    document.removeEventListener("focusin", recuperarFoco);
+    exteriores.forEach(([elemento, previo]) => { elemento.inert = previo; });
+  };
+}
+
 function iniciarDiccionario() {
   const toggle = $("dictionaryToggle");
   const panel = $("dictionaryPanel");
@@ -4226,6 +4317,7 @@ function iniciarDiccionario() {
   rows.forEach((row, index) => row.style.setProperty("--dictionary-index", index));
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   let cierreTimer;
+  let desactivarModal = () => {};
 
   const cerrar = () => {
     window.clearTimeout(cierreTimer);
@@ -4233,6 +4325,8 @@ function iniciarDiccionario() {
     backdrop.classList.remove("is-open");
     document.body.classList.remove("dictionary-open");
     toggle.setAttribute("aria-expanded", "false");
+    desactivarModal();
+    desactivarModal = () => {};
     cierreTimer = window.setTimeout(() => {
       panel.hidden = true;
       backdrop.hidden = true;
@@ -4243,6 +4337,7 @@ function iniciarDiccionario() {
     window.clearTimeout(cierreTimer);
     panel.hidden = false;
     backdrop.hidden = false;
+    desactivarModal = activarModalAccesible(panel, backdrop);
     document.body.classList.add("dictionary-open");
     toggle.setAttribute("aria-expanded", "true");
     requestAnimationFrame(() => {
@@ -4292,7 +4387,7 @@ function iniciarTutorial() {
       selector: ".mercado",
       titulo: "Mercado público. Procedencia visible.",
       texto: "Los WebSocket normalizan bid, ask, profundidad, timestamp y fuente. Si entra REST, Mayab lo etiqueta.",
-      prueba: () => `${ultimoEstado?.cotizaciones?.filter((c) => c.conectado).length || 0} WebSockets frescos · ${formato(ultimoEstado?.metricas?.latenciaPromedioMs || 0, 0)} ms promedio`,
+      prueba: () => `${coberturaMercado(ultimoEstado || {}).wsFrescos} WebSockets frescos · ${formato(ultimoEstado?.metricas?.latenciaPromedioMs || 0, 0)} ms promedio`,
     },
     {
       tab: "tab-mercado",
@@ -4328,6 +4423,7 @@ function iniciarTutorial() {
   ];
   let indice = 0;
   let resaltado = null;
+  let desactivarModal = () => {};
 
   const limpiarResaltado = () => {
     resaltado?.classList.remove("tutorial-highlight");
@@ -4357,12 +4453,15 @@ function iniciarTutorial() {
     backdrop.hidden = true;
     document.body.classList.remove("tutorial-open");
     limpiarResaltado();
+    desactivarModal();
+    desactivarModal = () => {};
     trigger.focus();
   };
   const abrir = () => {
     indice = 0;
     panel.hidden = false;
     backdrop.hidden = false;
+    desactivarModal = activarModalAccesible(panel, backdrop);
     document.body.classList.add("tutorial-open");
     mostrarPaso();
     requestAnimationFrame(() => next.focus());

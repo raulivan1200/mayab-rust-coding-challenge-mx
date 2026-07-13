@@ -8,7 +8,10 @@ use tower::ServiceExt;
 
 async fn make_test_app() -> (Router, std::sync::Arc<Motor>) {
     let cfg = Config::from_env();
-    let persistencia = Persistencia::abrir(&cfg.auditoria_db_path)
+    // Cada app de integración usa su propio SQLite en memoria. Compartir la
+    // ruta por defecto entre tests paralelos contamina conteos y hace que una
+    // prueba determinista dependa del orden de ejecución.
+    let persistencia = Persistencia::abrir(":memory:")
         .ok()
         .map(std::sync::Arc::new);
     let motor = std::sync::Arc::new(Motor::new(
@@ -26,7 +29,7 @@ async fn make_test_app() -> (Router, std::sync::Arc<Motor>) {
 #[tokio::test]
 async fn integration_motor_startup_and_receives_quotes() {
     let cfg = Config::from_env();
-    let persistencia = Persistencia::abrir(&cfg.auditoria_db_path)
+    let persistencia = Persistencia::abrir(":memory:")
         .ok()
         .map(std::sync::Arc::new);
     let motor = std::sync::Arc::new(Motor::new(
@@ -159,8 +162,17 @@ async fn integration_demo_final_preserva_inventario_para_evidencia_forense() {
         .unwrap();
     let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(result["ok"], true);
+    assert_eq!(
+        result["ok"],
+        true,
+        "demo final incompleta: {}",
+        serde_json::to_string_pretty(&result).unwrap()
+    );
     assert_eq!(result["persistenciaDrenada"], true);
+    assert_eq!(
+        result["preflightReady"], false,
+        "la prueba determinista no debe inventar feeds públicos en tests"
+    );
     assert!(result["resultSha256"]
         .as_str()
         .is_some_and(|hash| hash.starts_with("sha256:")));
@@ -229,16 +241,21 @@ async fn integration_ga_sensibilidad_aplica_estrategias_y_expone_metodologia() {
         .as_str()
         .unwrap()
         .contains("24 semillas holdout"));
+    assert_eq!(json["sinFugaHoldout"], true);
+    assert_eq!(json["seleccionAntesHoldout"], true);
+    assert_eq!(json["semillasEntrenamiento"].as_array().unwrap().len(), 24);
+    assert_eq!(json["semillasHoldoutNoVistas"].as_array().unwrap().len(), 24);
     assert!(resultados.iter().all(|fila| {
         fila["modelo"].is_string()
             && fila["profitFactor"].is_number()
             && fila["winRate"].is_number()
             && fila["runs"] == 24
-            && fila["trades"] == 24
+            && fila["trades"].as_u64().is_some_and(|trades| trades > 0)
             && fila["worstRunLoss"].is_number()
             && fila["medianaPnL"].is_number()
             && fila["p05"].is_number()
             && fila["p95"].is_number()
+            && fila["config"].is_object()
     }));
 }
 

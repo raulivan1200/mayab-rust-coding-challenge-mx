@@ -7,6 +7,17 @@ use sha2::{Digest, Sha256};
 use crate::types::MapaCostos;
 
 pub const PUBLIC_SCHEMA_VERSION: &str = "mayab-public-v3";
+pub const DEMO_RECIPE_VERSION: u32 = 3;
+pub const DEMO_JURY_REFERENCE_PRICE_USD: f64 = 50_000.0;
+pub const DEMO_RECIPE_STEPS: [&str; 7] = [
+    "ga_replay_96",
+    "partial_fill",
+    "market_moved",
+    "insufficient_liquidity",
+    "second_leg_rejected_recovery",
+    "market_profitable_18",
+    "rebalance",
+];
 
 /// Identidad inmutable de la revisión compilada. Los valores se inyectan al
 /// construir la imagen; los fallbacks mantienen builds locales reproducibles.
@@ -101,18 +112,11 @@ pub fn runtime_dataset_hash() -> String {
 pub fn demo_dataset_hash() -> String {
     canonical_sha256(&serde_json::json!({
         "kind": "mayab_deterministic_jury_recipe",
-        "version": 2,
+        "version": DEMO_RECIPE_VERSION,
         "seed": 42,
         "gaReplaySeed": "generation-derived-from-zero",
-        "steps": [
-            "ga_replay_96",
-            "market_profitable_18",
-            "partial_fill",
-            "market_moved",
-            "insufficient_liquidity",
-            "second_leg_rejected_recovery",
-            "rebalance"
-        ]
+        "referencePriceUsd": DEMO_JURY_REFERENCE_PRICE_USD,
+        "steps": DEMO_RECIPE_STEPS,
     }))
 }
 

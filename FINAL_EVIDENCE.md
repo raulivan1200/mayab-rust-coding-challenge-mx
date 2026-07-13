@@ -32,13 +32,13 @@ La respuesta de `/api/demo/final` incluye `evidencia.huellaAuditoria`, un SHA-25
 
 ## 2. Análisis de sensibilidad (Genetic Algorithm)
 
-La evidencia vigente se genera en tiempo de ejecución mediante `GET /api/ga/sensibilidad`. El reporte usa siete configuraciones reproducibles y 24 semillas holdout comunes; no se conservan cifras estáticas que puedan quedar desalineadas del código desplegado.
+La evidencia vigente se genera en tiempo de ejecución mediante `GET /api/ga/sensibilidad`. El reporte usa siete configuraciones reproducibles, 24 semillas comunes de entrenamiento y 24 semillas holdout distintas; no se conservan cifras estáticas que puedan quedar desalineadas del código desplegado.
 
 ```bash
 curl -sS http://127.0.0.1:8080/api/ga/sensibilidad | jq '{metodologia, resultados}'
 ```
 
-> **Lectura correcta:** El endpoint compara configuraciones reproducibles de población, mutación y cruce sobre 24 semillas holdout comunes. Cada estrategia aplica su propio umbral, tolerancia de latencia y tamaño máximo. Es análisis de sensibilidad del GA híbrido, no una prueba causal aislada de cada operador interno.
+> **Lectura correcta:** El endpoint ajusta cada configuración con semillas 101..124, congela su estrategia y sólo entonces la evalúa sobre los holdouts pareados 401..424. Todas reciben los mismos corpus train/holdout. Es análisis de sensibilidad del GA híbrido, no una prueba causal aislada de cada operador interno.
 
 ## 3. Telemetría de Latencia (Pipeline)
 

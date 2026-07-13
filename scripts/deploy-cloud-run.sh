@@ -107,7 +107,11 @@ else
 fi
 
 # Build env vars list
-ENV_VARS="RUST_LOG=info,MAYAB_ENV=${MAYAB_ENV},ENTORNO=${MAYAB_ENV},MAYAB_JUDGE_MODE=${MAYAB_JUDGE_MODE},AUDITORIA_DB_PATH=${AUDITORIA_DB_PATH},STORAGE_MODE=${STORAGE_MODE},DEMO_RENTABLE_INICIAL=false,TRUST_PROXY_HEADERS=true"
+# Cloud Run no garantiza que el primer X-Forwarded-For haya sido saneado si el
+# cliente ya envió el encabezado. El limitador de la app usa por defecto la IP
+# observada por el socket; habilitar proxy headers requiere una capa perimetral
+# que limpie la cadena antes de llegar al servicio.
+ENV_VARS="RUST_LOG=info,MAYAB_ENV=${MAYAB_ENV},ENTORNO=${MAYAB_ENV},MAYAB_JUDGE_MODE=${MAYAB_JUDGE_MODE},AUDITORIA_DB_PATH=${AUDITORIA_DB_PATH},STORAGE_MODE=${STORAGE_MODE},DEMO_RENTABLE_INICIAL=false,TRUST_PROXY_HEADERS=false"
 
 # Optional env vars with defaults
 if [ -n "${DISCORD_APPLICATION_ID:-}" ]; then

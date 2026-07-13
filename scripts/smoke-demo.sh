@@ -317,10 +317,17 @@ if not ledger_checks or not all(ledger_checks.values()):
     errors.append("auditoría de ledger no dejó todos sus invariantes en verde")
 
 filas_sensibilidad = sensibilidad.get("resultados") or []
-if len(filas_sensibilidad) != 7 or "24 semillas holdout" not in sensibilidad.get("metodologia", ""):
+if (
+    len(filas_sensibilidad) != 7
+    or "24 semillas holdout" not in sensibilidad.get("metodologia", "")
+    or sensibilidad.get("sinFugaHoldout") is not True
+    or sensibilidad.get("seleccionAntesHoldout") is not True
+    or len(sensibilidad.get("semillasEntrenamiento") or []) != 24
+    or len(sensibilidad.get("semillasHoldoutNoVistas") or []) != 24
+):
     errors.append("/api/ga/sensibilidad no expone las 7 configuraciones y metodología holdout")
 for fila in filas_sensibilidad:
-    if fila.get("runs") != 24 or not fila.get("modelo"):
+    if fila.get("runs") != 24 or not fila.get("modelo") or not fila.get("config"):
         errors.append("/api/ga/sensibilidad contiene una configuración incompleta")
         break
 

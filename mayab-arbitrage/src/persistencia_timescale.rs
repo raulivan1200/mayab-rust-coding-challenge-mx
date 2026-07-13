@@ -11,8 +11,11 @@ use anyhow::Context;
 use serde_json::json;
 use std::{
     future::Future,
-    sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Duration,
 };
 use tokio::sync::Mutex;
 use tokio_postgres::{config::SslMode, Client, Config as PgConfig, NoTls, Row};
@@ -25,7 +28,7 @@ use crate::types::{
 };
 
 pub struct TimescaleDbAuditoria {
-    cliente: Mutex<Client>,
+    cliente: Arc<Mutex<Client>>,
     runtime: tokio::runtime::Handle,
     operaciones: AtomicUsize,
     oportunidades: AtomicUsize,
@@ -33,16 +36,29 @@ pub struct TimescaleDbAuditoria {
     eventos: AtomicUsize,
     rebalanceos: AtomicUsize,
     ejecuciones: AtomicUsize,
-    health_ok: AtomicBool,
-    health_checked_at_ms: AtomicI64,
+    health_ok: Arc<AtomicBool>,
 }
 
 impl TimescaleDbAuditoria {
     /// Conecta a TimescaleDB y verifica el esquema.
     pub async fn abrir(url: &str) -> anyhow::Result<Self> {
-        let config: PgConfig = url
+        let mut config: PgConfig = url
             .parse()
             .context("DATABASE_URL de TimescaleDB inválida")?;
+        if config
+            .get_connect_timeout()
+            .map(|timeout| *timeout > Duration::from_secs(5))
+            .unwrap_or(true)
+        {
+            config.connect_timeout(Duration::from_secs(5));
+        }
+        let bounded_options = match config.get_options().map(str::trim) {
+            Some(existing) if !existing.is_empty() => {
+                format!("{existing} -c statement_timeout=5000 -c lock_timeout=5000")
+            }
+            _ => "-c statement_timeout=5000 -c lock_timeout=5000".to_string(),
+        };
+        config.options(bounded_options);
         let cliente = if config.get_ssl_mode() == SslMode::Disable {
             let (cliente, conexion) = config
                 .connect(NoTls)
@@ -86,8 +102,11 @@ impl TimescaleDbAuditoria {
         let eventos = contar_tabla(&cliente, "eventos").await?;
         let rebalanceos = contar_tabla(&cliente, "rebalanceos").await?;
         let ejecuciones = contar_tabla(&cliente, "ejecuciones").await?;
+        let cliente = Arc::new(Mutex::new(cliente));
+        let health_ok = Arc::new(AtomicBool::new(true));
+        iniciar_sondeo_salud(&cliente, &health_ok);
         Ok(Self {
-            cliente: Mutex::new(cliente),
+            cliente,
             runtime: tokio::runtime::Handle::current(),
             operaciones,
             oportunidades,
@@ -95,8 +114,7 @@ impl TimescaleDbAuditoria {
             eventos,
             rebalanceos,
             ejecuciones,
-            health_ok: AtomicBool::new(true),
-            health_checked_at_ms: AtomicI64::new(epoch_millis()),
+            health_ok,
         })
     }
 
@@ -109,12 +127,23 @@ impl TimescaleDbAuditoria {
     }
 }
 
-fn epoch_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(i64::MAX as u128) as i64
+fn iniciar_sondeo_salud(cliente: &Arc<Mutex<Client>>, health_ok: &Arc<AtomicBool>) {
+    let cliente = Arc::downgrade(cliente);
+    let health_ok = Arc::downgrade(health_ok);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            let (Some(cliente), Some(health_ok)) = (cliente.upgrade(), health_ok.upgrade()) else {
+                break;
+            };
+            let resultado = tokio::time::timeout(Duration::from_secs(2), async {
+                let cliente = cliente.lock().await;
+                cliente.simple_query("SELECT 1").await
+            })
+            .await;
+            health_ok.store(matches!(resultado, Ok(Ok(_))), Ordering::Release);
+        }
+    });
 }
 
 async fn contar_tabla(c: &Client, tabla: &str) -> anyhow::Result<AtomicUsize> {
@@ -320,20 +349,6 @@ impl Auditoria for TimescaleDbAuditoria {
     }
 
     fn estado(&self) -> EstadoPersistencia {
-        let now = epoch_millis();
-        let last = self.health_checked_at_ms.load(Ordering::Relaxed);
-        if now.saturating_sub(last) >= 5_000
-            && self
-                .health_checked_at_ms
-                .compare_exchange(last, now, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-        {
-            let health_ok = self.block_on(async {
-                let c = self.cliente.lock().await;
-                c.simple_query("SELECT 1").await.is_ok()
-            });
-            self.health_ok.store(health_ok, Ordering::Release);
-        }
         let activa = self.health_ok.load(Ordering::Acquire);
         EstadoPersistencia {
             activa,
