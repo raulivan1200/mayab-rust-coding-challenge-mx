@@ -150,9 +150,13 @@ fn router_for_environment(
             HeaderValue::from_static("geolocation=(), camera=(), microphone=(), payment=()"),
         ))
         .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("strict-transport-security"),
+            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
             HeaderName::from_static("content-security-policy"),
             HeaderValue::from_static(
-                "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; script-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+                "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
             ),
         ))
         .with_state(state)
@@ -579,6 +583,7 @@ pub(crate) async fn mcp_call(
             if let Err(error) = validar_muestras_ga(argumentos.muestras) {
                 return error.into_response();
             }
+            let _recorrido = app.motor.bloquear_recorrido_simulado().await;
             json!({
                 "ok": true,
                 "tool": tool,
@@ -599,6 +604,7 @@ pub(crate) async fn mcp_call(
                     .into_response();
                 }
             };
+            let _recorrido = app.motor.bloquear_recorrido_simulado().await;
             json!({
                 "ok": true,
                 "tool": tool,
@@ -621,9 +627,21 @@ pub(crate) async fn mcp_call(
     Json(respuesta).into_response()
 }
 
-pub(crate) async fn paquete_evaluacion(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
+pub(crate) async fn paquete_evaluacion(State(app): State<EstadoApp>) -> Response {
     let estado = app.motor.estado().await;
-    Json(construir_paquete_evaluacion(&estado))
+    let body = serde_json::to_vec(&construir_paquete_evaluacion(&estado))
+        .expect("el paquete de evaluacion siempre debe serializar");
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-mayab-content-length"),
+        HeaderValue::from_str(&body.len().to_string())
+            .expect("la longitud serializada siempre es un header valido"),
+    );
+    (headers, body).into_response()
 }
 
 pub(crate) async fn latencias(State(app): State<EstadoApp>) -> Json<serde_json::Value> {
@@ -732,6 +750,20 @@ pub(crate) async fn research_ledger_audit(State(app): State<EstadoApp>) -> Json<
         .ejecuciones_dos_piernas
         .iter()
         .find(|report| report.selected_recovery.is_some());
+    let checks = json!({
+        "operationIdsUnique": unicos == ids.len(),
+        "operationsMatchMetric": estado.operaciones.len() == estado.metricas.operaciones_totales,
+        "noRealExecution": !estado.corrida.ejecucion_real,
+        "terminalReconciled": execution.is_some_and(|report| report.invariants.terminal_reconciled),
+        "residualBtcZero": execution.is_some_and(|report| report.invariants.residual_within_tolerance),
+        "walletEquation": execution.is_some_and(|report| report.invariants.wallet_equation && report.invariants.btc_conserved),
+        "ledgerReconciled": execution.is_some_and(|report| report.invariants.ledger_reconciled && report.invariants.pnl_matches_ledger),
+        "fillsExactlyOnce": execution.is_some_and(|report| report.invariants.fills_unique && report.invariants.fill_sequences_monotonic),
+        "reservationsReleasedOnce": execution.is_some_and(|report| report.invariants.reservations_released_once && report.reservation_release_count == 1),
+    });
+    let all_passed = checks
+        .as_object()
+        .is_some_and(|values| values.values().all(|value| value.as_bool() == Some(true)));
     let payload = json!({
         "corrida": estado.corrida.id,
         "operaciones": estado.operaciones,
@@ -745,17 +777,8 @@ pub(crate) async fn research_ledger_audit(State(app): State<EstadoApp>) -> Json<
         "artifact": "/api/research/ledger-audit",
         "runId": estado.corrida.id,
         "snapshotSha256": crate::version::canonical_sha256(&payload),
-        "checks": {
-            "operationIdsUnique": unicos == ids.len(),
-            "operationsMatchMetric": estado.operaciones.len() == estado.metricas.operaciones_totales,
-            "noRealExecution": !estado.corrida.ejecucion_real,
-            "terminalReconciled": execution.is_some_and(|report| report.invariants.terminal_reconciled),
-            "residualBtcZero": execution.is_some_and(|report| report.invariants.residual_within_tolerance),
-            "walletEquation": execution.is_some_and(|report| report.invariants.wallet_equation && report.invariants.btc_conserved),
-            "ledgerReconciled": execution.is_some_and(|report| report.invariants.ledger_reconciled && report.invariants.pnl_matches_ledger),
-            "fillsExactlyOnce": execution.is_some_and(|report| report.invariants.fills_unique && report.duplicates_ignored == 0),
-            "reservationsReleasedOnce": execution.is_some_and(|report| report.invariants.reservations_released_once && report.reservation_release_count == 1),
-        },
+        "allPassed": all_passed,
+        "checks": checks,
         "counts": {
             "operations": estado.operaciones.len(),
             "decisionAudits": estado.auditoria_decisiones.len(),
@@ -1309,6 +1332,7 @@ pub(crate) async fn actualizar_config_http(
         Ok(payload) => payload,
         Err(err) => return rechazo_json(err).into_response(),
     };
+    let _recorrido = app.motor.bloquear_recorrido_simulado().await;
     let mut estado = app.motor.estado().await;
     if let Err(err) = aplicar_config_patch(&mut estado.configuracion, payload) {
         return err.into_response();
@@ -1329,6 +1353,7 @@ pub(crate) async fn demo_escenario(
         Ok(payload) => payload,
         Err(err) => return rechazo_json(err).into_response(),
     };
+    let _recorrido = app.motor.bloquear_recorrido_simulado().await;
     Json(
         app.motor
             .activar_escenario_demo(payload.escenario.into())
@@ -1349,6 +1374,7 @@ pub(crate) async fn trigger_adverso_http(
         Ok(payload) => payload,
         Err(err) => return rechazo_json(err).into_response(),
     };
+    let _recorrido = app.motor.bloquear_recorrido_simulado().await;
     Json(
         app.motor
             .activar_escenario_demo(payload.escenario.into())
@@ -1375,6 +1401,7 @@ pub(crate) async fn actualizar_reglas_rebalanceo_http(
         Ok(payload) => payload,
         Err(err) => return rechazo_json(err).into_response(),
     };
+    let _recorrido = app.motor.bloquear_recorrido_simulado().await;
     let estado = app.motor.estado().await;
     if let Err(error) = validar_reglas_rebalanceo(
         &payload.reglas,
@@ -1398,6 +1425,7 @@ pub(crate) async fn demo_final_http(State(app): State<EstadoApp>, headers: Heade
 /// entre el arranque de Jury Mode y el endpoint público para que ambos dejen
 /// exactamente la misma evidencia, sin depender de acciones del evaluador.
 pub async fn preparar_evidencia_jurado(motor: &Motor) -> serde_json::Value {
+    let _recorrido = motor.bloquear_recorrido_simulado().await;
     // Una corrida final siempre parte de estado limpio. Repetirla no acumula
     // PnL ni infla métricas compartidas entre visitantes.
     let corrida_id = motor.reiniciar_demo_jurado().await;
@@ -1424,15 +1452,46 @@ pub async fn preparar_evidencia_jurado(motor: &Motor) -> serde_json::Value {
     let rebalanceo = motor
         .activar_escenario_demo(EscenarioDemo::Rebalanceo)
         .await;
+    let persistencia_drenada = motor.esperar_persistencia(Duration::from_secs(10)).await;
     let estado = motor.estado().await;
     let preflight = construir_preflight(&estado);
     let huella_auditoria = huella_estado(&estado);
+    let execution_matrix = construir_matriz_ejecucion_forense();
+    let provenance = crate::version::evidence(
+        &estado.configuracion,
+        &estado.corrida.id,
+        &estado.corrida.dataset_hash,
+    );
+    let pasos_ok = [
+        &ga,
+        &fill_parcial,
+        &mercado_movido,
+        &liquidez_insuficiente,
+        &riesgo_pierna,
+        &rentable,
+        &rebalanceo,
+    ]
+    .into_iter()
+    .all(|resultado| resultado.get("ok").and_then(Value::as_bool) == Some(true));
+    let preflight_ok = preflight.get("listo").and_then(Value::as_bool) == Some(true)
+        && preflight
+            .pointer("/judgeReadiness/passed")
+            .and_then(Value::as_u64)
+            == Some(12)
+        && preflight
+            .pointer("/judgeReadiness/total")
+            .and_then(Value::as_u64)
+            == Some(12);
+    let matrix_ok = execution_matrix.get("allPassed").and_then(Value::as_bool) == Some(true)
+        && execution_matrix.get("passed").and_then(Value::as_u64) == Some(12);
 
-    json!({
-        "ok": true,
+    let mut resultado = json!({
+        "ok": pasos_ok && preflight_ok && matrix_ok && persistencia_drenada,
         "modo": "demo_final",
         "corridaLimpia": true,
         "corridaId": corrida_id,
+        "persistenciaDrenada": persistencia_drenada,
+        "provenance": provenance,
         "pasos": [
             "estado simulado restablecido conservando feeds y configuración",
             "GA evolucionado con historial real o replay sintético",
@@ -1452,6 +1511,14 @@ pub async fn preparar_evidencia_jurado(motor: &Motor) -> serde_json::Value {
         "metricas": estado.metricas,
         "mlEdge": estado.ml_edge,
         "preflight": preflight,
+        "deterministicProof": {
+            "recipeDatasetHash": estado.corrida.dataset_hash,
+            "matrixSha256": execution_matrix.get("matrixSha256"),
+            "matrixPassed": execution_matrix.get("passed"),
+            "matrixTotal": execution_matrix.get("total"),
+            "allPassed": matrix_ok,
+            "scope": "receta sintética versionada y matriz forense pura; timestamps de la corrida sólo identifican la sesión"
+        },
         "evidencia": {
             "algoritmoHuella": "SHA-256",
             "huellaAuditoria": huella_auditoria,
@@ -1467,7 +1534,16 @@ pub async fn preparar_evidencia_jurado(motor: &Motor) -> serde_json::Value {
             "Abrir /api/paquete-evaluacion",
             "Exportar /api/export/json o /api/export/csv"
         ]
-    })
+    });
+    let result_hash = crate::version::canonical_sha256(&resultado);
+    if let Some(object) = resultado.as_object_mut() {
+        object.insert("resultSha256".to_string(), json!(result_hash));
+        object.insert(
+            "hashScope".to_string(),
+            json!("canonical JSON of this response before resultSha256/hashScope"),
+        );
+    }
+    resultado
 }
 
 pub(crate) async fn demo_caos_http(State(app): State<EstadoApp>, headers: HeaderMap) -> Response {
@@ -1475,6 +1551,7 @@ pub(crate) async fn demo_caos_http(State(app): State<EstadoApp>, headers: Header
         return response;
     }
 
+    let _recorrido = app.motor.bloquear_recorrido_simulado().await;
     let corrida_id = app.motor.reiniciar_demo_jurado().await;
     let estado_inicial = app.motor.estado().await;
     let pnl_inicial = estado_inicial.metricas.utilidad_acumulada_usd;
@@ -1578,6 +1655,7 @@ pub(crate) async fn reset_demo_http(State(app): State<EstadoApp>, headers: Heade
         return response;
     }
 
+    let _recorrido = app.motor.bloquear_recorrido_simulado().await;
     let corrida_id = app.motor.reiniciar_demo_jurado().await;
     Json(json!({
         "ok": true,
@@ -1597,6 +1675,7 @@ pub(crate) async fn captura_iniciar_http(
     if let Some(response) = autorizar_mutacion(&app, &headers) {
         return response;
     }
+    let _recorrido = app.motor.bloquear_recorrido_simulado().await;
     app.motor.iniciar_captura().await;
     Json(json!({"ok": true, "modo": "captura_iniciada"})).into_response()
 }
@@ -1608,6 +1687,7 @@ pub(crate) async fn captura_detener_http(
     if let Some(response) = autorizar_mutacion(&app, &headers) {
         return response;
     }
+    let _recorrido = app.motor.bloquear_recorrido_simulado().await;
     let count = app.motor.detener_captura().await;
     Json(json!({"ok": true, "modo": "captura_detenida", "snapshots": count})).into_response()
 }
@@ -1639,6 +1719,7 @@ pub(crate) async fn captura_ventana_http(
         Ok(payload) => payload,
         Err(err) => return rechazo_json(err).into_response(),
     };
+    let _recorrido = app.motor.bloquear_recorrido_simulado().await;
     Json(app.motor.cargar_ventana_replay(payload.minutos).await).into_response()
 }
 
@@ -1649,6 +1730,7 @@ pub(crate) async fn captura_replay_http(
     if let Some(response) = autorizar_mutacion(&app, &headers) {
         return response;
     }
+    let _recorrido = app.motor.bloquear_recorrido_simulado().await;
     let resultado = app.motor.ejecutar_replay_capturado().await;
     Json(resultado).into_response()
 }
@@ -1680,6 +1762,7 @@ pub(crate) async fn actualizar_config_ga_http(
     if let Err(err) = validar_ga_config(&cfg) {
         return err.into_response();
     }
+    let _recorrido = app.motor.bloquear_recorrido_simulado().await;
     app.motor.actualizar_ga_config(cfg).await;
     Json(json!({ "ok": true })).into_response()
 }
@@ -1699,6 +1782,7 @@ pub(crate) async fn evolucionar_ga_http(
     if let Err(err) = validar_muestras_ga(payload.muestras) {
         return err.into_response();
     }
+    let _recorrido = app.motor.bloquear_recorrido_simulado().await;
     Json(
         app.motor
             .evolucionar_ga(payload.usar_replay_si_vacio, payload.muestras.unwrap_or(96))
@@ -1732,6 +1816,7 @@ pub(crate) async fn kill_switch_http(
         Ok(payload) => payload,
         Err(err) => return rechazo_json(err).into_response(),
     };
+    let _recorrido = app.motor.bloquear_recorrido_simulado().await;
     app.motor.set_kill_switch(payload.activo).await;
     Json(json!({ "ok": true, "activo": payload.activo, "simulacion": true })).into_response()
 }
@@ -1752,6 +1837,7 @@ pub(crate) async fn alternar_exchange_http(
     if exchange.is_empty() {
         return ErrorApi::bad_request("exchange_requerido", "exchange requerido").into_response();
     }
+    let _recorrido = app.motor.bloquear_recorrido_simulado().await;
     if !app.motor.toggle_exchange(exchange, payload.activo).await {
         return ErrorApi::not_found("exchange_no_encontrado", "exchange no encontrado")
             .into_response();
@@ -2972,7 +3058,10 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
                 crate::config::Environment::from_env(),
                 crate::config::Environment::Production
             );
-            p.activa && (!production || p.storage_persistent)
+            p.activa
+                && p.queue_dropped == 0
+                && p.queue_failed == 0
+                && (!production || p.storage_persistent)
         })
         .unwrap_or(false);
     let rest_fallbacks = estado
@@ -2994,7 +3083,22 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
             && report.invariants.all_passed
             && report.residual_btc == rust_decimal::Decimal::ZERO
     });
-    let fsm_reconciliada = ejecucion_forense.is_some();
+    let runtime_reconciliado = ejecucion_forense.is_some();
+    let execution_matrix = construir_matriz_ejecucion_forense();
+    let matrix_total = execution_matrix
+        .get("total")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let matrix_passed = execution_matrix
+        .get("passed")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let matrix_12_12 = execution_matrix.get("allPassed").and_then(Value::as_bool) == Some(true)
+        && matrix_total == crate::execution::ExecutionScenario::ALL.len() as u64
+        && matrix_passed == matrix_total;
+    // La reconciliación no se aprueba sólo con una bandera runtime: exige el
+    // caso adverso visible y la matriz pura completa de doce escenarios.
+    let fsm_reconciliada = runtime_reconciliado && matrix_12_12;
     let unwind_reconciliado = ejecucion_forense.is_some_and(|report| {
         report.selected_recovery == Some(crate::execution::RecoveryAction::Unwind)
     });
@@ -3042,6 +3146,13 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
             "runtime_sintetico_etiquetado",
             "/api/estado#/trazasEjecucion",
             "POST /api/demo/final",
+        ),
+        evidencia_preflight(
+            "matriz_determinista_12_12",
+            matrix_12_12,
+            "sintetica_determinista_etiquetada",
+            "/api/research/execution-matrix",
+            "GET /api/research/execution-matrix",
         ),
         evidencia_preflight(
             "fill_parcial",
@@ -3134,6 +3245,15 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
                 "reservationReleaseCount": report.reservation_release_count,
                 "invariants": report.invariants,
             })),
+            "executionMatrix": {
+                "available": execution_matrix.get("available"),
+                "passed": matrix_passed,
+                "total": matrix_total,
+                "allPassed": matrix_12_12,
+                "invariantsPerScenario": execution_matrix.get("invariantsPerScenario"),
+                "matrixSha256": execution_matrix.get("matrixSha256"),
+                "endpoint": "/api/research/execution-matrix"
+            },
             "rubricaOficial": matriz_rubrica_oficial(estado),
             "coberturaFinalista": cobertura_finalista(estado),
             "recomendaciones": recomendaciones_ganadoras(estado),
@@ -3162,7 +3282,7 @@ fn construir_preflight(estado: &EstadoPublico) -> serde_json::Value {
             check("ml_edge_explicable", ml_edge_ok, estado.ml_edge.as_ref().map(|m| format!("{} score={:.3}, EV={:.2} USD, confianza={:.1}%", m.version, m.score_actual, m.expected_value_usd, m.confianza * 100.0)).unwrap_or_else(|| "esperando auditoría para calcular ML Edge".into())),
             check("dashboard_estatico", dashboard_ok, "index.html, app.js y styles.css encontrados"),
             check("auditoria_exportable", export_ok, "/api/export/json y /api/export/csv disponibles"),
-            check("persistencia_auditoria", persistencia_ok, estado.persistencia.as_ref().map(|p| format!("backend={}, durable={}, {} ops, {} ejecuciones, {} auditorias en {}", p.backend, p.storage_persistent, p.operaciones, p.ejecuciones, p.auditorias, p.ruta)).unwrap_or_else(|| "persistencia no inicializada".into())),
+            check("persistencia_auditoria", persistencia_ok, estado.persistencia.as_ref().map(|p| format!("backend={}, durable={}, status={}, cola pendiente={}, descartada={}, fallida={}, {} ops, {} ejecuciones, {} auditorias en {}", p.backend, p.storage_persistent, p.storage_status, p.queue_pending, p.queue_dropped, p.queue_failed, p.operaciones, p.ejecuciones, p.auditorias, p.ruta)).unwrap_or_else(|| "persistencia no inicializada".into())),
             check("rest_fallback", rest_fallback_ok, format!("{rest_fallbacks} feeds usan snapshot REST público como respaldo; WS sigue siendo la fuente primaria")),
             check("telemetria_pipeline", estado.telemetria_pipeline.muestras > 0, format!("{} muestras; compute p50/p95/p99={}/{}/{} us; scheduling p50/p95/p99={}/{}/{} us; {:.1} eventos/s", estado.telemetria_pipeline.muestras, estado.telemetria_pipeline.compute_p50_us, estado.telemetria_pipeline.compute_p95_us, estado.telemetria_pipeline.compute_p99_us, estado.telemetria_pipeline.scheduling_p50_us, estado.telemetria_pipeline.scheduling_p95_us, estado.telemetria_pipeline.scheduling_p99_us, estado.telemetria_pipeline.eventos_por_segundo)),
         ],
@@ -3351,6 +3471,12 @@ fn contar_exchanges_unicos<'a>(cotizaciones: impl Iterator<Item = &'a Cotizacion
 
 fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
     let preflight = construir_preflight(estado);
+    let provenance = crate::version::evidence(
+        &estado.configuracion,
+        &estado.corrida.id,
+        &estado.corrida.dataset_hash,
+    );
+    let execution_matrix = construir_matriz_ejecucion_forense();
     let resumen = construir_resumen_llm(estado);
     let backtest = backtest_reproducible(estado);
     let lab_sweep = lab_sweep_reproducible(estado);
@@ -3534,10 +3660,11 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
         .filter(|c| c.get("cumplido").and_then(|v| v.as_bool()) == Some(true))
         .count();
 
-    json!({
+    let mut paquete = json!({
         "generadoEn": estado.generado_en,
         "nombre": "Mayab Arbitraje BTC - paquete de evaluación",
         "modo": "demo segura read-only",
+        "provenance": provenance,
         "evidenceSummary": {
             "pass": checks_cumplidos,
             "total": criterios.len(),
@@ -3591,10 +3718,11 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
             "ga": ga,
             "persistencia": persistencia,
             "preflight": preflight,
-                "backtest": backtest,
-                "researchLab": lab_sweep,
-                "microstructureLab": microstructure,
-                "ouLab": ou,
+            "executionMatrix": execution_matrix,
+            "backtest": backtest,
+            "researchLab": lab_sweep,
+            "microstructureLab": microstructure,
+            "ouLab": ou,
         },
         "scriptDemo": [
             "GET /api/healthz",
@@ -3635,7 +3763,16 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
             "exportCsv": "/api/export/csv",
             "gaEstado": "/api/ga/estado"
         }
-    })
+    });
+    let package_hash = crate::version::canonical_sha256(&paquete);
+    if let Some(object) = paquete.as_object_mut() {
+        object.insert("packageSha256".to_string(), json!(package_hash));
+        object.insert(
+            "hashScope".to_string(),
+            json!("canonical JSON of this document before packageSha256/hashScope"),
+        );
+    }
+    paquete
 }
 
 fn matriz_rubrica_oficial(estado: &EstadoPublico) -> Vec<serde_json::Value> {
@@ -5288,6 +5425,43 @@ mod tests {
         assert!(body.contains("curva económica"));
     }
 
+    #[tokio::test]
+    async fn respuestas_publicas_aplican_headers_de_seguridad_y_cache_cerrada() {
+        let motor = Arc::new(Motor::new(
+            cfg_test(),
+            250_000.0,
+            2.5,
+            "BTC/USD".into(),
+            vec![],
+            None,
+        ));
+        let response = router(motor, None)
+            .oneshot(
+                Request::get("/api/version")
+                    .body(Body::empty())
+                    .expect("request válida"),
+            )
+            .await
+            .expect("router disponible");
+
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(
+            response.headers()[header::X_CONTENT_TYPE_OPTIONS],
+            "nosniff"
+        );
+        assert_eq!(response.headers()["x-frame-options"], "DENY");
+        assert_eq!(
+            response.headers()["strict-transport-security"],
+            "max-age=31536000; includeSubDomains"
+        );
+        let csp = response.headers()["content-security-policy"]
+            .to_str()
+            .expect("CSP legible");
+        assert!(csp.contains("default-src 'self'"));
+        assert!(csp.contains("frame-ancestors 'none'"));
+        assert!(!csp.contains("fonts.googleapis.com"));
+    }
+
     #[test]
     fn config_patch_is_atomic_when_a_late_exchange_validation_fails() {
         let mut cfg = cfg_test();
@@ -5502,6 +5676,41 @@ mod tests {
         assert_eq!(con_evidencia["listo"], true);
         assert_eq!(con_evidencia["modo"], "ready");
         assert_eq!(con_evidencia["judgeReadiness"]["passed"], 12);
+        assert_eq!(con_evidencia["judgeReadiness"]["total"], 12);
+        assert_eq!(
+            con_evidencia["judgeReadiness"]["executionMatrix"]["passed"],
+            12
+        );
+        assert_eq!(
+            con_evidencia["judgeReadiness"]["executionMatrix"]["total"],
+            12
+        );
+        assert_eq!(
+            con_evidencia["judgeReadiness"]["executionMatrix"]["allPassed"],
+            true
+        );
+        assert!(
+            con_evidencia["judgeReadiness"]["executionMatrix"]["matrixSha256"]
+                .as_str()
+                .is_some_and(|hash| hash.starts_with("sha256:"))
+        );
+    }
+
+    #[test]
+    fn contrato_http_de_matriz_es_determinista_y_concilia_doce_de_doce() {
+        let primera = construir_matriz_ejecucion_forense();
+        let segunda = construir_matriz_ejecucion_forense();
+
+        assert_eq!(primera["available"], true);
+        assert_eq!(primera["passed"], 12);
+        assert_eq!(primera["total"], 12);
+        assert_eq!(primera["allPassed"], true);
+        assert_eq!(primera["matrixSha256"], segunda["matrixSha256"]);
+        assert_eq!(primera["cases"].as_array().map(Vec::len), Some(12));
+        assert_eq!(primera["reports"].as_array().map(Vec::len), Some(12));
+        assert!(primera["cases"].as_array().is_some_and(|cases| cases
+            .iter()
+            .all(|case| case["invariants"]["allPassed"].as_bool() == Some(true))));
     }
 
     #[test]
@@ -5998,6 +6207,8 @@ mod tests {
                 queue_capacity: 2048,
                 queue_pending: 0,
                 queue_dropped: 0,
+                queue_failed: 0,
+                queue_last_error: None,
             }),
             exchanges_activos,
             pares_activos: vec!["BTC/USD".to_string()],

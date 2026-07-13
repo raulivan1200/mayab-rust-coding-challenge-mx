@@ -50,7 +50,7 @@ jobs:
       - name: Security audit
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          command: check advisories
+          command: check
           allow-duplicates: true
 
       - name: Run tests
@@ -139,6 +139,33 @@ jobs:
         run: |
           test "$(docker image inspect mayab-btc-arbitrage:ci --format '{{.Config.User}}')" = "nonroot:nonroot"
           test "$(docker image inspect mayab-btc-arbitrage:ci --format '{{.Config.Entrypoint}}')" = "[/app/mayab-arbitrage]"
+          test "$(docker image inspect mayab-btc-arbitrage:ci --format '{{.Config.WorkingDir}}')" = "/app"
+
+      - name: Start container with a read-only root filesystem
+        shell: bash
+        run: |
+          set -euo pipefail
+          cid=$(docker run --detach \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --tmpfs /data:rw,nosuid,size=64m,uid=10001,gid=10001,mode=0700 \
+            mayab-btc-arbitrage:ci)
+          trap 'docker logs "$cid" || true; docker rm --force "$cid" >/dev/null 2>&1 || true' EXIT
+          for _ in $(seq 1 30); do
+            status=$(docker inspect "$cid" --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}')
+            if [[ "$status" == healthy ]]; then
+              exit 0
+            fi
+            if [[ "$(docker inspect "$cid" --format '{{.State.Running}}')" != true ]]; then
+              echo "container stopped before becoming healthy" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "container did not become healthy" >&2
+          exit 1
 
   deploy:
     name: Deploy Cloud Run
@@ -272,7 +299,13 @@ jobs:
           jq -e '
             .listo == true and
             .judgeReadiness.status == "ready" and
-            (.judgeReadiness.checks | length >= 12) and
-            all(.judgeReadiness.checks[]; .ok == true)
+            .judgeReadiness.passed == 12 and
+            .judgeReadiness.total == 12 and
+            (.judgeReadiness.checks | length == 12) and
+            all(.judgeReadiness.checks[]; .ok == true) and
+            .judgeReadiness.executionMatrix.passed == 12 and
+            .judgeReadiness.executionMatrix.total == 12 and
+            .judgeReadiness.executionMatrix.allPassed == true and
+            .judgeReadiness.twoLegEvidence.invariants.allPassed == true
           ' <<<"$preflight" >/dev/null
           echo "public jury state ready"

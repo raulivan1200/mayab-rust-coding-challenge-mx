@@ -11,7 +11,7 @@ Este documento indica cómo obtener evidencia vigente del binario que se está e
 - 0 BTC de exposición residual al terminar el escenario reproducible de segunda pierna rechazada.
 
 La última cifra se verifica con `POST /api/demo/caos`: la FSM publica
-`PENDING → LEG_A_FILLED → LEG_B_REJECTED → UNWIND_FILLED → RECONCILED_LOSS`,
+`DETECTED → RESERVED → LEG1_SUBMITTED → LEG1_FILLED → LEG2_SUBMITTED → LEG2_REJECTED → RECOVERY_SELECTED → RECONCILED`,
 incluye la pérdida realizada del unwind y termina conciliada. `/api/jurado`
 expone esta afirmación bajo `evidenciaClave.resultadoMemorable`.
 
@@ -55,7 +55,7 @@ Los percentiles deben citarse junto con la región, revisión y hora de la medic
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`
 - `cargo test --workspace --all-targets --locked`
-- `cargo audit`
+- `cargo deny check`
 - `docker build --tag mayab-btc-arbitrage:ci .`
 
 No debe marcarse esta sección como aprobada si la revisión publicada no tiene todos los checks verdes.
@@ -64,25 +64,15 @@ No debe marcarse esta sección como aprobada si la revisión publicada no tiene 
 
 La suite separa pruebas de librería, auditor de ledger, integraciones y contratos
 independientes de rutas públicas en `tests/public_contract_test.rs`. Playwright
-se reporta por separado con cuatro recorridos, incluido el selector superior de
+se reporta por separado, incluido el selector superior de
 procedencia y escala. Como el árbol sigue cambiando, ningún conteo se presenta
 como aprobado hasta que CI publique la corrida verde del SHA entregable.
 
-La corrida local verde del árbol actual incluye veintiséis casos añadidos:
-cinco cubren backpressure, fallos y flush acotado de auditoría; cuatro cubren
-atomicidad, límites y contrato cerrado de configuración; uno exige al menos 50
-controles únicos con categoría, restricción y origen; dos impiden seleccionar
-retrospectivamente al campeón usando el holdout; dos evitan doble conteo por
-ventanas de mercado solapadas; uno exige replay determinista con la misma huella
-de entrada aun si la configuración live activa adversidad aleatoria; uno prueba
-compatibilidad de epochs/reconexiones con tapes previos; uno verifica que un
-corpus nativo completo entra a A/B/C sin conversión manual; uno valida el índice
-SQLite transaccional e idempotente; dos validan memoria acotada y hash canónico
-del escáner streaming; dos impiden publicar un scan malformado o perteneciente a
-otro corpus; uno garantiza que un benchmark sintético jamás supera el gate de
-publicación; uno valida publicación JSON atómica sin temporales filtrados; y dos
-validan los intervalos Wilson 95% incluso en extremos. Playwright valida por
-separado el dashboard principal, las
+La suite cubre backpressure, fallos y flush acotado de auditoría; atomicidad,
+límites y configuración cerrada; catálogo de controles; selección de campeón
+sin fuga de holdout; replay determinista; corpus, índices e idempotencia;
+memoria acotada, hashes canónicos, publicación atómica e intervalos Wilson 95%.
+Playwright valida por separado el dashboard principal, las
 superficies de replay y operación, los contratos HTTP, la procedencia del corpus
 y la demo rentable; el conteo autoritativo sigue siendo el publicado por CI para
 el SHA entregable.
@@ -95,10 +85,15 @@ ninguna de esas métricas sustituye a las demás.
 
 ## 5. Paquete sellado y procedencia
 
-`OUT_DIR=artifacts/evidence/final ./scripts/generar-evidencia.sh` captura el
+`OUT_DIR=artifacts/evidence/final ./scripts/generar-evidencia.sh` ejecuta primero
+una corrida limpia de `/api/demo/final` y captura el
 paquete de evaluación, auditoría, latencias, backtest, bootstrap, holdout,
-microestructura, sensibilidad GA y preflight. El directorio incluye manifiesto
-con commit/dirty-worktree y `SHA256SUMS` para detectar cambios posteriores.
+microestructura, sensibilidad GA, matriz forense, ledger y preflight. Antes de
+publicar, falla si no obtiene preflight exacto 12/12, matriz 12/12, todas las
+invariantes runtime, ledger conciliado o una cola de persistencia sin pérdidas.
+El directorio se publica atómicamente e incluye `assertions.json`, manifiesto
+con commit/dirty-worktree/sesión/hashes, `packageSha256`, `resultSha256` y un
+`SHA256SUMS` verificado.
 
 El sello prueba integridad del artefacto, no que el origen sea real. Toda cifra
 debe conservar una de estas etiquetas: `mercado_publico`,

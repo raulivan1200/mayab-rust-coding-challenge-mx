@@ -3,7 +3,6 @@ let tieneCambios = false;
 let oportunidadSeleccionadaId = null;
 const gaHistorial = [];
 let gaAutoEnCurso = false;
-let gaAutoSolicitada = false;
 const ID_PESTANA = `tab-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const DEBUG_ACTIVO =
   new URLSearchParams(location.search).get("debug") === "1" ||
@@ -31,14 +30,14 @@ const WS_RECONNECT_MAX = 15_000;
 // Fuente única para el copy editorial de la interfaz. Los estados que cambian
 // en runtime también salen de aquí para evitar variantes dispersas.
 const UI_COPY = Object.freeze({
-  landingKicker: "Conectando feeds públicos · evidencia reproducible",
-  landingTitle: "Arbitraje que puede explicar cada decisión y sobrevivir una pierna fallida.",
-  landingBody: "Mayab compara cada ruta neta de costos, prueba inventario y profundidad, y reconcilia la exposición si la venta simulada falla después de comprar.",
-  landingPrimaryCta: "Ejecutar prueba completa",
-  landingSecondaryCta: "Inspeccionar la evidencia completa",
+  landingKicker: "Datos públicos en vivo · capital real: cero",
+  landingTitle: "El mercado pestañea. Mayab ya hizo las cuentas.",
+  landingBody: "No persigue cualquier destello: descuenta fees, latencia, profundidad e inventario. Si una pierna falla, cierra la exposición y deja recibo.",
+  landingPrimaryCta: "Pon a Mayab contra las cuerdas",
+  landingSecondaryCta: "Seguir el rastro completo",
   proofMarket: "Consultando cobertura real de CEX",
-  proofCosts: "Suite Rust multi-capa · conteo sellado por CI",
-  proofSafety: "Capital real: cero",
+  proofCosts: "Del spread al PnL, cada costo da la cara",
+  proofSafety: "La orden falla. La exposición no se queda.",
   socket: Object.freeze({
     connecting: "Conectando mercado",
     connected: "Canal conectado",
@@ -89,22 +88,141 @@ function aplicarCopyEditorial() {
 
 aplicarCopyEditorial();
 
+let descargaEvidenciaEnCurso = null;
+
+function iniciarDescargaEvidencia() {
+  const cta = $("btnEvidenceHero");
+  const label = cta?.querySelector(".evidence-download-label");
+  const progress = cta?.querySelector(".evidence-download-track i");
+  if (!cta || !label || !progress) return;
+
+  const textoInicial = UI_COPY.landingSecondaryCta;
+  const actualizar = (porcentaje, texto = "Descargando evidencia") => {
+    const valor = Math.max(0, Math.min(100, Math.round(porcentaje)));
+    progress.style.width = `${valor}%`;
+    label.textContent = `${texto} · ${valor}%`;
+    cta.setAttribute("aria-label", `${texto}: ${valor}%`);
+    if (
+      descargaEvidenciaEnCurso?.porcentaje &&
+      descargaEvidenciaEnCurso?.barra &&
+      descargaEvidenciaEnCurso?.estado
+    ) {
+      descargaEvidenciaEnCurso.porcentaje.textContent = `${valor}%`;
+      descargaEvidenciaEnCurso.barra.style.width = `${valor}%`;
+      descargaEvidenciaEnCurso.estado.textContent = texto;
+    }
+  };
+
+  cta.addEventListener("click", async (event) => {
+    event.preventDefault();
+    if (descargaEvidenciaEnCurso) {
+      descargaEvidenciaEnCurso.ventana?.focus();
+      return;
+    }
+
+    const ventana = window.open("", "_blank");
+    if (ventana) {
+      ventana.opener = null;
+      ventana.document.title = "Mayab · Preparando evidencia";
+      ventana.document.body.innerHTML = `
+        <main style="min-height:100vh;box-sizing:border-box;display:grid;place-content:center;gap:18px;padding:28px;background:#111;color:#f3f0e8;font:700 16px/1.35 Arial,sans-serif;text-align:center">
+          <p style="margin:0;color:#ffb200;font-size:12px;letter-spacing:.14em;text-transform:uppercase">Mayab Arbitraje BTC</p>
+          <strong id="mayabEvidencePercent" style="font-size:clamp(64px,18vw,180px);line-height:.8">0%</strong>
+          <p id="mayabEvidenceStatus" style="margin:0;color:#a7a096">Preparando evidencia</p>
+          <div style="width:min(520px,78vw);height:8px;overflow:hidden;border:1px solid #4a4a4a;background:#202020">
+            <i id="mayabEvidenceBar" style="display:block;width:0;height:100%;background:#ffb200;transition:width 180ms ease"></i>
+          </div>
+        </main>`;
+    }
+
+    descargaEvidenciaEnCurso = {
+      ventana,
+      porcentaje: ventana?.document.getElementById("mayabEvidencePercent"),
+      estado: ventana?.document.getElementById("mayabEvidenceStatus"),
+      barra: ventana?.document.getElementById("mayabEvidenceBar"),
+    };
+    cta.dataset.loading = "true";
+    cta.setAttribute("aria-busy", "true");
+    actualizar(0, "Preparando evidencia");
+    const inicioPreparacion = Date.now();
+    const pulsoPreparacion = window.setInterval(() => {
+      const segundos = (Date.now() - inicioPreparacion) / 1000;
+      const estimado = Math.min(89, 8 + (1 - Math.exp(-segundos / 12)) * 82);
+      actualizar(estimado, "Preparando evidencia");
+    }, 300);
+
+    try {
+      const response = await fetch(cta.href, { headers: { accept: "application/json" } });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.body) throw new Error("El navegador no permite leer el progreso");
+
+      const total = Number(response.headers.get("x-mayab-content-length")) ||
+        Number(response.headers.get("content-length"));
+      const reader = response.body.getReader();
+      const chunks = [];
+      let recibidos = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        window.clearInterval(pulsoPreparacion);
+        chunks.push(value);
+        recibidos += value.byteLength;
+        const porcentajeDescarga = total > 0
+          ? 90 + (recibidos / total) * 10
+          : Math.min(99, 90 + chunks.length);
+        actualizar(porcentajeDescarga);
+      }
+
+      actualizar(100, "Evidencia lista");
+      const blobUrl = URL.createObjectURL(new Blob(chunks, { type: "application/json" }));
+      if (ventana && !ventana.closed) {
+        ventana.location.replace(blobUrl);
+      } else {
+        const enlace = document.createElement("a");
+        enlace.href = blobUrl;
+        enlace.target = "_blank";
+        enlace.rel = "noopener";
+        enlace.click();
+      }
+      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+    } catch (error) {
+      label.textContent = "Reintentar evidencia";
+      progress.style.width = "0%";
+      if (ventana && !ventana.closed) {
+        const estado = ventana.document.getElementById("mayabEvidenceStatus");
+        if (estado) estado.textContent = "No se pudo cargar. Cierra esta pestaña y vuelve a intentar.";
+      }
+      debugWarn("No se pudo descargar el paquete de evaluación", error);
+    } finally {
+      window.clearInterval(pulsoPreparacion);
+      cta.removeAttribute("aria-busy");
+      cta.removeAttribute("aria-label");
+      delete cta.dataset.loading;
+      descargaEvidenciaEnCurso = null;
+      window.setTimeout(() => {
+        if (label.textContent === "Evidencia lista · 100%") label.textContent = textoInicial;
+      }, 1200);
+    }
+  });
+}
+
 const DATA_LENS_COPY = Object.freeze({
   live: Object.freeze({
     eyebrow: "01 · Mercado público",
-    title: "Señales observadas; órdenes y PnL siempre simulados.",
-    detail: "Esta vista nunca presenta una demo sintética como resultado de mercado.",
+    title: "Mercado real afuera. Ejecución simulada adentro.",
+    detail: "Mayab no mezcla demo con live. Nunca.",
     tab: "tab-mercado",
   }),
   replay: Object.freeze({
     eyebrow: "02 · Replay capturado",
-    title: "Un tape reproducible dentro de un motor desechable.",
-    detail: "El sandbox no modifica wallets, PnL, GA ni libros del proceso live.",
+    title: "Mismo mercado. Otro intento. Cero contaminación.",
+    detail: "El motor desechable no toca wallets, PnL, GA ni libros del proceso live.",
   }),
   demo: Object.freeze({
     eyebrow: "03 · Demo sintética",
-    title: "Escenarios controlados para probar fallos, unwind y recuperación.",
-    detail: "Toda evidencia demo queda etiquetada; capital real y órdenes reales: cero.",
+    title: "Hazlo fallar a propósito. Mira qué deja atrás.",
+    detail: "Cada resultado demo queda etiquetado. Capital real y órdenes reales: cero.",
     tab: "tab-riesgo",
   }),
 });
@@ -479,7 +597,6 @@ async function arrancar() {
       ultimoEstado = datos;
       estado.ultimoMensaje = Date.now();
       tieneCambios = true;
-      asegurarGaVisible(datos);
       detectarNotificaciones(datos);
       renderizar(ultimoEstado);
     }
@@ -553,7 +670,6 @@ async function conectar() {
       estado.ultimoMensaje = Date.now();
       cambiarSocket(UI_COPY.socket.realtime, true);
       tieneCambios = true;
-      asegurarGaVisible(datos);
       detectarNotificaciones(datos);
     } catch (err) {
       debugError("Error parseando WebSocket:", err);
@@ -572,16 +688,6 @@ async function conectar() {
     cambiarSocket(UI_COPY.socket.offline, false);
     debugError("error de websocket", err);
   });
-}
-
-function asegurarGaVisible(datos) {
-  if (gaAutoSolicitada || gaAutoEnCurso || !datos?.genetico) return;
-  gaAutoSolicitada = true;
-  // Una evolución por carga de página: funciona aunque la instancia de Cloud
-  // Run lleve horas encendida y no exige descubrir ningún control manual.
-  window.setTimeout(() => {
-    evolucionarGa().catch((err) => debugWarn("No se pudo preparar GA automáticamente", err));
-  }, 350);
 }
 
 function wsReiniciarBackoff() {
@@ -978,7 +1084,7 @@ function renderProvenance(datos) {
     ["RECONCILED", "RECONCILED_LOSS"].includes(String(trace.estado || ""))
       && Math.abs(Number(trace.exposicionBtc || 0)) <= 1e-8,
   );
-  setText("juryProofExecution", reconciliada ? `${reconciliada.estado} · 0 BTC residual` : "ejecuta la prueba completa");
+  setText("juryProofExecution", reconciliada ? `${reconciliada.estado} · 0 BTC residual` : "pon a Mayab contra las cuerdas");
   setText("juryProofWallets", reconciliada ? "ledger conciliado · reservas liberadas" : `${numero.format((datos.balances || []).length)} wallets visibles`);
 }
 
@@ -1501,8 +1607,8 @@ async function ejecutarDemoFinal() {
   const feedback = $("demoFeedback");
   const estado = $("demoEstado");
   const textoOriginal = btn?.textContent || "Cargar demo ganadora";
-  const textoTopOriginal = btnTop?.textContent || "Preparar demo auditada";
-  const textoHeroOriginal = btnHero?.textContent || "Ejecutar prueba completa";
+  const textoTopOriginal = btnTop?.textContent || "Provocar recorrido auditado";
+  const textoHeroOriginal = btnHero?.textContent || "Pon a Mayab contra las cuerdas";
   if (btn) {
     btn.disabled = true;
     btn.textContent = "Cargando...";
@@ -1546,11 +1652,13 @@ async function ejecutarDemoFinal() {
     }
     preflightCache = body?.preflight || null;
     ultimoPreflightMs = preflightCache ? Date.now() : 0;
-    fetch("/api/lab/sweep")
-      .then(async (lab) => {
-        if (lab.ok) renderLabSweep(await lab.json());
-      })
-      .catch(() => {});
+    if ($("tab-logs")?.classList.contains("activo")) {
+      fetch("/api/lab/sweep")
+        .then(async (lab) => {
+          if (lab.ok) renderLabSweep(await lab.json());
+        })
+        .catch(() => {});
+    }
     if ($("tab-evidence")?.classList.contains("activo")) {
       cargarEvidenceLab();
     }
@@ -2154,9 +2262,7 @@ function iniciarBacktest() {
     }
   };
   btn.onclick = hacerBacktest;
-  // La evidencia aparece desde la primera visita; el botón queda únicamente
-  // para repetir la corrida bajo demanda.
-  hacerBacktest();
+  btn.textContent = "Ejecutar backtest";
 }
 
 function iniciarResearchLab() {
@@ -2180,7 +2286,7 @@ function iniciarResearchLab() {
     }
   };
   btn.onclick = hacerSweep;
-  hacerSweep();
+  btn.textContent = "Comparar presets";
 }
 
 function iniciarEvidenceLab() {
@@ -2209,15 +2315,17 @@ async function cargarEvidenceLab() {
     ["readiness", "/api/readiness/live"],
   ];
   try {
-    const respuestas = await Promise.all(endpoints.map(async ([clave, url]) => {
+    const respuestas = [];
+    for (const [indice, [clave, url]] of endpoints.entries()) {
+      status.textContent = `Consultando evidencia ${indice + 1}/${endpoints.length}: ${clave}…`;
       try {
         const res = await fetch(url);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return [clave, url, await res.json(), null];
+        respuestas.push([clave, url, await res.json(), null]);
       } catch (error) {
-        return [clave, url, null, error instanceof Error ? error.message : "no disponible"];
+        respuestas.push([clave, url, null, error instanceof Error ? error.message : "no disponible"]);
       }
-    }));
+    }
     const evidencia = Object.fromEntries(respuestas.map(([clave, , data, error]) => [clave, data || { error } ]));
     const disponibles = respuestas.filter(([, , data]) => data).length;
     const tape = evidencia.tapes?.tapes?.[0];
@@ -2260,7 +2368,7 @@ async function cargarEvidenceLab() {
 
 function renderEconomicsEvidence(economics) {
   if (!economics?.available) {
-    return `<article class="evidence-lab-card economics-unavailable"><h3>CORE · Economía de la decisión</h3><strong>No disponible todavía</strong><small>${escapeHtml(economics?.reason || economics?.error || "Ejecuta la prueba completa para generar una operación con costos.")}</small><button type="button" class="btn-link" data-run-jury>Ejecutar prueba completa</button></article>`;
+    return `<article class="evidence-lab-card economics-unavailable"><h3>CORE · Economía de la decisión</h3><strong>Todavía no hay recibo</strong><small>${escapeHtml(economics?.reason || economics?.error || "Pon a Mayab contra las cuerdas para generar una operación con costos.")}</small><button type="button" class="btn-link" data-run-jury>Provocar la prueba final</button></article>`;
   }
 
   const waterfall = economics.edgeWaterfall || {};
@@ -3035,8 +3143,8 @@ function renderResumenLlm(datos) {
     ? `EV ${dinero.format(datos.mlEdge.expectedValueUsd || 0)}, confianza ${formato((datos.mlEdge.confianza || 0) * 100, 1)}%, decisión ${datos.mlEdge.decision || "sin código"}.`
     : "Esperando decisión auditada.";
   const persistencia = datos.persistencia?.activa
-    ? `Auditoría SQLite activa (${datos.persistencia.storageStatus || "estado desconocido"}): ${numero.format(datos.persistencia.operaciones || 0)} trades, ${numero.format(datos.persistencia.oportunidades || 0)} oportunidades y ${numero.format(datos.persistencia.auditorias || 0)} decisiones.`
-    : "Auditoría SQLite no disponible.";
+    ? `Auditoría ${datos.persistencia.backend || "durable"} (${datos.persistencia.storageStatus || "estado desconocido"}): ${numero.format(datos.persistencia.operaciones || 0)} trades, ${numero.format(datos.persistencia.oportunidades || 0)} oportunidades y ${numero.format(datos.persistencia.auditorias || 0)} decisiones; cola con ${numero.format(datos.persistencia.queuePending || 0)} pendientes, ${numero.format(datos.persistencia.queueDropped || 0)} descartadas y ${numero.format(datos.persistencia.queueFailed || 0)} fallidas.`
+    : "Auditoría durable no disponible.";
   const modoEl = $("llm-modo"); if (modoEl) modoEl.textContent = modo;
   const pnlEl = $("llm-pnl"); if (pnlEl) pnlEl.textContent = dinero.format(datos.metricas.utilidadAcumuladaUsd);
   const riesgoEl = $("llm-riesgo"); if (riesgoEl) riesgoEl.textContent = datos.metricas.estadoRiesgo;
@@ -3947,6 +4055,7 @@ document.addEventListener("DOMContentLoaded", () => {
     scrollPorTab.set(tabActivo, pantalla.scrollTop);
   };
   iniciarLanding();
+  iniciarDescargaEvidencia();
   iniciarSelectorProcedencia();
   cargarEscalaCorpusPublico();
   iniciarAjusteMetricas();
@@ -4016,6 +4125,11 @@ document.addEventListener("DOMContentLoaded", () => {
         
         if (targetId === "tab-galab") {
           cargarAblacionGA();
+        }
+        if (targetId === "tab-logs" && !targetContent.dataset.researchLoaded) {
+          targetContent.dataset.researchLoaded = "true";
+          $("btnBacktest")?.click();
+          $("btnLabSweep")?.click();
         }
         if (targetId === "tab-evidence" && !targetContent.dataset.loaded) {
           targetContent.dataset.loaded = "true";
@@ -4169,21 +4283,21 @@ function iniciarTutorial() {
     {
       tab: "tab-overview",
       selector: ".llm-strip",
-      titulo: "Lectura ejecutiva en 15 segundos",
-      texto: "Empieza aquí: modo de datos, PnL simulado, riesgo, mejor ruta y estado del GA sin interpretar todas las tablas.",
+      titulo: "Quince segundos para saber si importa",
+      texto: "Modo de datos, PnL simulado, riesgo, mejor ruta y estado del GA sin obligarte a descifrar cada tabla.",
       prueba: () => `${ultimoEstado?.cotizaciones?.length || 0} feeds utilizables · ${ultimoEstado?.metricas?.operaciones || 0} operaciones simuladas`,
     },
     {
       tab: "tab-mercado",
       selector: ".mercado",
-      titulo: "Order books públicos en vivo",
-      texto: "Los adaptadores WebSocket normalizan bid, ask, profundidad, timestamp y fuente. El fallback REST queda etiquetado.",
+      titulo: "Mercado público. Procedencia visible.",
+      texto: "Los WebSocket normalizan bid, ask, profundidad, timestamp y fuente. Si entra REST, Mayab lo etiqueta.",
       prueba: () => `${ultimoEstado?.cotizaciones?.filter((c) => c.conectado).length || 0} WebSockets frescos · ${formato(ultimoEstado?.metricas?.latenciaPromedioMs || 0, 0)} ms promedio`,
     },
     {
       tab: "tab-mercado",
       selector: ".mapa",
-      titulo: "De spread bruto a utilidad neta",
+      titulo: "El spread no basta. La utilidad neta decide.",
       texto: "Cada ruta descuenta fees, slippage, retiro amortizado y riesgo de latencia; después limita el tamaño por profundidad e inventario.",
       prueba: () => {
         const ruta = ultimoEstado?.oportunidades?.[0];
@@ -4193,22 +4307,22 @@ function iniciarTutorial() {
     {
       tab: "tab-riesgo",
       selector: ".demo-panel",
-      titulo: "Robustez que se puede provocar",
-      texto: "Ejecuta fill parcial, fallo de orden, shock de mercado, circuit breaker y rebalanceo sin depender de que el mercado coopere.",
+      titulo: "Hazlo fallar. Mira qué deja atrás.",
+      texto: "Provoca fill parcial, fallo de orden, shock de mercado, circuit breaker y rebalanceo sin esperar a que el mercado coopere.",
       prueba: () => `${ultimoEstado?.metricas?.operacionesFallidas || 0} fallos · ${ultimoEstado?.metricas?.rebalanceosTotales || 0} rebalanceos auditados`,
     },
     {
       tab: "tab-logs",
       selector: ".replay-panel",
-      titulo: "Baseline vs campeón GA",
+      titulo: "El campeón también puede perder",
       texto: "El replay usa el campeón GA publicado y reporta mediana, P05–P95 e intervalo de confianza sobre 24 semillas comunes.",
       prueba: () => "Mismas condiciones · múltiples semillas · conclusión honesta aunque gane el baseline",
     },
     {
       tab: "tab-galab",
       selector: ".ga-panel",
-      titulo: "Optimización evolutiva explicable",
-      texto: "El GA ajusta pesos, umbral, tamaño y tolerancia. Es scoring evolutivo auditable; no se presenta como una red neuronal.",
+      titulo: "El GA propone. El holdout decide.",
+      texto: "El GA ajusta pesos, umbral, tamaño y tolerancia; el baseline y el holdout impiden coronarlo sin evidencia.",
       prueba: () => `Generación ${ultimoEstado?.genetico?.generacion || 0} · población ${ultimoEstado?.genetico?.poblacion || 0} · diversidad ${formato((ultimoEstado?.genetico?.diversidad || 0) * 100, 1)}%`,
     },
   ];

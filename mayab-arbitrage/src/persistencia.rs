@@ -115,6 +115,8 @@ impl Persistencia {
             queue_capacity: 0,
             queue_pending: 0,
             queue_dropped: 0,
+            queue_failed: 0,
+            queue_last_error: None,
         }
     }
 

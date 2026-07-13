@@ -75,7 +75,8 @@ impl TimescaleDbAuditoria {
             .batch_execute(
                 "SELECT 1 FROM operaciones LIMIT 1;
                  SELECT 1 FROM auditorias LIMIT 1;
-                 SELECT 1 FROM ejecuciones LIMIT 1;",
+                 SELECT 1 FROM ejecuciones LIMIT 1;
+                 SELECT 1 FROM audit_idempotency_keys LIMIT 1;",
             )
             .await
             .context("el esquema TimescaleDB no está inicializado")?;
@@ -166,7 +167,12 @@ impl Auditoria for TimescaleDbAuditoria {
         let changed = self.block_on(async move {
             let c = self.cliente.lock().await;
             Ok::<_, anyhow::Error>(c.execute(
-                "INSERT INTO operaciones (tiempo, id, compra_en, venta_en, par, cantidad_btc, utilidad_usd, costo_usd, score, partial_fill, payload_json) VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)",
+                "WITH claimed AS (
+                     INSERT INTO audit_idempotency_keys (kind, id) VALUES ('operacion', $1)
+                     ON CONFLICT DO NOTHING RETURNING 1
+                 )
+                 INSERT INTO operaciones (tiempo, id, compra_en, venta_en, par, cantidad_btc, utilidad_usd, costo_usd, score, partial_fill, payload_json)
+                 SELECT NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb FROM claimed",
                 &[&id, &compra, &venta, &par, &cantidad, &utilidad, &costo, &None::<f64>, &parcial, &payload],
             )
             .await?)
@@ -186,11 +192,18 @@ impl Auditoria for TimescaleDbAuditoria {
         );
         let changed = self.block_on(async move {
             let c = self.cliente.lock().await;
-            Ok::<_, anyhow::Error>(c.execute(
-                "INSERT INTO eventos (tiempo, id, tipo, severidad, mensaje, payload_json) VALUES (NOW(), $1, $2, $3, $4, $5::jsonb)",
-                &[&id, &tipo, &severidad, &detalle, &payload],
+            Ok::<_, anyhow::Error>(
+                c.execute(
+                    "WITH claimed AS (
+                     INSERT INTO audit_idempotency_keys (kind, id) VALUES ('evento', $1)
+                     ON CONFLICT DO NOTHING RETURNING 1
+                 )
+                 INSERT INTO eventos (tiempo, id, tipo, severidad, mensaje, payload_json)
+                 SELECT NOW(), $1, $2, $3, $4, $5::jsonb FROM claimed",
+                    &[&id, &tipo, &severidad, &detalle, &payload],
+                )
+                .await?,
             )
-            .await?)
         })?;
         self.eventos.fetch_add(changed as usize, Ordering::Relaxed);
         Ok(())
@@ -208,7 +221,12 @@ impl Auditoria for TimescaleDbAuditoria {
         let changed = self.block_on(async move {
             let c = self.cliente.lock().await;
             Ok::<_, anyhow::Error>(c.execute(
-                "INSERT INTO rebalanceos (tiempo, id, desde, hacia, cantidad, costo_usd, payload_json) VALUES (NOW(), $1, $2, $3, $4, $5, $6::jsonb)",
+                "WITH claimed AS (
+                     INSERT INTO audit_idempotency_keys (kind, id) VALUES ('rebalanceo', $1)
+                     ON CONFLICT DO NOTHING RETURNING 1
+                 )
+                 INSERT INTO rebalanceos (tiempo, id, desde, hacia, cantidad, costo_usd, payload_json)
+                 SELECT NOW(), $1, $2, $3, $4, $5, $6::jsonb FROM claimed",
                 &[&id, &desde, &hacia, &cantidad, &costo, &payload],
             )
             .await?)
@@ -232,7 +250,12 @@ impl Auditoria for TimescaleDbAuditoria {
             let changed = self.block_on(async move {
                 let c = self.cliente.lock().await;
                 Ok::<_, anyhow::Error>(c.execute(
-                    "INSERT INTO oportunidades (tiempo, id, ruta, utilidad_usd, diferencial, payload_json) VALUES (NOW(), $1, $2, $3, $4, $5::jsonb)",
+                    "WITH claimed AS (
+                         INSERT INTO audit_idempotency_keys (kind, id) VALUES ('oportunidad', $1)
+                         ON CONFLICT DO NOTHING RETURNING 1
+                     )
+                     INSERT INTO oportunidades (tiempo, id, ruta, utilidad_usd, diferencial, payload_json)
+                     SELECT NOW(), $1, $2, $3, $4, $5::jsonb FROM claimed",
                     &[&id, &format!("{compra}->{venta}"), &utilidad, &diff, &payload],
                 )
                 .await?)
@@ -258,7 +281,12 @@ impl Auditoria for TimescaleDbAuditoria {
             let changed = self.block_on(async move {
                 let c = self.cliente.lock().await;
                 Ok::<_, anyhow::Error>(c.execute(
-                    "INSERT INTO auditorias (tiempo, id, ruta, decision, score, utilidad_usd, razon, payload_json) VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7::jsonb)",
+                    "WITH claimed AS (
+                         INSERT INTO audit_idempotency_keys (kind, id) VALUES ('auditoria', $1)
+                         ON CONFLICT DO NOTHING RETURNING 1
+                     )
+                     INSERT INTO auditorias (tiempo, id, ruta, decision, score, utilidad_usd, razon, payload_json)
+                     SELECT NOW(), $1, $2, $3, $4, $5, $6, $7::jsonb FROM claimed",
                     &[&id, &ruta, &decision, &score, &utilidad, &razon, &payload],
                 )
                 .await?)
@@ -325,6 +353,8 @@ impl Auditoria for TimescaleDbAuditoria {
             queue_capacity: 0,
             queue_pending: 0,
             queue_dropped: 0,
+            queue_failed: 0,
+            queue_last_error: None,
         }
     }
 
@@ -358,7 +388,7 @@ impl Auditoria for TimescaleDbAuditoria {
                 .ok()
                 .map(|r| r.get::<_, i64>(0))
                 .unwrap_or(0);
-            ganadas as f64 / total as f64 * 100.0
+            ganadas as f64 / total as f64
         })
     }
 

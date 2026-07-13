@@ -9,7 +9,7 @@ Este guion está diseñado para grabar una demostración de 3 minutos del dashbo
 
 ## 0:30 - 1:15 | Demostración de Escenarios de Mercado Rentable
 - **Voz/Texto:** "Vamos a inyectar oportunidades simuladas y ver cómo reacciona el motor en tiempo real."
-- **Acción:** Presiona el botón de **"Preparar demo auditada"** o **"Preparar recorrido completo"** en la sección "Demo Controlada".
+- **Acción:** Presiona **"Ejecutar prueba completa"** en la portada. El mismo recorrido también está disponible como **"Preparar demo auditada"** o **"Preparar recorrido completo"** dentro del dashboard.
 - **Acción:** Muestra cómo el "PnL Acumulado" (Profit and Loss) sube inmediatamente en la tarjeta superior.
 - **Acción:** Haz clic en una operación en verde en la tabla inferior y muestra el **Decision Inspector** (Forense) que explica por qué la operación fue aceptada (e.g. `ACEPTADA_RENTABILIDAD_RUTA`).
 

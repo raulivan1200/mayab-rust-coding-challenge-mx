@@ -3,11 +3,11 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Mayab Edge — Arbitraje BTC explicable</title>
-    <meta name="description" content="Mayab Edge detecta, simula y explica oportunidades de arbitraje BTC con datos públicos multi-exchange, riesgo visible y evidencia reproducible." />
+    <title>Mayab Edge — El mercado pestañea. Mayab ya hizo las cuentas.</title>
+    <meta name="description" content="Mayab Edge pone cada oportunidad de arbitraje BTC a prueba: costos, profundidad, inventario, fallos y evidencia reproducible sobre datos públicos." />
     <link id="favicon" rel="icon" type="image/svg+xml" href="/icons/favicon.svg?v=bitcoin" />
-    <meta property="og:title" content="Mayab Edge — Arbitraje BTC explicable" />
-    <meta property="og:description" content="Datos públicos, ejecución simulada, riesgo visible y decisiones auditables en tiempo real." />
+    <meta property="og:title" content="Mayab Edge — El mercado pestañea. Mayab ya hizo las cuentas." />
+    <meta property="og:description" content="Cada oportunidad enfrenta costos, profundidad, inventario y fallos antes de convertirse en evidencia." />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Mayab Edge" />
     <meta property="og:locale" content="es_MX" />
@@ -15,8 +15,8 @@
     <meta property="og:image" content="https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app/screenshots/dashboard-desktop.jpg" />
     <meta property="og:image:alt" content="Dashboard de arbitraje BTC simulado de Mayab Edge" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Mayab Edge — Arbitraje BTC explicable" />
-    <meta name="twitter:description" content="Datos públicos, ejecución simulada, riesgo visible y decisiones auditables." />
+    <meta name="twitter:title" content="Mayab Edge — El mercado pestañea. Mayab ya hizo las cuentas." />
+    <meta name="twitter:description" content="Cada oportunidad enfrenta costos, profundidad, inventario y fallos antes de convertirse en evidencia." />
     <meta name="twitter:image" content="https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app/screenshots/dashboard-desktop.jpg" />
     <link rel="canonical" href="https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app/" />
     <meta name="theme-color" content="#0c0e14" id="themeMetaColor" />
@@ -59,50 +59,53 @@
 
         <div class="data-lens-explainer" role="status" aria-live="polite">
           <span id="dataLensEyebrow">01 · Mercado público</span>
-          <strong id="dataLensTitle">Señales observadas; órdenes y PnL siempre simulados.</strong>
-          <small id="dataLensDetail">Esta vista nunca presenta una demo sintética como resultado de mercado.</small>
+          <strong id="dataLensTitle">Mercado real afuera. Ejecución simulada adentro.</strong>
+          <small id="dataLensDetail">Mayab no mezcla demo con live. Nunca.</small>
           <b id="dataLensScale" class="data-lens-scale" data-status="loading">Corpus público · consultando evidencia</b>
         </div>
 
         <div id="landing-top" class="landing-hero">
           <div class="landing-copy reveal-card">
-            <p class="landing-kicker" data-ui-copy="landingKicker">Conectando feeds públicos · evidencia reproducible</p>
-            <h1 data-ui-copy="landingTitle">Arbitraje que puede explicar cada decisión y sobrevivir una pierna fallida.</h1>
-            <p data-ui-copy="landingBody">Mayab compara cada ruta neta de costos, prueba inventario y profundidad, y reconcilia la exposición si la venta simulada falla después de comprar.</p>
-            <p class="landing-stack-phrase"><strong>Rust en el camino crítico; vanilla JS en la última milla.</strong> Sin GC en el motor, sin hidratación en el dashboard y sin una cadena de servicios entre la señal y la evidencia.</p>
+            <p class="landing-kicker" data-ui-copy="landingKicker">Datos públicos en vivo · capital real: cero</p>
+            <h1 data-ui-copy="landingTitle">El mercado pestañea. Mayab ya hizo las cuentas.</h1>
+            <p data-ui-copy="landingBody">No persigue cualquier destello: descuenta fees, latencia, profundidad e inventario. Si una pierna falla, cierra la exposición y deja recibo.</p>
+            <p class="landing-stack-phrase"><strong>Rust lleva el pulso. La evidencia lleva la cuenta.</strong> El motor decide en el camino crítico; el dashboard pone cada resultado bajo la lupa.</p>
             <div class="landing-actions">
               <button class="landing-cta btc-icon-button" id="btnJuryProofHero" type="button">
-                <span data-ui-copy="landingPrimaryCta">Ejecutar prueba completa</span>
+                <span data-ui-copy="landingPrimaryCta">Pon a Mayab contra las cuerdas</span>
                 <span class="material-icon material-icon-arrow" aria-hidden="true"></span>
               </button>
-              <a class="landing-cta landing-cta-secondary" href="/api/paquete-evaluacion" target="_blank" rel="noopener" title="Abre el reporte JSON con score técnico, métricas, auditoría y cobertura de evaluación" data-ui-copy="landingSecondaryCta">Inspeccionar la evidencia completa</a>
+              <a class="landing-cta landing-cta-secondary" id="btnEvidenceHero" href="/api/paquete-evaluacion" target="_blank" rel="noopener" title="Abre el reporte JSON con score técnico, métricas, auditoría y cobertura de evaluación">
+                <span class="evidence-download-label" data-ui-copy="landingSecondaryCta">Seguir el rastro completo</span>
+                <span class="evidence-download-track" aria-hidden="true"><i></i></span>
+              </a>
             </div>
             <div class="landing-proof" aria-label="Principios de la demo">
               <span><strong>01</strong> <span data-ui-copy="proofMarket">Consultando cobertura real de CEX</span></span>
-              <span><strong>02</strong> <span data-ui-copy="proofCosts">Suite Rust multi-capa · conteo sellado por CI</span></span>
-              <span><strong>03</strong> <span data-ui-copy="proofSafety">0 BTC residual · capital real: cero</span></span>
+              <span><strong>02</strong> <span data-ui-copy="proofCosts">Del spread al PnL, cada costo da la cara</span></span>
+              <span><strong>03</strong> <span data-ui-copy="proofSafety">La orden falla. La exposición no se queda.</span></span>
             </div>
           </div>
 
           <aside class="jury-minute reveal-card" id="juryMinute" aria-labelledby="juryMinuteTitle">
-            <p class="landing-kicker">60 segundos para evaluar</p>
-            <h2 id="juryMinuteTitle">Seis pruebas. Cero promesas sueltas.</h2>
+            <p class="landing-kicker">La prueba en 60 segundos</p>
+            <h2 id="juryMinuteTitle">Cinco criterios. Seis pruebas. Cero humo.</h2>
             <ol>
-              <li><a href="#dashboard" data-jury-proof="market" data-tab-target="tab-mercado"><span>01</span><strong>Mercado público recibido</strong><small id="juryProofMarket">sincronizando feeds</small></a></li>
-              <li><a href="#dashboard" data-jury-proof="economics" data-tab-target="tab-evidence" data-prepare-jury><span>02</span><strong>Costos incluidos</strong><small>waterfall · break-even · capacidad</small></a></li>
-              <li><a href="#dashboard" data-jury-proof="execution" data-tab-target="tab-riesgo" data-prepare-jury><span>03</span><strong>Ejecución adversa conciliada</strong><small id="juryProofExecution">ejecuta la prueba completa</small></a></li>
-              <li><a href="#dashboard" data-jury-proof="wallets" data-tab-target="tab-riesgo"><span>04</span><strong>Wallets conservadas</strong><small id="juryProofWallets">ledger y exposición residual</small></a></li>
-              <li><a href="#dashboard" data-jury-proof="reproducibility" data-tab-target="tab-evidence" data-prepare-jury><span>05</span><strong>Resultado reproducible</strong><small>SHA-256 · holdout · baseline vs GA</small></a></li>
-              <li><a href="/api/export/json" data-jury-proof="download" download><span>06</span><strong>Evidencia descargable</strong><small>JSON canónico · CSV · reporte</small></a></li>
+              <li><a href="#dashboard" data-jury-proof="market" data-tab-target="tab-mercado"><span>01</span><strong>Mira el mercado sin maquillaje.</strong><small id="juryProofMarket">sincronizando feeds</small></a></li>
+              <li><a href="#dashboard" data-jury-proof="economics" data-tab-target="tab-evidence" data-prepare-jury><span>02</span><strong>Cuenta hasta el último centavo.</strong><small>desglose · punto de equilibrio · capacidad</small></a></li>
+              <li><a href="#dashboard" data-jury-proof="execution" data-tab-target="tab-riesgo" data-prepare-jury><span>03</span><strong>Rompe una pierna. Cierra la exposición.</strong><small id="juryProofExecution">ejecuta la prueba completa</small></a></li>
+              <li><a href="#dashboard" data-jury-proof="wallets" data-tab-target="tab-riesgo"><span>04</span><strong>Haz que cada wallet dé la cara.</strong><small id="juryProofWallets">ledger y exposición residual</small></a></li>
+              <li><a href="#dashboard" data-jury-proof="reproducibility" data-tab-target="tab-evidence" data-prepare-jury><span>05</span><strong>Deja que el campeón pierda.</strong><small>SHA-256 · holdout · mismas condiciones</small></a></li>
+              <li><a href="/api/export/json" data-jury-proof="download" download><span>06</span><strong>Llévate la evidencia.</strong><small>JSON canónico · CSV · reporte</small></a></li>
             </ol>
-            <p id="juryMinuteStatus" class="jury-minute-status" role="status" aria-live="polite">Lista para ejecutar una corrida sintética aislada; capital real: cero.</p>
+            <p id="juryMinuteStatus" class="jury-minute-status" role="status" aria-live="polite">Pulsa una vez: señal, fallo, recuperación y recibo. Capital real: cero.</p>
           </aside>
         </div>
 
         <div class="landing-grid">
           <article class="landing-card landing-card-green landing-card-link reveal-card" data-tab-target="tab-riesgo" role="button" tabindex="0" aria-label="Abrir Riesgo y escenarios">
             <span>03</span>
-            <h2>Riesgo defendible</h2>
+            <h2>El riesgo no avisa. Mayab lo provoca.</h2>
             <ul>
               <li>Circuit breaker y modo conservador a la vista</li>
               <li>Inventario USD/BTC por exchange</li>
@@ -111,7 +114,7 @@
           </article>
           <article class="landing-card landing-card-purple landing-card-link reveal-card" data-tab-target="tab-galab" role="button" tabindex="0" aria-label="Abrir Optimización GA">
             <span>04</span>
-            <h2>Optimización explicable</h2>
+            <h2>El GA trae ideas. El holdout trae la verdad.</h2>
             <ul>
               <li>Scoring evolutivo con variables legibles</li>
               <li>Pesos GA, fitness y diversidad por generación</li>
@@ -120,7 +123,7 @@
           </article>
           <article class="landing-card landing-card-black landing-card-link reveal-card" data-tab-target="tab-logs" role="button" tabindex="0" aria-label="Abrir Auditoría y backtest">
             <span>05</span>
-            <h2>Listo para evaluar</h2>
+            <h2>Lo que no se puede auditar, no cuenta.</h2>
             <ul>
               <li>Score técnico, preflight y paquete de evidencia</li>
               <li>Smoke reproducible y contratos HTTP estables</li>
@@ -129,7 +132,7 @@
           </article>
           <article class="landing-card landing-card-blue reveal-card" id="seguridad-card">
             <span>06</span>
-            <h2>Seguridad y observabilidad</h2>
+            <h2>Sin llaves. Sin fondos. Sin letra chiquita.</h2>
             <ul>
               <li>Ejecución totalmente simulada en memoria</li>
               <li>Métricas Prometheus en <code>/metrics</code></li>
@@ -206,15 +209,15 @@
         <button class="tab-btn" data-tab="tab-mercado">Mercado y rutas</button>
         <button class="tab-btn" data-tab="tab-riesgo">Riesgo y escenarios</button>
         <button class="tab-btn" data-tab="tab-logs">Auditoría y backtest</button>
-        <button class="tab-btn" data-tab="tab-evidence">Evidence Lab</button>
-        <button class="tab-btn" data-tab="tab-galab">Optimización GA</button>
+        <button class="tab-btn" data-tab="tab-evidence">Laboratorio de evidencia</button>
+        <button class="tab-btn" data-tab="tab-galab">Evolución GA</button>
       </nav>
 
       <div class="tab-content activo" id="tab-overview">
       <section class="mayab-thesis" aria-label="Tesis operativa de Mayab">
-        <p class="ceja">La ventaja verificable</p>
-        <h1>Mayab sólo ejecuta cuando el edge sobrevive profundidad, fees, latencia, revalidación y riesgo de inventario.</h1>
-        <p>Datos públicos · ejecución 100% simulada · cada rechazo, fill, unwind y rebalanceo queda auditable.</p>
+        <p class="ceja">La regla que manda</p>
+        <h1>Si no sobrevive costos, latencia e inventario, no era edge. Era ruido.</h1>
+        <p>Cada sí, cada no y cada recuperación deja rastro. Datos públicos · ejecución 100% simulada.</p>
       </section>
       <section class="llm-strip" aria-label="Resumen operativo para humanos y LLMs">
         <div>
@@ -233,7 +236,7 @@
           <li><span>Latencia</span><strong id="llm-latencia">Cargando...</strong></li>
         </ul>
         <div class="strip-actions" aria-label="Exportar auditoría">
-          <button type="button" id="btnDemoFinalTop" class="btn-link btn-link-destacado" title="Reinicia el estado simulado y prepara una corrida auditable completa">Preparar demo auditada</button>
+          <button type="button" id="btnDemoFinalTop" class="btn-link btn-link-destacado" title="Reinicia el estado simulado y prepara una corrida auditable completa">Provocar recorrido auditado</button>
           <a class="btn-link btn-link-destacado" href="/api/jurado" target="_blank" rel="noopener" title="Abre el resumen JSON de validaciones, score, métricas y estado operativo">Abrir resumen de validación</a>
           <a class="btn-link btn-link-destacado" href="/api/paquete-evaluacion" target="_blank" rel="noopener" title="Abre el reporte JSON con criterios, métricas, auditoría y cobertura técnica">Abrir reporte técnico completo</a>
           <a class="btn-link" href="/api/mcp/manifest" target="_blank" rel="noopener" title="Consulta el manifiesto de herramientas disponibles para integraciones MCP">Consultar API para agentes</a>
@@ -244,22 +247,22 @@
 
       <section class="metricas metricas-principales" aria-label="Métricas principales">
         <article>
-          <span>Execution P&L</span>
+          <span>PnL de ejecución</span>
           <strong id="pnlExecution" class="metric-value" data-fit-metric><span class="metric-amount">—</span></strong>
           <p>Utilidad bruta de ejecución simulada.</p>
         </article>
         <article>
-          <span>Rebalance cost</span>
+          <span>Costo de rebalanceo</span>
           <strong id="pnlRebalance" class="metric-value" data-fit-metric><span class="metric-amount">—</span></strong>
           <p>Costo de rebalanceo de inventario.</p>
         </article>
         <article>
-          <span>Inventory mark-to-market</span>
+          <span>Valor de inventario</span>
           <strong id="pnlMarkToMarket" class="metric-value" data-fit-metric><span class="metric-amount">—</span></strong>
           <p>Ganancia/pérdida por exposición de cripto.</p>
         </article>
         <article>
-          <span>Total equity change</span>
+          <span>Cambio neto de capital</span>
           <strong id="pnl" class="metric-value" data-fit-metric><span class="metric-amount">—</span></strong>
           <p>Variación total neta de capital.</p>
         </article>
@@ -509,7 +512,7 @@
           <div class="panel-titulo">
             <div>
               <p class="ceja">Riesgo</p>
-              <h2>Carteras</h2>
+              <h2>Capital listo antes de la señal</h2>
             </div>
             <span id="trabajadores">10 trabajadores</span>
           </div>
@@ -659,15 +662,15 @@
         <div class="panel-titulo">
           <div>
             <p class="ceja">Sala de pruebas</p>
-            <h2>Prueba el motor bajo presión</h2>
+            <h2>Hazlo fallar. Luego busca cabos sueltos.</h2>
           </div>
           <span id="demoEstado">listo</span>
         </div>
-        <p class="panel-ayuda"><strong>SANDBOX SINTÉTICO:</strong> la demo solo se prepara cuando tú lo solicitas y cada recorrido final reinicia primero el estado simulado. No representa PnL del mercado live. Produce evidencia determinística de conciliación, fill parcial, unwind y rebalanceo.</p>
+        <p class="panel-ayuda"><strong>Sandbox sintético:</strong> tú provocas cada escenario y Mayab reinicia el estado antes de la prueba final. No es PnL del mercado live; es evidencia determinística de fill parcial, unwind, conciliación y rebalanceo.</p>
         <div class="demo-actions">
-          <button type="button" id="btnResetDemo" class="btn-secundario">Reiniciar corrida de jurado</button>
-          <button type="button" id="btnDemoFinal" class="btn-secundario demo-final btc-icon-button">Preparar recorrido completo</button>
-          <button type="button" id="btnDemoCaos" class="btn-secundario demo-final">Prueba de caos completa</button>
+          <button type="button" id="btnResetDemo" class="btn-secundario">Borrar el rastro y empezar</button>
+          <button type="button" id="btnDemoFinal" class="btn-secundario demo-final btc-icon-button">Ejecutar recorrido final</button>
+          <button type="button" id="btnDemoCaos" class="btn-secundario demo-final">Soltar todo el caos</button>
           <button type="button" class="btn-secundario demo-primary btc-icon-button" data-demo="mercado_rentable">Repetir escenario rentable</button>
           <button type="button" class="btn-secundario" data-demo="fallo_orden">Fallar siguiente orden</button>
           <button type="button" class="btn-secundario" data-demo="fallo_segunda_pierna">Fallar segunda pierna + unwind</button>
@@ -684,7 +687,7 @@
         <div class="panel-titulo">
           <div>
             <p class="ceja">Leg risk</p>
-            <h2>FSM de ejecución y conciliación</h2>
+            <h2>La segunda pierna puede fallar. La contabilidad no.</h2>
           </div>
           <span>2 piernas · exposición trazable</span>
         </div>
@@ -725,7 +728,7 @@
           <div class="panel-titulo">
             <div>
               <p class="ceja">Motor</p>
-              <h2>Decisiones de ruta</h2>
+              <h2>Del destello a la decisión</h2>
             </div>
           </div>
           <p class="panel-ayuda">Ranking de rutas candidatas. Selecciona una fila para ver por qué se ejecuta o se descarta.</p>
@@ -827,7 +830,7 @@
           <div class="panel-titulo">
             <div>
               <p class="ceja">Auditoría</p>
-              <h2>Decisiones</h2>
+              <h2>Cada decisión deja huella</h2>
             </div>
           </div>
           <p class="panel-ayuda">Bitácora forense: cada aceptación o descarte queda explicado con score, pesos GA, costos, balances y latencia.</p>
@@ -853,7 +856,7 @@
         <div class="panel-titulo">
           <div>
             <p class="ceja">Replay</p>
-            <h2>Backtest que se puede repetir</h2>
+            <h2>Aquí el campeón sí puede perder.</h2>
           </div>
           <button id="btnBacktest" class="btn-primario btn-inline btc-icon-button">Cargando…</button>
         </div>
@@ -901,7 +904,7 @@
         <div class="panel-titulo">
           <div>
             <p class="ceja">Research Lab</p>
-            <h2>Sweep de presets</h2>
+            <h2>Mismo mercado. Cuatro estrategias. Que gane la que aguante.</h2>
           </div>
           <button id="btnLabSweep" class="btn-primario btn-inline">Cargando…</button>
         </div>
@@ -934,8 +937,8 @@
         <section class="panel evidence-lab-panel" aria-labelledby="evidenceLabTitle">
           <div class="panel-titulo">
             <div>
-              <p class="ceja">Evidence Lab</p>
-              <h2 id="evidenceLabTitle">Evidencia reproducible, sin adornos</h2>
+              <p class="ceja">Laboratorio de evidencia</p>
+              <h2 id="evidenceLabTitle">Las palabras convencen. Los artefactos comprueban.</h2>
             </div>
             <button id="btnEvidenceReload" class="btn-primario btn-inline" type="button">Actualizar evidencia</button>
           </div>
@@ -950,7 +953,7 @@
         <div class="panel-titulo">
           <div>
             <p class="ceja">GA Lab</p>
-            <h2>Optimización híbrida en tiempo real</h2>
+            <h2>El GA propone. El holdout le pone los pies en la tierra.</h2>
           </div>
           <span id="gaGeneracion">Gen 0</span>
         </div>
@@ -1205,6 +1208,6 @@
     <div id="paper-texture-overlay" aria-hidden="true"></div>
     <script src="/favicon.js?v=20260710-svg-profit" type="module"></script>
     <script src="/shader.js?v=20260710-grid-perf" type="module"></script>
-    <script src="/app.js?v=20260712-jury-links-fix" type="module"></script>
+    <script src="/app.js?v=20260712-evidence-loader" type="module"></script>
   </body>
 </html>

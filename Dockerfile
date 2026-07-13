@@ -46,31 +46,37 @@ RUN touch mayab-cli/src/main.rs mayab-arbitrage/src/lib.rs && \
 # ── Stage 2: Runtime ──
 FROM debian:bookworm-slim
 
-RUN groupadd --system nonroot \
-    && useradd --system --gid nonroot --no-create-home nonroot
+LABEL org.opencontainers.image.title="Mayab Arbitraje BTC" \
+      org.opencontainers.image.description="Motor de arbitraje BTC estrictamente simulado" \
+      org.opencontainers.image.source="https://github.com/raulivan1200/mayab-btc-arbitrage"
+
+RUN groupadd --system --gid 10001 nonroot \
+    && useradd --system --uid 10001 --gid nonroot --no-create-home nonroot
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /mayab-arbitrage /app/mayab-arbitrage
-COPY internal/webui /app/internal/webui
+COPY --from=builder /build/internal/webui /app/internal/webui
 COPY data/captura_real.json /app/data/captura_real.json
-COPY README.md ARCHITECTURE.md DEMO_SCRIPT.md API_REFERENCE.md RUNBOOK.md /app/
-COPY docs /app/docs
-COPY scripts /app/scripts
 
-RUN mkdir -p /data && chown -R nonroot:nonroot /app /data
+RUN mkdir -p /data \
+    && chown nonroot:nonroot /data \
+    && chmod 0755 /app /app/mayab-arbitrage /app/internal /app/internal/webui
 
 WORKDIR /app
 USER nonroot:nonroot
 
-ENV PORT=8080
-ENV AUDITORIA_DB_PATH=/data/mayab-auditoria.sqlite
+ENV PORT=8080 \
+    RUST_LOG=info \
+    STORAGE_MODE=sqlite_ephemeral \
+    AUDITORIA_DB_PATH=/data/mayab-auditoria.sqlite
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 --start-period=10s \
   CMD curl -sf http://localhost:8080/healthz || exit 1
 
+STOPSIGNAL SIGTERM
 ENTRYPOINT ["/app/mayab-arbitrage"]

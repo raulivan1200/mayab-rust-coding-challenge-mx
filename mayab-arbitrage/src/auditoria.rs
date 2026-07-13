@@ -8,7 +8,7 @@
 use std::sync::{
     atomic::{AtomicU64, AtomicUsize, Ordering},
     mpsc::{self, SyncSender, TrySendError},
-    Arc,
+    Arc, Mutex,
 };
 
 use anyhow::{anyhow, Result};
@@ -42,6 +42,11 @@ pub trait Auditoria: Send + Sync {
     fn ultimas_operaciones(&self, limite: usize) -> Vec<Operacion>;
     /// Resumen agregado para el contrato público.
     fn resumen_agregado(&self) -> serde_json::Value;
+    /// Espera de forma acotada a que las escrituras aceptadas sean durables.
+    /// Los backends síncronos no necesitan hacer trabajo adicional.
+    fn flush(&self, _timeout: std::time::Duration) -> bool {
+        true
+    }
 }
 
 enum EscrituraAuditoria {
@@ -59,6 +64,8 @@ pub struct AuditoriaEnCola {
     tx: SyncSender<EscrituraAuditoria>,
     pendientes: Arc<AtomicUsize>,
     descartadas: AtomicU64,
+    fallidas: Arc<AtomicU64>,
+    ultimo_error: Arc<Mutex<Option<String>>>,
     capacidad: usize,
 }
 
@@ -68,6 +75,10 @@ impl AuditoriaEnCola {
         let (tx, rx) = mpsc::sync_channel(capacidad);
         let pendientes = Arc::new(AtomicUsize::new(0));
         let pendientes_worker = pendientes.clone();
+        let fallidas = Arc::new(AtomicU64::new(0));
+        let fallidas_worker = fallidas.clone();
+        let ultimo_error = Arc::new(Mutex::new(None));
+        let ultimo_error_worker = ultimo_error.clone();
         let backend_worker = backend.clone();
         std::thread::Builder::new()
             .name("mayab-persistence".to_string())
@@ -89,6 +100,10 @@ impl AuditoriaEnCola {
                     };
                     pendientes_worker.fetch_sub(1, Ordering::Relaxed);
                     if let Err(error) = resultado {
+                        fallidas_worker.fetch_add(1, Ordering::Relaxed);
+                        if let Ok(mut last) = ultimo_error_worker.lock() {
+                            *last = Some("el backend rechazó una escritura".to_string());
+                        }
                         tracing::warn!(%error, "fallo del worker de persistencia");
                     }
                 }
@@ -99,6 +114,8 @@ impl AuditoriaEnCola {
             tx,
             pendientes,
             descartadas: AtomicU64::new(0),
+            fallidas,
+            ultimo_error,
             capacidad,
         }
     }
@@ -110,10 +127,17 @@ impl AuditoriaEnCola {
             Err(TrySendError::Full(_)) => {
                 self.pendientes.fetch_sub(1, Ordering::Relaxed);
                 self.descartadas.fetch_add(1, Ordering::Relaxed);
+                if let Ok(mut last) = self.ultimo_error.lock() {
+                    *last = Some("cola de persistencia llena".to_string());
+                }
                 Err(anyhow!("cola de persistencia llena"))
             }
             Err(TrySendError::Disconnected(_)) => {
                 self.pendientes.fetch_sub(1, Ordering::Relaxed);
+                self.descartadas.fetch_add(1, Ordering::Relaxed);
+                if let Ok(mut last) = self.ultimo_error.lock() {
+                    *last = Some("worker de persistencia detenido".to_string());
+                }
                 Err(anyhow!("worker de persistencia detenido"))
             }
         }
@@ -155,9 +179,22 @@ impl Auditoria for AuditoriaEnCola {
     }
     fn estado(&self) -> EstadoPersistencia {
         let mut estado = self.backend.estado();
+        let queue_dropped = self.descartadas.load(Ordering::Relaxed);
+        let queue_failed = self.fallidas.load(Ordering::Relaxed);
+        let queue_last_error = self.ultimo_error.lock().ok().and_then(|last| last.clone());
         estado.queue_capacity = self.capacidad;
         estado.queue_pending = self.pendientes.load(Ordering::Relaxed);
-        estado.queue_dropped = self.descartadas.load(Ordering::Relaxed);
+        estado.queue_dropped = queue_dropped;
+        estado.queue_failed = queue_failed;
+        estado.queue_last_error = queue_last_error.clone();
+        if queue_dropped > 0 || queue_failed > 0 {
+            estado.storage_status = "degraded".to_string();
+            estado.error = queue_last_error.or_else(|| {
+                Some(format!(
+                    "cola degradada: {queue_dropped} descartadas, {queue_failed} fallidas"
+                ))
+            });
+        }
         estado
     }
     fn total_pnl(&self) -> f64 {
@@ -171,6 +208,11 @@ impl Auditoria for AuditoriaEnCola {
     }
     fn resumen_agregado(&self) -> serde_json::Value {
         self.backend.resumen_agregado()
+    }
+    fn flush(&self, timeout: std::time::Duration) -> bool {
+        self.esperar_drenado(timeout)
+            && self.descartadas.load(Ordering::Acquire) == 0
+            && self.fallidas.load(Ordering::Acquire) == 0
     }
 }
 
@@ -316,6 +358,8 @@ mod tests {
         release(&backend);
         wait_pending(&queue, 0);
         assert_eq!(backend.writes.load(Ordering::SeqCst), 1);
+        assert_eq!(queue.estado().queue_failed, 1);
+        assert_eq!(queue.estado().storage_status, "degraded");
     }
 
     #[test]

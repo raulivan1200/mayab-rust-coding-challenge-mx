@@ -111,10 +111,15 @@ rubric_contract_ok = (
 evidence = paquete.get("evidencia") or {}
 metrics = evidence.get("metricas") or {}
 validation = (((paquete.get("evidencia") or {}).get("backtest") or {}).get("validacionMultisemilla") or {})
+matrix = readiness.get("executionMatrix") or {}
+persistence = preflight.get("persistencia") or {}
 ok = (
     reset.get("ok") is True
     and reset.get("corridaId", "").startswith("jury-")
     and demo.get("ok") is True
+    and demo.get("persistenciaDrenada") is True
+    and demo.get("persistenciaDrenada") is True
+    and str(demo.get("resultSha256", "")).startswith("sha256:")
     and jurado.get("nombre") == "Mayab Jury Mode"
     and jury_state.get("status") == "ready"
     and readiness.get("status") == "ready"
@@ -123,6 +128,11 @@ ok = (
     and len(checks) == 12
     and all(check.get("ok") is True for check in checks)
     and (((readiness.get("twoLegEvidence") or {}).get("invariants") or {}).get("allPassed") is True)
+    and matrix.get("passed") == 12
+    and matrix.get("total") == 12
+    and matrix.get("allPassed") is True
+    and persistence.get("queueDropped", 0) == 0
+    and persistence.get("queueFailed", 0) == 0
     and rubric_contract_ok
     and metrics.get("operaciones", 0) > 0
     and metrics.get("pnlUsd", 0) > 0
@@ -131,6 +141,8 @@ ok = (
     and demo.get("riesgoSegundaPierna", {}).get("estadoFinal") == "RECONCILED"
     and demo.get("riesgoSegundaPierna", {}).get("exposicionFinalBtc") == 0
     and paquete.get("huellaAuditoria")
+    and str(paquete.get("packageSha256", "")).startswith("sha256:")
+    and (paquete.get("provenance") or {}).get("evidenceSessionId") == (demo.get("provenance") or {}).get("evidenceSessionId")
     and (validation.get("base") or {}).get("corridas") == 24
     and (validation.get("optimizada") or {}).get("corridas") == 24
 )

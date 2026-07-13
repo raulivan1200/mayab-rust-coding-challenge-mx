@@ -123,7 +123,6 @@ async fn integration_demo_mercado_rentable_genera_pnl_positivo() {
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-
     let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
@@ -160,6 +159,13 @@ async fn integration_demo_final_preserva_inventario_para_evidencia_forense() {
         .unwrap();
     let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["persistenciaDrenada"], true);
+    assert!(result["resultSha256"]
+        .as_str()
+        .is_some_and(|hash| hash.starts_with("sha256:")));
+    assert_eq!(result["deterministicProof"]["matrixPassed"], 12);
+    assert_eq!(result["deterministicProof"]["matrixTotal"], 12);
     assert_eq!(result["fillParcial"]["partialFill"], true);
     assert_eq!(result["riesgoSegundaPierna"]["ok"], true);
     assert_eq!(result["riesgoSegundaPierna"]["estadoFinal"], "RECONCILED");
@@ -321,6 +327,42 @@ async fn integration_preflight_reporta_salud_feeds_y_ga() {
     assert!(json["checks"].is_array());
     assert!(json["checks"].as_array().unwrap().len() >= 10);
     assert!(json["judgeReadiness"]["checks"].is_array());
+    assert_eq!(json["judgeReadiness"]["total"], 12);
+    assert_eq!(
+        json["judgeReadiness"]["checks"].as_array().map(Vec::len),
+        Some(12)
+    );
+    assert_eq!(json["judgeReadiness"]["executionMatrix"]["passed"], 12);
+    assert_eq!(json["judgeReadiness"]["executionMatrix"]["total"], 12);
+    assert_eq!(json["judgeReadiness"]["executionMatrix"]["allPassed"], true);
+}
+
+#[tokio::test]
+async fn integration_matriz_forense_publica_doce_escenarios_con_huella() {
+    let (app, _motor) = make_test_app().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/research/execution-matrix")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["passed"], 12);
+    assert_eq!(json["total"], 12);
+    assert_eq!(json["allPassed"], true);
+    assert_eq!(json["cases"].as_array().map(Vec::len), Some(12));
+    assert!(json["matrixSha256"]
+        .as_str()
+        .is_some_and(|hash| hash.starts_with("sha256:")));
 }
 
 #[tokio::test]
@@ -563,6 +605,7 @@ async fn integration_paquete_evaluacion_devuelve_evidencia_completa() {
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+    assert!(resp.headers().get("x-mayab-content-length").is_some());
 
     let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
@@ -573,6 +616,12 @@ async fn integration_paquete_evaluacion_devuelve_evidencia_completa() {
     assert!(json["huellaAuditoria"].is_string());
     assert!(json["scriptDemo"].is_array());
     assert!(json["endpoints"].is_object());
+    assert!(json["provenance"]["configHash"].as_str().is_some());
+    assert_eq!(json["evidencia"]["executionMatrix"]["passed"], 12);
+    assert_eq!(json["evidencia"]["executionMatrix"]["total"], 12);
+    assert!(json["packageSha256"]
+        .as_str()
+        .is_some_and(|hash| hash.starts_with("sha256:")));
 }
 
 #[tokio::test]

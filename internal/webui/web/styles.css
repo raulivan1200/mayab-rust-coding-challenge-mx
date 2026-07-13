@@ -5634,6 +5634,45 @@ body::after {
   color: #111111;
 }
 
+.evidence-download-label {
+  position: relative;
+  z-index: 2;
+}
+
+.evidence-download-track {
+  position: absolute;
+  right: 22px;
+  bottom: 8px;
+  left: 22px;
+  z-index: 2;
+  height: 3px;
+  overflow: hidden;
+  background: color-mix(in srgb, currentColor 22%, transparent);
+  opacity: 0;
+}
+
+.evidence-download-track i {
+  width: 0;
+  height: 100%;
+  display: block;
+  background: var(--yellow);
+  transition: width 180ms linear;
+}
+
+#btnEvidenceHero[data-loading="true"] .evidence-download-track {
+  opacity: 1;
+}
+
+#btnEvidenceHero[data-loading="true"] {
+  cursor: progress;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .evidence-download-track i {
+    transition: none;
+  }
+}
+
 .landing-proof {
   display: flex;
   flex-wrap: wrap;
@@ -5905,13 +5944,13 @@ body::after {
 }
 
 [data-theme="dark"] .landing-cta {
-  background: #ffffff !important;
+  background-color: #ffffff !important;
   color: #111111 !important;
   border-color: #ffffff !important;
 }
 
 [data-theme="dark"] .landing-cta-secondary {
-  background: transparent !important;
+  background-color: transparent !important;
   color: #ffffff !important;
 }
 
@@ -8502,46 +8541,38 @@ a,
   .landing-cta {
     --landing-cta-fill: var(--yellow);
     --landing-cta-hover-ink: #111111;
+    --landing-cta-rest-bg: #111111;
     isolation: isolate;
+    background-color: var(--landing-cta-rest-bg);
+    background-image: linear-gradient(var(--landing-cta-fill), var(--landing-cta-fill));
+    background-position: 0 100%;
+    background-repeat: no-repeat;
+    background-size: 100% 0;
     transition:
       color 560ms cubic-bezier(0.16, 1, 0.3, 1),
-      border-color 560ms cubic-bezier(0.16, 1, 0.3, 1);
+      border-color 560ms cubic-bezier(0.16, 1, 0.3, 1),
+      background-size 560ms cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   .landing-cta-secondary {
     --landing-cta-fill: var(--blue);
     --landing-cta-hover-ink: #ffffff;
+    --landing-cta-rest-bg: transparent;
   }
 
-  .landing-cta::before {
+  .landing-cta::before,
+  .landing-cta::after {
     display: none;
   }
 
-  .landing-cta::after {
-    content: "";
-    position: absolute;
-    z-index: -1;
-    inset: -1px;
-    width: auto;
-    height: auto;
-    border-radius: inherit;
-    background: var(--landing-cta-fill);
-    opacity: 1;
-    transform: scaleY(0);
-    transform-origin: center bottom;
-    transition: transform 560ms cubic-bezier(0.16, 1, 0.3, 1);
-  }
-
   .landing-cta:is(:hover, :focus-visible) {
+    background-color: var(--landing-cta-rest-bg);
+    background-image: linear-gradient(var(--landing-cta-fill), var(--landing-cta-fill)) !important;
+    background-size: 100% 100%;
     color: var(--landing-cta-hover-ink) !important;
     border-color: var(--landing-cta-fill) !important;
     transform: none;
     box-shadow: none;
-  }
-
-  .landing-cta:is(:hover, :focus-visible)::after {
-    opacity: 1;
-    transform: scaleY(1);
   }
 
   /* Ayuda flotante: mismo relleno vertical, sin el barrido horizontal antiguo. */

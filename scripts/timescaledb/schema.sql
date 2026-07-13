@@ -73,6 +73,17 @@ CREATE TABLE IF NOT EXISTS ejecuciones (
     payload_json  JSONB NOT NULL
 );
 
+-- Los hypertables no pueden imponer UNIQUE(id) sin incluir la partición
+-- temporal. Esta tabla regular reclama cada identidad dentro de la misma
+-- sentencia que escribe el evento, por lo que un retry o un reinicio no duplica
+-- PnL ni evidencia durable.
+CREATE TABLE IF NOT EXISTS audit_idempotency_keys (
+    kind          TEXT NOT NULL,
+    id            TEXT NOT NULL,
+    claimed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (kind, id)
+);
+
 -- Convertir en hypertables (solo si aún no lo son).
 SELECT create_hypertable('operaciones', 'tiempo', if_not_exists => TRUE);
 SELECT create_hypertable('eventos', 'tiempo', if_not_exists => TRUE);
@@ -80,11 +91,33 @@ SELECT create_hypertable('oportunidades', 'tiempo', if_not_exists => TRUE);
 SELECT create_hypertable('auditorias', 'tiempo', if_not_exists => TRUE);
 SELECT create_hypertable('rebalanceos', 'tiempo', if_not_exists => TRUE);
 
+-- Sembrar identidades de instalaciones existentes antes de aceptar escrituras
+-- nuevas. DISTINCT hace segura la migración incluso si una versión previa ya
+-- había recibido el mismo ID más de una vez.
+INSERT INTO audit_idempotency_keys (kind, id)
+SELECT 'operacion', id FROM operaciones GROUP BY id
+ON CONFLICT DO NOTHING;
+INSERT INTO audit_idempotency_keys (kind, id)
+SELECT 'evento', id FROM eventos GROUP BY id
+ON CONFLICT DO NOTHING;
+INSERT INTO audit_idempotency_keys (kind, id)
+SELECT 'oportunidad', id FROM oportunidades GROUP BY id
+ON CONFLICT DO NOTHING;
+INSERT INTO audit_idempotency_keys (kind, id)
+SELECT 'auditoria', id FROM auditorias GROUP BY id
+ON CONFLICT DO NOTHING;
+INSERT INTO audit_idempotency_keys (kind, id)
+SELECT 'rebalanceo', id FROM rebalanceos GROUP BY id
+ON CONFLICT DO NOTHING;
+
 -- Retención: conservar 90 días de auditoría por defecto.
 SELECT add_retention_policy('operaciones', INTERVAL '90 days', if_not_exists => TRUE);
 SELECT add_retention_policy('auditorias', INTERVAL '90 days', if_not_exists => TRUE);
+SELECT add_retention_policy('eventos', INTERVAL '90 days', if_not_exists => TRUE);
+SELECT add_retention_policy('oportunidades', INTERVAL '90 days', if_not_exists => TRUE);
+SELECT add_retention_policy('rebalanceos', INTERVAL '90 days', if_not_exists => TRUE);
 
-CREATE INDEX IF NOT EXISTS idx_operaciones_ruta ON operaciones (ruta, tiempo DESC);
+CREATE INDEX IF NOT EXISTS idx_operaciones_ruta ON operaciones (compra_en, venta_en, tiempo DESC);
 CREATE INDEX IF NOT EXISTS idx_eventos_tipo ON eventos (tipo, tiempo DESC);
 CREATE INDEX IF NOT EXISTS idx_auditorias_decision ON auditorias (decision, tiempo DESC);
 CREATE INDEX IF NOT EXISTS idx_ejecuciones_tiempo ON ejecuciones (tiempo DESC);

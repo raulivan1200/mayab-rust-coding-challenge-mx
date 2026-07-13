@@ -193,10 +193,18 @@ if not (
     preflight.get("listo") is True
     and readiness.get("status") == "ready"
     and readiness.get("evidenceStatus") == "complete"
-    and checks
+    and readiness.get("passed") == 12
+    and readiness.get("total") == 12
+    and len(checks) == 12
     and all(check.get("ok") is True for check in checks)
+    and (readiness.get("executionMatrix") or {}).get("passed") == 12
+    and (readiness.get("executionMatrix") or {}).get("total") == 12
+    and (readiness.get("executionMatrix") or {}).get("allPassed") is True
+    and ((readiness.get("twoLegEvidence") or {}).get("invariants") or {}).get("allPassed") is True
     and persistence.get("backend") == "timescaledb"
     and persistence.get("storagePersistent") is True
+    and persistence.get("queueDropped", 0) == 0
+    and persistence.get("queueFailed", 0) == 0
 ):
     raise SystemExit("preflight del deploy no quedó completamente verde")
 PY

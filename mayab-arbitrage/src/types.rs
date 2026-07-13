@@ -656,11 +656,18 @@ pub struct EstadoPersistencia {
     pub queue_pending: usize,
     #[serde(rename = "queueDropped", default)]
     pub queue_dropped: u64,
+    #[serde(rename = "queueFailed", default)]
+    pub queue_failed: u64,
+    #[serde(
+        rename = "queueLastError",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub queue_last_error: Option<String>,
 }
 
 impl EstadoPersistencia {
     pub fn inactiva(ruta: &str) -> Self {
-        let is_temp = ruta.starts_with("/tmp/") || ruta.starts_with("/var/folders/");
         Self {
             activa: false,
             backend: "timescaledb".to_string(),
@@ -674,11 +681,13 @@ impl EstadoPersistencia {
             db_bytes: 0,
             error: Some("backend no disponible".to_string()),
             storage_mode: "timescaledb".to_string(),
-            storage_status: if is_temp { "ephemeral" } else { "persistent" }.to_string(),
-            storage_persistent: !is_temp,
+            storage_status: "unavailable".to_string(),
+            storage_persistent: false,
             queue_capacity: 0,
             queue_pending: 0,
             queue_dropped: 0,
+            queue_failed: 0,
+            queue_last_error: None,
         }
     }
 }

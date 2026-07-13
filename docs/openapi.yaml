@@ -36,10 +36,10 @@ paths:
           description: Rúbrica, checks, cobertura y enlaces
   /api/preflight:
     get:
-      summary: Validación y parámetros de la simulación
+      summary: Gate exacto 12/12 de operación y evidencia forense
       responses:
         '200':
-          description: OK
+          description: Checks de jurado, matriz determinista, conciliación runtime y persistencia
   /api/resumen-llm:
     get:
       summary: Resume el estado para agentes y revisores automáticos
@@ -273,6 +273,12 @@ paths:
       responses:
         '200':
           description: Invariantes, conciliación y exposición residual por escenario
+  /api/research/ledger-audit:
+    get:
+      summary: Reconcilia el ledger visible de la corrida
+      responses:
+        '200':
+          description: Huella, unicidad, wallets, fills, reservas, PnL y estado terminal
   /api/export/csv:
     get:
       summary: Descarga auditoría CSV
@@ -285,6 +291,12 @@ paths:
       responses:
         '200':
           description: Archivo JSON
+  /api/export/evidence:
+    get:
+      summary: Descarga el resumen Markdown de evidencia y procedencia
+      responses:
+        '200':
+          description: Archivo Markdown sellable
 components:
   securitySchemes:
     AdminBearer:

@@ -40,8 +40,11 @@ pub struct Motor {
     ops_ejecutadas: AtomicU64,
     ops_fallidas: AtomicU64,
     ejecucion_en_curso: AtomicBool,
+    carril_simulacion: Arc<Mutex<()>>,
     ga_evolucion_en_curso: Mutex<()>,
 }
+
+const JURY_REFERENCE_PRICE_USD: f64 = 50_000.0;
 
 struct State {
     costos: MapaCostos,
@@ -225,8 +228,15 @@ impl Motor {
             ops_ejecutadas: AtomicU64::new(0),
             ops_fallidas: AtomicU64::new(0),
             ejecucion_en_curso: AtomicBool::new(false),
+            carril_simulacion: Arc::new(Mutex::new(())),
             ga_evolucion_en_curso: Mutex::new(()),
         }
+    }
+
+    /// Exclusividad para recorridos que restablecen o mutan varias piezas del
+    /// estado simulado. El mismo carril protege el ciclo live completo.
+    pub async fn bloquear_recorrido_simulado(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.carril_simulacion.clone().lock_owned().await
     }
 
     /// Inicia el ciclo periódico de análisis.
@@ -308,6 +318,7 @@ impl Motor {
     }
 
     async fn analizar(&self, ahora: DateTime<Utc>) {
+        let _carril = self.carril_simulacion.lock().await;
         let inicio_scan = Instant::now();
         let evento_actual = self.eventos.load(Ordering::SeqCst);
         let (
@@ -802,6 +813,18 @@ impl Motor {
         }
     }
 
+    /// Espera a que la cola de auditoría confirme todas las escrituras de la
+    /// corrida. Un paquete de evidencia no debe sellarse sobre writes pendientes
+    /// ni sobre una cola que ya reportó pérdida.
+    pub async fn esperar_persistencia(&self, timeout: std::time::Duration) -> bool {
+        let Some(persistencia) = self.persistencia.clone() else {
+            return false;
+        };
+        tokio::task::spawn_blocking(move || persistencia.flush(timeout))
+            .await
+            .unwrap_or(false)
+    }
+
     /// Reemplaza la configuración de costos y riesgo del motor.
     pub async fn actualizar_config(&self, cfg: MapaCostos) {
         self.state.write().await.costos = cfg;
@@ -854,7 +877,6 @@ impl Motor {
         };
         self.ops_ejecutadas.store(0, Ordering::SeqCst);
         self.ops_fallidas.store(0, Ordering::SeqCst);
-        self.ejecucion_en_curso.store(false, Ordering::SeqCst);
         insertar_evento_sistema(
             &mut state,
             "jury_reset",
@@ -1037,7 +1059,7 @@ impl Motor {
             }
             EscenarioDemo::FalloSegundaPierna => {
                 let op_id = format!("demo-leg2-{}", ahora.timestamp_millis());
-                let precio = precio_referencia(state.cotizaciones.values());
+                let precio = precio_referencia_demo(&state);
                 let Some((compra_en, venta_en)) = state.carteras.mejor_ruta_demo() else {
                     return serde_json::json!({
                         "ok": false,
@@ -1143,7 +1165,7 @@ impl Motor {
             }
             EscenarioDemo::FillParcial => {
                 state.circuit_breaker_activo = false;
-                let precio = precio_referencia(state.cotizaciones.values());
+                let precio = precio_referencia_demo(&state);
                 let Some((compra_en, venta_en)) = state.carteras.mejor_ruta_demo() else {
                     return serde_json::json!({
                         "ok": false,
@@ -1270,7 +1292,7 @@ impl Motor {
                 serde_json::json!({ "ok": true, "modo": "instantaneo" })
             }
             EscenarioDemo::Rebalanceo => {
-                let precio = precio_referencia(state.cotizaciones.values());
+                let precio = precio_referencia_demo(&state);
                 let evento = state.carteras.forzar_rebalanceo_demo(precio, ahora);
                 let transferencia = crear_transferencia(&state, &evento, ahora);
                 self.persistir_rebalanceo(&evento);
@@ -1302,7 +1324,7 @@ impl Motor {
                 state.modo_conservador = false;
                 state.operaciones_riesgo.retain(|op| op.utilidad_usd >= 0.0);
 
-                let precio = precio_referencia(state.cotizaciones.values());
+                let precio = precio_referencia_demo(&state);
                 let seed = if state.corrida.modo == "demo_controlada" {
                     // Jury Mode debe producir el mismo tape económico aunque
                     // cambien el timestamp y el id de la sesión.
@@ -1406,24 +1428,30 @@ impl Motor {
                     pnl = state.utilidad,
                     "demo rentable aplicada"
                 );
+                let demo_ok = insertadas > 0 && state.utilidad > 0.0 && ga_evolucionada;
                 insertar_evento_sistema(
                     &mut state,
                     "demo_rentable",
-                    if ga_evolucionada {
+                    if demo_ok {
                         "demo: se inyectaron operaciones rentables y se entrenó el GA con ese historial"
+                    } else if insertadas == 0 {
+                        "demo bloqueada: no se pudo insertar una operación rentable con las wallets disponibles"
+                    } else if !ga_evolucionada {
+                        "demo incompleta: otra evolución GA seguía en curso"
                     } else {
-                        "demo: se inyectaron operaciones rentables; otra evolución GA seguía en curso"
+                        "demo bloqueada: el PnL acumulado no quedó positivo"
                     },
-                    "normal",
+                    if demo_ok { "normal" } else { "alta" },
                     ahora,
                 );
                 if let Some(evento) = state.eventos_ejecucion.front() {
                     self.persistir_evento(evento);
                 }
                 serde_json::json!({
-                    "ok": true,
+                    "ok": demo_ok,
                     "modo": "instantaneo",
                     "operacionesInsertadas": insertadas,
+                    "pnlUsd": state.utilidad,
                     "generacionGa": state.ga.generacion,
                     "gaEvolucionada": ga_evolucionada,
                 })
@@ -1580,7 +1608,7 @@ impl Motor {
         // ventana de volatilidad y hace que una ráfaga corta de mercado parezca
         // congelar el endpoint. El sandbox conserva e ingiere todos los ticks,
         // pero ejecuta decisiones sobre un reloj periódico y determinista.
-        const INTERVALO_ANALISIS_REPLAY_MS: i64 = 70;
+        const INTERVALO_ANALISIS_REPLAY_MS: i64 = 250;
         const TICKS_ANTES_DE_CEDER: usize = 256;
         let total_datos = datos.len();
         let mut procesados = 0;
@@ -3522,6 +3550,14 @@ fn precio_referencia<'a>(cotizaciones: impl IntoIterator<Item = &'a Cotizacion>)
     }
 }
 
+fn precio_referencia_demo(state: &State) -> f64 {
+    if state.corrida.modo == "demo_controlada" {
+        JURY_REFERENCE_PRICE_USD
+    } else {
+        precio_referencia(state.cotizaciones.values())
+    }
+}
+
 pub fn cotizacion_valida(c: &Cotizacion, ahora: DateTime<Utc>, stale_ms: i64) -> bool {
     if c.exchange.is_empty()
         || !c.bid.is_finite()
@@ -4558,14 +4594,14 @@ mod tests {
         motor.detener_captura().await;
 
         let resultado =
-            tokio::time::timeout(Duration::from_secs(5), motor.ejecutar_replay_capturado())
+            tokio::time::timeout(Duration::from_secs(10), motor.ejecutar_replay_capturado())
                 .await
                 .expect("el replay de una ráfaga corta no debe parecer congelado");
 
         assert_eq!(resultado["ok"], true);
         assert_eq!(resultado["ticksProcesados"], 6_000);
-        assert_eq!(resultado["intervaloAnalisisMs"], 70);
-        assert!(resultado["ciclosAnalisis"].as_u64().unwrap_or(u64::MAX) <= 350);
+        assert_eq!(resultado["intervaloAnalisisMs"], 250);
+        assert!(resultado["ciclosAnalisis"].as_u64().unwrap_or(u64::MAX) <= 100);
     }
 
     #[tokio::test]

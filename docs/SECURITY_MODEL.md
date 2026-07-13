@@ -17,15 +17,22 @@ Mayab consumes public market data and simulates trades. It has no exchange crede
 
 ## Controls
 
-- Strict JSON deserialization, request limits, timeouts, rate limiting and security headers belong at the HTTP boundary.
+- Strict JSON deserialization, request limits, timeouts, rate limiting, HSTS
+  and a self-hosted-asset CSP belong at the HTTP boundary.
 - USD and USDT remain separate unless explicitly configured, preventing false cross-currency profit.
 - Stale data, circuit breaker, inventory and single-flight checks can reject simulated execution.
 - Demo events are labeled synthetic and real execution remains `false` in public state.
 - Audit stores can contain market and operational evidence but no secrets or personal data.
+- A full persistence queue or a backend write failure is fail-visible: counters remain monotonic, `storageStatus` becomes `degraded`, and evaluation readiness is blocked until a clean process is restored.
 
 ## Deployment guidance
 
 Use a strong `ADMIN_TOKEN`, exact `ALLOWED_ORIGINS`, HTTPS, least-privilege Cloud Run identity, restricted `/metrics`, immutable image tags and `MIN_INSTANCES=1` only when latency warrants its cost. The production deploy requires durable TimescaleDB and fails closed when its schema or connection is unavailable.
+
+The production image runs as `nonroot`, handles `SIGTERM`, keeps application
+files root-owned and excludes source documentation/scripts from the runtime
+layer. The Compose profile additionally uses a read-only root filesystem,
+`no-new-privileges`, no Linux capabilities and bounded tmpfs storage.
 
 ## Remaining risks
 

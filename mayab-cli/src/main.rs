@@ -11,6 +11,7 @@ use anyhow::Context;
 use tokio::signal;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
+use mayab_arbitrage::auditoria::Auditoria as _;
 #[cfg(feature = "timescaledb")]
 use mayab_arbitrage::persistencia_timescale;
 use mayab_arbitrage::{auditoria, config, discord, mercado, motor, persistencia, server};
@@ -73,6 +74,15 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "sqlite_ephemeral".to_string())
         .trim()
         .to_ascii_lowercase();
+    if !matches!(
+        storage_mode.as_str(),
+        "sqlite_ephemeral" | "sqlite_persistent" | "volume" | "timescaledb"
+    ) {
+        anyhow::bail!("STORAGE_MODE no reconocido: {storage_mode}");
+    }
+    if cfg.entorno == config::Environment::Production && storage_mode != "timescaledb" {
+        anyhow::bail!("production requiere STORAGE_MODE=timescaledb");
+    }
     let persistencia: Option<Arc<dyn auditoria::Auditoria>> = if storage_mode == "timescaledb" {
         #[cfg(feature = "timescaledb")]
         {
@@ -156,13 +166,12 @@ async fn main() -> anyhow::Result<()> {
     .with_graceful_shutdown(esperar_apagado())
     .await?;
     if let Some(cola) = persistencia_cola {
-        let drenada = tokio::task::spawn_blocking(move || {
-            cola.esperar_drenado(std::time::Duration::from_secs(10))
-        })
-        .await
-        .unwrap_or(false);
+        let drenada =
+            tokio::task::spawn_blocking(move || cola.flush(std::time::Duration::from_secs(10)))
+                .await
+                .unwrap_or(false);
         if !drenada {
-            tracing::error!("la cola de persistencia no drenó antes del shutdown");
+            tracing::error!("la cola de persistencia no drenó sin pérdidas antes del shutdown");
         }
     }
     Ok(())

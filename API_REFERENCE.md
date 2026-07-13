@@ -168,6 +168,12 @@ El CSV es una bitácora unificada y tipada: incluye operaciones, oportunidades,
 transiciones, ejecuciones de dos piernas, auditorías y rebalanceos en un solo
 archivo, conservando el orden de cada colección.
 
+`GET /api/paquete-evaluacion` incorpora `provenance`, la matriz forense 12/12 y
+`packageSha256`. La huella cubre el JSON canónico previo a agregar
+`packageSha256`/`hashScope`. El estado de persistencia expone además
+`queuePending`, `queueDropped`, `queueFailed` y `queueLastError`; pérdidas o
+fallos de escritura bloquean `/api/preflight`.
+
 ## MCP-lite y Discord
 
 | Método | Ruta | Descripción |

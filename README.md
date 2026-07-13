@@ -84,7 +84,7 @@ El sistema corre como un solo binario Rust: conexiones WebSocket concurrentes so
 2. Abre `/api/jurado`: concentra rúbrica, scorecard, cobertura finalista, checks, evidencia clave y links de auditoría.
 3. Abre `/api/preflight`: confirma `judgeReadiness.status=ready`, checks completos y la rúbrica oficial de 5 criterios.
 4. La instancia pública queda precargada automáticamente al arrancar en `MAYAB_JUDGE_MODE=true` con una corrida auditada completa: GA, PnL positivo, fill parcial, mercado movido, liquidez insuficiente, segunda pierna rechazada con unwind a exposición cero y rebalanceo. El jurado puede reiniciar y repetir únicamente los recorridos cerrados `/api/demo/reset`, `/api/demo/final` y `/api/demo/caos`; cualquier otra mutación sigue protegida por `ADMIN_TOKEN`.
-5. En local, o como operador autenticado, pulsa **Preparar demo auditada** y **Forzar rebalanceo** para reproducir la corrida y el movimiento interno con costo explícito.
+5. En local, o como operador autenticado, pulsa **Ejecutar prueba completa** en la portada y **Forzar rebalanceo** en el dashboard para reproducir la corrida y el movimiento interno con costo explícito.
 6. Abre `/api/paquete-evaluacion`: verás scorecard, huella de auditoría, recomendaciones finales, backtest reproducible, evidencia SQLite y diferenciadores listos para revisión.
 
 Validación automática equivalente:
@@ -124,7 +124,7 @@ Privacidad del dashboard:
 - No usa cookies.
 - No genera identificadores persistentes de visitante.
 - No envía datos personales al backend.
-- `localStorage` solo se usa para tema visual, modo debug local, coordinación local de auto-GA entre pestañas y, opcionalmente, un `mayabAdminToken` que el operador puede definir manualmente en despliegues protegidos.
+- `localStorage` solo se usa para tema visual, modo debug local y, opcionalmente, un `mayabAdminToken` que el operador puede definir manualmente en despliegues protegidos.
 - El modo debug solo se activa con `?debug=1` o `localStorage.mayabDebug=1`.
 
 Contrato HTTP:
@@ -203,7 +203,9 @@ La revision rapida y reproducible esta en [docs/EVIDENCE_MATRIX.md](docs/EVIDENC
 - **Permite activar/desactivar exchanges individualmente** desde la UI en tiempo real.
 - Permite cambiar el perfil operativo con presets: Balanceado, Agresivo, Seguro y Estrés.
 - Expone un tablero web en tiempo real con mapa de rutas, score por oportunidad, panel genético, tablas, balances, rebalanceos, timeline operativo, modo demo/live/rest, backtest y gráficas.
-- Expone `/api/preflight` como gate 12/12 de operación, evidencia, conciliación y persistencia.
+- Expone `/api/preflight` como gate exacto 12/12 de operación, evidencia,
+  conciliación adversa y persistencia; `twoLegReconciliation` exige tanto el
+  reporte runtime como la matriz determinista 12/12 con la misma huella.
 - Expone un snapshot compacto para agentes y scripts en `/api/resumen-llm`, incluyendo decisión actual, mejor ruta, GA, riesgo, PnL y últimos eventos.
 - Expone `/api/paquete-evaluacion` como evidencia autocontenida para jueces: score por criterio, guion de demo, resumen ejecutivo, backtest y enlaces de auditoría.
 - Persiste evidencia en SQLite para desarrollo local y en TimescaleDB durable para producción.
@@ -479,6 +481,9 @@ TimescaleDB sin fallback silencioso. Requiere compilar el feature `timescaledb`,
 una `DATABASE_URL` con `sslmode=require` (salvo redes privadas configuradas
 explícitamente con `sslmode=disable`) y el esquema versionado:
 
+El binario rechaza valores desconocidos de `STORAGE_MODE` y, cuando
+`MAYAB_ENV=production`, no arranca con SQLite: exige `timescaledb`.
+
 ```bash
 psql "$DATABASE_URL" -f scripts/timescaledb/schema.sql
 cargo run -p mayab-cli --bin mayab-arbitrage --features timescaledb
@@ -487,8 +492,10 @@ cargo run -p mayab-cli --bin mayab-arbitrage --features timescaledb
 La URL nunca se publica: estado y logs muestran `timescaledb://[redacted]`.
 
 `ENABLED_EXCHANGES` y `SYMBOLS` son listas separadas por comas. La persistencia
-usa un worker con cola acotada; `queueCapacity`, `queuePending` y `queueDropped`
-permiten observar backpressure sin meter SQLite en el hot path.
+usa un worker con cola acotada; `queueCapacity`, `queuePending`, `queueDropped`
+y `queueFailed` permiten observar backpressure y fallos del backend sin meter
+SQLite o TimescaleDB en el hot path. `queueLastError` sólo publica una categoría
+sanitizada; el detalle técnico permanece en los logs del servidor.
 
 Comisiones por casa de cambio:
 
@@ -634,8 +641,10 @@ GET  /api/backtest         backtest reproducible con bootstrap temporal pareado 
 GET  /api/lab/sweep        Research Lab: sweep Conservador/Balanceado/Agresivo/GA Edge
 GET  /api/research/economics waterfall, break-even, capacidad y embudo observados
 GET  /api/research/execution-matrix matriz determinista de 12 escenarios de ejecución
+GET  /api/research/ledger-audit conciliación de IDs, métricas, wallets, fills, reservas y PnL
 GET  /api/export/json      descarga reporte completo de auditoría en JSON
 GET  /api/export/csv       descarga bitácora unificada en CSV
+GET  /api/export/evidence  resumen Markdown con sesión y hashes de procedencia
 POST /api/config           actualizar parámetros de simulación
 POST /api/demo             disparar escenario adverso o demo rentable controlada
 POST /api/demo/reset       reiniciar balances, PnL, riesgo y GA conservando feeds/configuración

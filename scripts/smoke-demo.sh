@@ -63,6 +63,8 @@ import sys
 preflight = json.load(open(sys.argv[1]))
 readiness = preflight.get("judgeReadiness") or {}
 checks = readiness.get("checks") or []
+matrix = readiness.get("executionMatrix") or {}
+persistence = preflight.get("persistencia") or {}
 ok = (
     preflight.get("listo") is True
     and readiness.get("status") == "ready"
@@ -70,6 +72,12 @@ ok = (
     and readiness.get("total") == 12
     and len(checks) == 12
     and all(check.get("ok") is True for check in checks)
+    and matrix.get("passed") == 12
+    and matrix.get("total") == 12
+    and matrix.get("allPassed") is True
+    and (((readiness.get("twoLegEvidence") or {}).get("invariants") or {}).get("allPassed") is True)
+    and persistence.get("queueDropped", 0) == 0
+    and persistence.get("queueFailed", 0) == 0
 )
 sys.exit(0 if ok else 1)
 PY
@@ -187,6 +195,10 @@ if rebalanceo.get("ok") is not True:
 
 if demo_final.get("ok") is not True:
     errors.append("/api/demo/final fallo")
+if demo_final.get("persistenciaDrenada") is not True:
+    errors.append("/api/demo/final no confirmó persistencia drenada")
+if not str(demo_final.get("resultSha256", "")).startswith("sha256:"):
+    errors.append("/api/demo/final no selló resultSha256")
 if demo_final.get("mercadoMovido", {}).get("ok") is not True:
     errors.append("/api/demo/final no probo mercado_movido")
 if demo_final.get("liquidezInsuficiente", {}).get("ok") is not True:
@@ -253,6 +265,8 @@ if not evidencia_paquete.get("ultimaAuditoria") or not evidencia_paquete.get("ga
     errors.append("paquete no incluye auditoria de decision y estado GA")
 if not paquete.get("huellaAuditoria"):
     errors.append("paquete no incluye huella de auditoria")
+if not str(paquete.get("packageSha256", "")).startswith("sha256:"):
+    errors.append("paquete no incluye packageSha256")
 
 recomendaciones = paquete.get("recomendacionesParaGanar") or []
 if not recomendaciones or "Estado listo" not in recomendaciones[0]:
@@ -342,6 +356,16 @@ if any(check.get("ok") is not True for check in readiness_final.get("checks") or
     errors.append("el smoke dejo checks de readiness incompletos al terminar")
 if readiness_final.get("passed") != 12 or readiness_final.get("total") != 12:
     errors.append("el smoke no terminó con preflight exacto 12/12")
+matrix_final = readiness_final.get("executionMatrix") or {}
+if not (
+    matrix_final.get("passed") == 12
+    and matrix_final.get("total") == 12
+    and matrix_final.get("allPassed") is True
+):
+    errors.append("el preflight final no vinculó la matriz determinista 12/12")
+persistencia_final = preflight_final.get("persistencia") or {}
+if persistencia_final.get("queueDropped", 0) or persistencia_final.get("queueFailed", 0):
+    errors.append("la persistencia final reportó escrituras descartadas o fallidas")
 
 if errors:
     print("Smoke fallido:")

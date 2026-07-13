@@ -6,9 +6,18 @@ services:
     environment:
       - PORT=8080
       - AUDITORIA_DB_PATH=/data/mayab-auditoria.sqlite
+      - STORAGE_MODE=sqlite_persistent
       - RUST_LOG=info
     volumes:
       - mayab-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: curl -sf http://localhost:8080/healthz || exit 1
       interval: 10s

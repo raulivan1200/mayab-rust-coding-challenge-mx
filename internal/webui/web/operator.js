@@ -16,7 +16,10 @@ function render(data){
   const banner=byId("banner"); banner.className=`banner ${circuit?"bad":"ok"}`;
   banner.textContent=circuit?"Circuit breaker activo · ejecución simulada detenida":"Motor operativo · simulación sin fondos reales";
   const persistence=data.persistencia||{};
-  renderDefinitions(byId("risk"),[["Estado de riesgo",metric(data,"estadoRiesgo","sin dato")],["Drawdown máximo",money.format(metric(data,"maxDrawdownUsd"))],["Persistencia",persistence.activa?"activa":"inactiva"],["Rebalanceos",number.format(metric(data,"rebalanceosTotales"))]]);
+  const queueHealth=(persistence.queueDropped||0)+(persistence.queueFailed||0)===0
+    ? `cola sana · ${number.format(persistence.queuePending||0)} pendientes`
+    : `degradada · ${number.format(persistence.queueDropped||0)} descartadas · ${number.format(persistence.queueFailed||0)} fallidas`;
+  renderDefinitions(byId("risk"),[["Estado de riesgo",metric(data,"estadoRiesgo","sin dato")],["Drawdown máximo",money.format(metric(data,"maxDrawdownUsd"))],["Persistencia",`${persistence.storageStatus||"sin estado"} · ${queueHealth}`],["Rebalanceos",number.format(metric(data,"rebalanceosTotales"))]]);
   byId("exchanges").replaceChildren(...Object.entries(data.exchangesActivos||{}).sort().map(([name,on])=>{const el=document.createElement("span");el.className=`pill ${on?"on":""}`;el.textContent=`${name} · ${on?"ON":"OFF"}`;return el}));
   byId("events").replaceChildren(...(data.eventosEjecucion||[]).slice(-8).reverse().map((event)=>{const el=document.createElement("li");el.textContent=event.descripcion||event.detalle||event.tipo||"Evento del motor";return el}));
 }
