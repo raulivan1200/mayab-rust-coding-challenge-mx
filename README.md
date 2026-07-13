@@ -829,6 +829,11 @@ simulación.
 
 ![Bot de Mayab respondiendo comandos en Discord](screenshots/discord-bot.png)
 
+Segunda evidencia: estado inicial, preparación reproducible de la demo rentable
+y análisis posterior de Mayab IA sobre el estado simulado:
+
+![Flujo completo de estado, demo rentable y análisis de Mayab IA en Discord](screenshots/discord-bot-demo-ia.png)
+
 Perfil sugerido en Discord Developer Portal:
 
 - **Name:** `Mayab Arbitraje BTC`
