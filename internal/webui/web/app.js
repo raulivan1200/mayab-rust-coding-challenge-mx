@@ -91,15 +91,15 @@ aplicarCopyEditorial();
 let descargaEvidenciaEnCurso = null;
 
 const MENSAJES_ESPERA_EVIDENCIA = Object.freeze([
-  "Preparando el reporte técnico.",
-  "Reuniendo métricas y decisiones.",
-  "Verificando la conciliación.",
-  "Calculando la huella SHA-256.",
-  "Generando el archivo JSON.",
+  "Bitcoin no se apura; la evidencia tampoco se inventa.",
+  "Contando sats. Sí, también los que se esconden en el sofá.",
+  "Un momento: hasta Bitcoin espera confirmaciones.",
+  "Sellando el SHA-256. El humo no cabe en el hash.",
+  "Revisando dos veces; los sats no aceptan redondeos creativos.",
 ]);
 
 function mensajeEsperaEvidencia(segundos) {
-  const indice = Math.floor(segundos / 2.4) % MENSAJES_ESPERA_EVIDENCIA.length;
+  const indice = Math.floor(segundos / 1.8) % MENSAJES_ESPERA_EVIDENCIA.length;
   return MENSAJES_ESPERA_EVIDENCIA[indice];
 }
 
@@ -2074,7 +2074,7 @@ function renderEdgePanel(datos) {
   const features = $("edgeFeatures");
   if (!edge) {
     setText("edgeEstado", "esperando auditoría");
-    setText("edgeExplicacion", "Falta una decisión auditada. Carga la demo ganadora o espera una oportunidad del mercado para explicar el edge.");
+    setText("edgeExplicacion", "Aún no hay una decisión para analizar. Ejecuta un escenario o espera una oportunidad para calcular el score.");
     setText("edgeEv", dinero.format(0));
     setText("edgeConfianza", "0.0%");
     setText("edgeSurvival", "0.0%");
@@ -2235,6 +2235,17 @@ function renderPipeline(pipeline, datos) {
 
   setText("pipelineThroughput", `${formato(pipeline.eventosPorSegundo || 0, 1)} evt/s`);
   setText("pipelineRoutes", `${numero.format(pipeline.rutasEvaluadas || 0)} rutas evaluadas`);
+
+  const rutas = Math.max(0, Number(pipeline.rutasEvaluadas || 0));
+  const computeP50 = Math.max(0, Number(pipeline.computeP50Us || 0));
+  const throughput = Math.max(0, Number(pipeline.eventosPorSegundo || 0));
+  if (rutas > 0 || computeP50 > 0 || throughput > 0) {
+    const partes = [];
+    if (rutas > 0) partes.push(`${numero.format(rutas)} rutas evaluadas por este proceso`);
+    if (computeP50 > 0) partes.push(`cómputo p50 de ${formato(computeP50, 0)} µs`);
+    if (throughput > 0) partes.push(`${formato(throughput, 1)} eventos/s observados`);
+    setText("landingRustMetrics", `${partes.join(" · ")}. La red espera en milisegundos; Mayab decide en microsegundos.`);
+  }
 }
 
 let ablacionGACargada = false;
@@ -2420,7 +2431,7 @@ async function cargarEvidenceLab() {
 
 function renderEconomicsEvidence(economics) {
   if (!economics?.available) {
-    return `<article class="evidence-lab-card economics-unavailable"><h3>CORE · Economía de la decisión</h3><strong>Todavía no hay recibo</strong><small>${escapeHtml(economics?.reason || economics?.error || "Pon a Mayab contra las cuerdas para generar una operación con costos.")}</small><button type="button" class="btn-link" data-run-jury>Provocar la prueba final</button></article>`;
+    return `<article class="evidence-lab-card economics-unavailable"><h3>CORE · Economía de la decisión</h3><strong>Aún no hay una operación para analizar</strong><small>${escapeHtml(economics?.reason || economics?.error || "Ejecuta la prueba completa para generar una operación con costos.")}</small><button type="button" class="btn-link" data-run-jury>Ejecutar prueba completa</button></article>`;
   }
 
   const waterfall = economics.edgeWaterfall || {};
@@ -2452,27 +2463,27 @@ function renderEconomicsEvidence(economics) {
 
   return `
     <article class="evidence-lab-card economics-card economics-waterfall">
-      <h3>CORE · Edge Waterfall</h3>
-      <small>${escapeHtml(economics.source?.route || "ruta")}: dónde desaparece el spread.</small>
+      <h3>CORE · Desglose de utilidad</h3>
+      <small>${escapeHtml(economics.source?.route || "ruta")}: efecto de cada costo sobre el spread.</small>
       <ol>${waterfallHtml}</ol>
-      <strong class="economics-verdict">${waterfall.reconciledWithinCent ? "Ledger y waterfall concilian al centavo" : "Revisar conciliación"}</strong>
+      <strong class="economics-verdict">${waterfall.reconciledWithinCent ? "El desglose coincide con el ledger" : "Revisar conciliación"}</strong>
       <a class="btn-link evidence-artifact-link" href="/api/research/economics" target="_blank" rel="noopener">Abrir datos</a>
     </article>
     <article class="evidence-lab-card economics-card economics-frontier">
-      <h3>CORE · Break-even Frontier</h3>
-      <small>Cuánto costo adicional destruye el edge neto.</small>
+      <h3>CORE · Punto de equilibrio</h3>
+      <small>Costo adicional que puede absorber la ruta antes de perder utilidad.</small>
       <div class="frontier-track" aria-label="Costo actual contra costo de break-even"><b style="width:${frontierPct}%"></b></div>
       <dl><div><dt>Costo actual</dt><dd>${dinero.format(frontier.currentTotalCostUsd || 0)}</dd></div><div><dt>Break-even</dt><dd>${dinero.format(frontier.maxTotalCostUsd || 0)}</dd></div><div><dt>Headroom</dt><dd>${formato(frontier.additionalCostHeadroomBps || 0, 2)} bps</dd></div></dl>
       <a class="btn-link evidence-artifact-link" href="/api/research/economics" target="_blank" rel="noopener">Abrir datos</a>
     </article>
     <article class="evidence-lab-card economics-card economics-capacity">
-      <h3>CORE · Capacity Curve</h3>
-      <small>PnL esperado por tamaño; el tramado marca extrapolación sobre 100% de profundidad observada.</small>
+      <h3>CORE · Curva de capacidad</h3>
+      <small>PnL esperado por tamaño. El tramado indica valores fuera de la profundidad observada.</small>
       <ol>${capacityHtml}</ol>
       <a class="btn-link evidence-artifact-link" href="/api/research/economics" target="_blank" rel="noopener">Abrir datos</a>
     </article>
     <article class="evidence-lab-card economics-card economics-funnel">
-      <h3>CORE · Decision Funnel</h3>
+      <h3>CORE · Filtro de decisiones</h3>
       <small>Rutas que sobreviven frescura, profundidad, costos y riesgo.</small>
       <ol>${funnelHtml}</ol>
       <a class="btn-link evidence-artifact-link" href="/api/research/economics" target="_blank" rel="noopener">Abrir datos</a>
@@ -2653,7 +2664,7 @@ function renderTransferencias(datos) {
       <td class="text-right">${t.activo === "BTC" ? btc.format(t.cantidadBruta) : dinero.format(t.cantidadBruta)}</td>
       <td class="text-right">${t.activo === "BTC" ? btc.format(t.cantidadNeta) : dinero.format(t.cantidadNeta)}</td>
       <td class="text-right">${dinero.format(t.costoUsd)}</td>
-      <td class="text-right" title="ETA ${numero.format(t.etaMs || 0)} ms · retraso ${numero.format(t.retrasoSimuladoMs || 0)} ms · costo oportunidad ${dinero.format(t.costoOportunidadUsd || 0)} · capacidad ${numero.format(t.capacidadOperativaRestante || 0)}"><small>${formatearHoraLocal(t.liquidaEn)}</small></td>
+      <td class="text-right" title="Red ${escapeHtml(t.redElegida || "n/a")} · confirmaciones ${numero.format(t.confirmacionesObservadas || 0)}/${numero.format(t.confirmacionesRequeridas || 0)} · mínimo ${numero.format(t.minimoRetiro || 0)} (${t.cumpleMinimo ? "cumple" : "no cumple"}) · retiro ${t.retiroSuspendido ? "suspendido" : "disponible"} · capital bloqueado ${dinero.format(t.capitalBloqueadoUsd || 0)} · prob. demora ${formato((t.probabilidadDemora || 0) * 100, 1)}% · ETA ${numero.format(t.etaMs || 0)} ms · retraso ${numero.format(t.retrasoSimuladoMs || 0)} ms · costo oportunidad ${dinero.format(t.costoOportunidadUsd || 0)} · capacidad ${numero.format(t.capacidadOperativaRestante || 0)}"><small>${formatearHoraLocal(t.liquidaEn)}</small></td>
     `;
     df.appendChild(tr);
   });
@@ -3040,7 +3051,7 @@ function renderGenetico(datos) {
   setText("gaEstado", g.activo ? "Optimizando estrategia" : "Listo para competir");
   setText(
     "gaValidacion",
-    `${validacion.campeon || "baseline"} vs ${validacion.challenger || "ga_pareto"} · ${validacion.holdoutSellado ? "holdout sellado" : "holdout abierto"} · ${validacion.semillasEntrenamiento || 0}/${validacion.semillasHoldout || 0} semillas · SHA ${sha}`,
+    `${validacion.campeon || "ga_offline_v1"} vs ${validacion.challenger || "ga_live_explorer"} · ${validacion.holdoutSellado ? "holdout sellado" : "holdout abierto"} · ${validacion.semillasEntrenamiento || 0}/${validacion.semillasHoldout || 0} semillas · SHA ${sha}`,
   );
   setText("gaMuestras", `${numero.format(g.operacionesEvaluadas || 0)} ops · ${numero.format(g.fallosEvaluados || 0)} fallos`);
   setText("gaUmbral", `${formato(g.umbralOptimizado, 2)} bps`);
@@ -3094,18 +3105,19 @@ function actualizarDueloGa(g) {
   const delta = representante - baseline;
   const empateTecnico = Math.abs(delta) < 0.005;
 
+  const validacion = g.validacion || {};
+  const campeonNombre = validacion.campeon || "ga_offline_v1";
   if (empateTecnico) {
-    el.textContent = `Champion: baseline · empate técnico ${formato(campeon, 2)}`;
-    el.title = "El GA es challenger; el baseline permanece champion sin uplift fuera de muestra defendible.";
+    el.textContent = `${campeonNombre} retenido · empate técnico ${formato(campeon, 2)}`;
+    el.title = "El campeón offline permanece inmutable; el GA live sólo explora.";
   } else if (delta > 0) {
-    el.textContent = `Challenger GA +${formato(delta, 2)} · promoción sujeta a holdout`;
-    el.title = "El representante Pareto supera al baseline en esta métrica; aún requiere validación fuera de muestra.";
+    el.textContent = `Explorer live +${formato(delta, 2)} · sin autoridad de promoción`;
+    el.title = "Superar fitness live no cambia ejecución; hace falta un nuevo artefacto offline revisado.";
   } else {
-    el.textContent = `Champion: baseline · GA ${formato(Math.abs(delta), 2)} por debajo`;
-    el.title = "Resultado científico honesto: el motor conserva la estrategia simple cuando el GA no demuestra uplift.";
+    el.textContent = `${campeonNombre} retenido · explorer ${formato(Math.abs(delta), 2)} por debajo`;
+    el.title = "El motor conserva el campeón offline validado.";
   }
 
-  const validacion = g.validacion || {};
   const evidencia = $("gaValidacion");
   if (evidencia) {
     const sha = typeof validacion.datasetHash === "string" && validacion.datasetHash.length > 12
@@ -3142,7 +3154,7 @@ function renderMlEdge(ml) {
         </div>
       `;
     } else {
-      expEl.textContent = "Carga la demo ganadora o selecciona una ruta para calcular el score evolutivo.";
+      expEl.textContent = "Ejecuta un escenario o selecciona una ruta para calcular el score evolutivo.";
     }
   }
   const container = $("mlFeatures");
@@ -4412,21 +4424,21 @@ function iniciarTutorial() {
     {
       tab: "tab-overview",
       selector: ".llm-strip",
-      titulo: "Quince segundos para saber si importa",
-      texto: "Modo de datos, PnL simulado, riesgo, mejor ruta y estado del GA sin obligarte a descifrar cada tabla.",
+      titulo: "Resumen de la sesión",
+      texto: "Consulta el modo de datos, PnL, riesgo, mejor ruta y estado del GA antes de entrar al detalle.",
       prueba: () => `${ultimoEstado?.cotizaciones?.length || 0} feeds utilizables · ${ultimoEstado?.metricas?.operaciones || 0} operaciones simuladas`,
     },
     {
       tab: "tab-mercado",
       selector: ".mercado",
-      titulo: "Mercado público. Procedencia visible.",
-      texto: "Los WebSocket normalizan bid, ask, profundidad, timestamp y fuente. Si entra REST, Mayab lo etiqueta.",
+      titulo: "Feeds y procedencia",
+      texto: "Los WebSocket normalizan bid, ask, profundidad, timestamp y fuente. El fallback REST se identifica por separado.",
       prueba: () => `${coberturaMercado(ultimoEstado || {}).wsFrescos} WebSockets frescos · ${formato(ultimoEstado?.metricas?.latenciaPromedioMs || 0, 0)} ms promedio`,
     },
     {
       tab: "tab-mercado",
       selector: ".mapa",
-      titulo: "El spread no basta. La utilidad neta decide.",
+      titulo: "De spread bruto a utilidad neta",
       texto: "Cada ruta descuenta fees, slippage, retiro amortizado y riesgo de latencia; después limita el tamaño por profundidad e inventario.",
       prueba: () => {
         const ruta = ultimoEstado?.oportunidades?.[0];
@@ -4436,22 +4448,22 @@ function iniciarTutorial() {
     {
       tab: "tab-riesgo",
       selector: ".demo-panel",
-      titulo: "Hazlo fallar. Mira qué deja atrás.",
-      texto: "Provoca fill parcial, fallo de orden, shock de mercado, circuit breaker y rebalanceo sin esperar a que el mercado coopere.",
+      titulo: "Pruebas de riesgo y recuperación",
+      texto: "Ejecuta fill parcial, fallo de orden, shock de mercado, circuit breaker y rebalanceo como escenarios controlados.",
       prueba: () => `${ultimoEstado?.metricas?.operacionesFallidas || 0} fallos · ${ultimoEstado?.metricas?.rebalanceosTotales || 0} rebalanceos auditados`,
     },
     {
       tab: "tab-logs",
       selector: ".replay-panel",
-      titulo: "El campeón también puede perder",
-      texto: "El replay usa el campeón GA publicado y reporta mediana, P05–P95 e intervalo de confianza sobre 24 semillas comunes.",
-      prueba: () => "Mismas condiciones · múltiples semillas · conclusión honesta aunque gane el baseline",
+      titulo: "Validación contra el baseline",
+      texto: "El replay evalúa el campeón GA y reporta mediana, P05–P95 e intervalo de confianza sobre 24 semillas comunes.",
+      prueba: () => "Mismas condiciones · múltiples semillas · resultado sujeto al intervalo de confianza",
     },
     {
       tab: "tab-galab",
       selector: ".ga-panel",
-      titulo: "El GA propone. El holdout decide.",
-      texto: "El GA ajusta pesos, umbral, tamaño y tolerancia; el baseline y el holdout impiden coronarlo sin evidencia.",
+      titulo: "Optimización y holdout",
+      texto: "El GA ajusta pesos, umbral, tamaño y tolerancia. Solo supera al baseline si la mejora se mantiene en el holdout.",
       prueba: () => `Generación ${ultimoEstado?.genetico?.generacion || 0} · población ${ultimoEstado?.genetico?.poblacion || 0} · diversidad ${formato((ultimoEstado?.genetico?.diversidad || 0) * 100, 1)}%`,
     },
   ];

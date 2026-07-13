@@ -125,6 +125,20 @@ pub fn demo_dataset_hash() -> String {
     }))
 }
 
+/// Huella del protocolo reproducible que produjo el campeón offline incluido.
+/// Describe el corpus sintético y sus splits; no se etiqueta como captura live.
+pub fn offline_ga_dataset_hash() -> String {
+    canonical_sha256(&serde_json::json!({
+        "kind": "mayab_ga_offline_synthetic_v1",
+        "generator": "operaciones_sinteticas_ga",
+        "samplesPerSeed": 48,
+        "trainingSeeds": (101_u64..=124).collect::<Vec<_>>(),
+        "sealedHoldoutSeeds": (401_u64..=424).collect::<Vec<_>>(),
+        "selectionBeforeHoldout": true,
+        "holdoutOpenedOnce": true,
+    }))
+}
+
 fn canonical_json(value: Value) -> Value {
     match value {
         Value::Object(map) => {

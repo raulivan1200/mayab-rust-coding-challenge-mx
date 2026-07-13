@@ -165,11 +165,9 @@ fn iniciar_sondeo_salud(cliente: Client, health_ok: &Arc<AtomicBool>) {
             let Some(health_ok) = health_ok.upgrade() else {
                 break;
             };
-            let resultado = tokio::time::timeout(
-                Duration::from_secs(2),
-                cliente.simple_query("SELECT 1"),
-            )
-            .await;
+            let resultado =
+                tokio::time::timeout(Duration::from_secs(2), cliente.simple_query("SELECT 1"))
+                    .await;
             health_ok.store(matches!(resultado, Ok(Ok(_))), Ordering::Release);
         }
     });
@@ -368,21 +366,22 @@ impl Auditoria for TimescaleDbAuditoria {
         let state = serde_json::to_string(&execution.state)?;
         let pnl = execution.pnl_usd.to_string();
         let tiempo = Utc::now();
-        let changed =
-            self.block_on(async move {
-                let c = self.cliente.lock().await;
-                Ok::<_, anyhow::Error>(c.execute(
-                "WITH claimed AS (
+        let changed = self.block_on(async move {
+            let c = self.cliente.lock().await;
+            Ok::<_, anyhow::Error>(
+                c.execute(
+                    "WITH claimed AS (
                      INSERT INTO audit_idempotency_keys (kind, id) VALUES ('ejecucion', $1)
                      ON CONFLICT DO NOTHING RETURNING 1
                  )
                  INSERT INTO ejecuciones (tiempo, id, escenario, estado, pnl_usd, payload_json)
                  SELECT $2, $1, $3, $4, $5, $6::jsonb FROM claimed
                  ON CONFLICT (id) DO NOTHING",
-                &[&id, &tiempo, &scenario, &state, &pnl, &payload],
+                    &[&id, &tiempo, &scenario, &state, &pnl, &payload],
+                )
+                .await?,
             )
-            .await?)
-            })?;
+        })?;
         self.ejecuciones
             .fetch_add(changed as usize, Ordering::Relaxed);
         Ok(())
@@ -513,7 +512,8 @@ mod tests {
     #[test]
     fn sslmode_disable_solo_pasa_con_opt_in() {
         let mut config = config(Some("disable"));
-        aplicar_politica_tls(&mut config, true).expect("el opt-in explícito habilita entorno local");
+        aplicar_politica_tls(&mut config, true)
+            .expect("el opt-in explícito habilita entorno local");
         assert_eq!(config.get_ssl_mode(), SslMode::Disable);
     }
 

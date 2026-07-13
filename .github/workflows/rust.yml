@@ -268,7 +268,7 @@ jobs:
           gcloud auth configure-docker "$registry" --quiet
           docker tag mayab-btc-arbitrage:ci "$image"
           docker push "$image"
-          digest="$(docker buildx imagetools inspect "$image" | awk '$1 == "Digest:" { print $2; exit }')"
+          digest="$(docker buildx imagetools inspect "$image" | awk '$1 == "Digest:" && digest == "" { digest = $2 } END { print digest }')"
           printf '%s\n' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
           immutable="${image%:*}@${digest}"
           docker pull "$immutable"

@@ -11,6 +11,19 @@ pero cualquier multiplicador requiere una implementación equivalente y el mismo
 hardware/dataset. La metodología y sus límites están en
 [ADR 3](docs/ADRs/0003-benchmark-rust-vs-node-php.md).
 
+> **Power phrase medible:** *la red espera en milisegundos; Mayab decide en
+> microsegundos.* En una corrida local reproducible sobre Apple M4, una iteración
+> de ingreso de cotización —incluyendo acceso al estado y paso por el motor—
+> registró **4.089 µs de mediana: ~244,559 iteraciones/s**. El benchmark tomó
+> **1.8 millones de muestras en ~5.01 s**. No es rentabilidad ni volumen de
+> mercado y no se compara con datasets ajenos; hardware, commit, comando y
+> límites están en [BENCHMARKING.md](BENCHMARKING.md).
+
+En el dashboard la frase no queda congelada: muestra el total acumulado de
+rutas evaluadas por **ese proceso**, su cómputo p50 y los eventos/s observados.
+Si Mayab permanece corriendo, el contador crece con trabajo realizado; un
+reinicio del proceso lo devuelve a cero.
+
 ## Evidencia que cabe en una pantalla
 
 | Señal verificable | Evidencia |
@@ -104,7 +117,7 @@ El usuario puede cambiar en caliente tamaño máximo de orden, utilidad y difere
 
 ### Robustez ante escenarios adversos
 
-**El motor modela fallos como estados contables, no como mensajes de error.** Antes de ejecutar, descarta libros stale, limita la cantidad por hasta 10 niveles de profundidad, balance USD en compra y BTC prefundeado en venta, y revalida la ruta con el snapshot más fresco. Un candado `single-trade-in-flight` evita gastar el mismo inventario desde dos ticks concurrentes.
+**El motor modela fallos como estados contables, no como mensajes de error.** Antes de ejecutar, descarta libros stale, limita la cantidad por hasta 10 niveles de profundidad, balance USD/USDT en compra y BTC prefundeado en venta, y revalida la ruta con el snapshot más fresco. El hot path reserva por `(exchange, activo)`: rutas independientes pueden coexistir, mientras cualquier operación que comparta la wallet de fiat de compra o la wallet BTC de venta falla cerrado. El lock global queda reservado a recorridos demo/admin multi-paso, no al throughput de mercado.
 
 | Escenario | Respuesta del sistema | Evidencia reproducible |
 |---|---|---|
@@ -123,7 +136,7 @@ La prueba fuerte es `POST /api/demo/caos`: encadena fill parcial, baja liquidez,
 
 **Sí: Mayab mantiene inventario operativo por exchange y lo rebalancea automáticamente, dentro de una simulación prefundeada.** Cada venue conserva saldos USD y BTC; una compra consume USD en origen y una venta consume BTC en destino. Esto elimina la suposición irreal de transferir activos instantáneamente después de detectar una oportunidad.
 
-Cada 100 ciclos, el motor compara cada wallet contra su inventario inicial objetivo. Si USD o BTC cae más de `rebalanceUmbralPct`, busca el venue con mayor superávit y mueve como máximo `rebalanceMaxTransferPct` del déficit. El movimiento descuenta el costo configurado o el retiro BTC del exchange, bloquea el capital durante `rebalanceSettlementMs`, usa una clave de idempotencia y registra origen, destino, activo, cantidad neta, costo, razón y estado de liquidación. Las reglas administrativas permiten añadir transferencias operativas explícitas y validadas; IDs duplicados, montos inválidos o venues desconocidos se rechazan.
+Cada 100 ciclos, el motor compara cada wallet contra su inventario inicial objetivo. Si USD o BTC cae más de `rebalanceUmbralPct`, busca el venue con mayor superávit y mueve como máximo `rebalanceMaxTransferPct` del déficit. El movimiento descuenta el costo configurado o el retiro BTC del exchange, aplica mínimo económico, elige red, modela retiros suspendidos, confirmaciones, probabilidad de demora, timeout y costo de oportunidad, y mantiene el capital bloqueado hasta `AVAILABLE` o su devolución por `FAILED`. También usa una clave de idempotencia y registra origen, destino, activo, cantidad bruta/neta, costo, razón y estado de liquidación. Las reglas administrativas permiten añadir transferencias operativas explícitas y validadas; IDs duplicados, montos inválidos o venues desconocidos se rechazan.
 
 Esto es **gestión de inventario**, no custodia ni una transferencia on-chain real. Su valor técnico es demostrar que la estrategia incorpora capital fragmentado, costo de reposición y tiempo de settlement en vez de asumir una wallet global infinita.
 
@@ -223,6 +236,7 @@ Contrato HTTP:
 La revision rapida y reproducible esta en [docs/EVIDENCE_MATRIX.md](docs/EVIDENCE_MATRIX.md). Separa evidencia LIVE de escenarios SYNTHETIC y enlaza cada afirmacion con runtime, codigo, prueba y endpoint.
 
 - **GA híbrido multiobjetivo**: non-dominated sorting, rank y crowding distance sobre PnL, Sharpe, drawdown y win rate; publica el frente de Pareto y elige de forma determinista el mayor fitness ajustado por riesgo del primer frente. Incluye cruce uniforme, mutación gaussiana, **recocido simulado**, **evolución diferencial** y **reinicio adaptativo**.
+- **Autoridad GA separada**: el hot path usa `mayab-ga-champion-v1`, artefacto offline inmutable entrenado con semillas 101..124 y evaluado una sola vez sobre holdout sellado 401..424. La API/UI publica el SHA del protocolo; el GA live es `ga_live_explorer`, puede mostrar challengers pero no autopromoverse ni cambiar ejecución.
 - **Scoring adaptativo**: Los pesos de la función de puntuación (utilidad, frescura, liquidez, confiabilidad, Z-Score) son optimizados genéticamente, no fijos.
 - **Metaheurísticas híbridas**: Combina GA clásico con recocido simulado, evolución diferencial y reinicio por convergencia para escapar de óptimos locales.
 - **Detección de convergencia y reinicio adaptativo**: Cuando el fitness deja de mejorar, se inyecta diversidad y se aumenta la tasa de mutación.
@@ -411,7 +425,7 @@ Guion detallado para revisión o videollamada: [docs/defensa-comite.md](docs/def
 - Partial fills: sí, el tamaño ejecutable se limita por profundidad acumulada, USD disponible y BTC prefundeado.
 - Wallet accounting: sí, balances simulados por exchange, rebalanceos internos y eventos auditables.
 - Decision inspector: sí, `decisionCode`, `decisionReason`, umbral, valor actual, score, pesos GA y breakdown de costos.
-- Risk guards: sí, stale-book guard, circuit breaker, modo conservador, revalidación pre-ejecución y single-trade-in-flight.
+- Risk guards: sí, stale-book guard, circuit breaker, modo conservador, revalidación pre-ejecución y reservas `(exchange, activo)` sin lock global del hot path.
 - Web dashboard: sí, UI en tiempo real con rutas, PnL, wallets, latencias, GA, eventos y auditoría.
 - Public deployment: sí, Cloud Run como ruta principal.
 - Tests: sí, `cargo fmt -- --check` y `cargo test`; recomendado correr `cargo clippy -- -D warnings` antes de release.

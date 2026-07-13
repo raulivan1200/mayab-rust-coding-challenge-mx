@@ -920,7 +920,12 @@ fn construir_research_tapes() -> serde_json::Value {
         };
     }
     let configured = std::env::var_os("MAYAB_RESEARCH_TAPE").map(PathBuf::from);
-    let path = configured.unwrap_or_else(|| PathBuf::from("data/captura_real.json"));
+    let path = configured.unwrap_or_else(|| {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+            .join("data/captura_real.json")
+    });
     match fs::read(&path) {
         Ok(bytes) => {
             let events = serde_json::from_slice::<serde_json::Value>(&bytes)
@@ -2626,7 +2631,7 @@ fn construir_resumen_llm(estado: &EstadoPublico) -> serde_json::Value {
             "simulación de fills parciales por profundidad e inventario",
             "accounting de wallets por exchange",
             "decision inspector auditable con códigos estables y razón cuantitativa",
-            "risk guards: stale books, circuit breaker, modo conservador, single-trade-in-flight",
+            "risk guards: stale books, circuit breaker, modo conservador y reservas por wallet/activo",
             "demo rentable etiquetada y replay sintético para GA cuando no hay oportunidades live"
         ],
         "limitations": [

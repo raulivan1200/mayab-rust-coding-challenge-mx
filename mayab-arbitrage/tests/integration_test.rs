@@ -244,7 +244,10 @@ async fn integration_ga_sensibilidad_aplica_estrategias_y_expone_metodologia() {
     assert_eq!(json["sinFugaHoldout"], true);
     assert_eq!(json["seleccionAntesHoldout"], true);
     assert_eq!(json["semillasEntrenamiento"].as_array().unwrap().len(), 24);
-    assert_eq!(json["semillasHoldoutNoVistas"].as_array().unwrap().len(), 24);
+    assert_eq!(
+        json["semillasHoldoutNoVistas"].as_array().unwrap().len(),
+        24
+    );
     assert!(resultados.iter().all(|fila| {
         fila["modelo"].is_string()
             && fila["profitFactor"].is_number()

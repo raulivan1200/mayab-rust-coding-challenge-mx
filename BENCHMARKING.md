@@ -37,6 +37,33 @@ cache; por eso una cifra debe declarar si la corrida fue fría o caliente.
 cargo bench -p mayab-arbitrage --bench motor_benchmark
 ```
 
+La operación medida recibe una cotización a través de `Motor`, accede al estado
+y deja que el pipeline analice el evento. No mide red, TLS, WebSocket, escritura
+durable ni render del navegador. Tampoco equivale a una dislocación de mercado:
+es una iteración de ingreso al motor y debe publicarse con ese nombre.
+
+### Corrida de referencia local
+
+```text
+commit: 71f88c3
+dirty worktree: sí
+fecha UTC: 2026-07-13T05:27:41Z
+rustc: 1.96.0 (ac68faa20 2026-05-25)
+OS/kernel: Darwin 25.5.0 arm64
+CPU: Apple M4
+modo: warm-cache, Criterion release/optimized
+benchmark: motor_recibir_cotizacion
+muestras: 100; ~1.8M iteraciones en ~5.0141 s durante la recolección
+tiempo: [3.9809 µs, 4.0890 µs, 4.2066 µs]
+throughput derivado de la mediana: ~244,559 iteraciones/s
+limitaciones: worktree sucio; sin red, TLS, persistencia ni navegador; Criterion
+reportó regresión contra su baseline local previo y 11 outliers
+```
+
+La cifra del dashboard sigue siendo la telemetría del proceso desplegado, no
+esta referencia de laboratorio: rutas acumuladas, cómputo p50 y eventos/s se
+actualizan desde `telemetriaPipeline`.
+
 ## Plantilla de publicación
 
 ```text

@@ -102,11 +102,7 @@ fn tasa_escalada(base: f64, escala: f64, maximo: f64) -> f64 {
 fn configuraciones_islas(config: ConfigGa) -> [ConfigGa; 4] {
     core::array::from_fn(|indice| ConfigGa {
         tamano_poblacion: config.tamano_poblacion,
-        tasa_mutacion: tasa_escalada(
-            config.tasa_mutacion,
-            ESCALAS_MUTACION_ISLAS[indice],
-            0.8,
-        ),
+        tasa_mutacion: tasa_escalada(config.tasa_mutacion, ESCALAS_MUTACION_ISLAS[indice], 0.8),
         tasa_cruce: tasa_escalada(config.tasa_cruce, ESCALAS_CRUCE_ISLAS[indice], 1.0),
     })
 }
@@ -119,6 +115,15 @@ pub struct EstrategiaGa {
     pub max_operacion_btc: QtyUnits,
     pub tolerancia_latencia_ms: i64,
 }
+
+/// Artefacto campeón promovido offline. Sus parámetros no dependen de la
+/// generación live y sólo cambian mediante una revisión explícita de código.
+pub const CAMPEON_OFFLINE_V1: EstrategiaGa = EstrategiaGa {
+    pesos: [0.40, 0.20, 0.20, 0.10, 0.10],
+    umbral_min_spread_bps: 0.65,
+    max_operacion_btc: 0.18,
+    tolerancia_latencia_ms: 4_500,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Genoma {
@@ -372,6 +377,12 @@ impl EstadoGa {
             max_operacion_btc: self.max_operacion_optimizada_btc,
             tolerancia_latencia_ms: self.tolerancia_latencia_ms,
         }
+    }
+
+    /// Estrategia con autoridad sobre el hot path. El estado live se publica
+    /// como challenger, pero no se autopromueve por fitness in-sample.
+    pub fn estrategia_autorizada(&self) -> EstrategiaGa {
+        CAMPEON_OFFLINE_V1
     }
 
     /// Actualiza límites de población y tasas, aplicando rangos seguros.
@@ -653,7 +664,7 @@ impl EstadoGa {
             "temperaturaAnnealing": self.temperatura_annealing,
             "inyeccionesDiferenciales": self.inyecciones_diferenciales,
             "fronteraPareto": self.frontera_pareto(),
-            "politicaCampeon": "baseline_con_holdout_sellado_y_ga_como_challenger",
+            "politicaCampeon": "campeon_offline_inmutable_y_ga_live_explorer",
             "metaheuristicas": [
                 "GA + recocido simulado",
                 "GA + evolucion diferencial",
@@ -1288,8 +1299,10 @@ mod tests {
         assert!(!estado.validacion.dataset_hash.is_empty());
         assert_eq!(
             ga.api_estado()["politicaCampeon"],
-            "baseline_con_holdout_sellado_y_ga_como_challenger"
+            "campeon_offline_inmutable_y_ga_live_explorer"
         );
+        assert_eq!(ga.estrategia_autorizada(), CAMPEON_OFFLINE_V1);
+        assert!(!estado.validacion.promocion_automatica);
     }
 
     #[test]
@@ -1326,10 +1339,7 @@ mod tests {
         ];
         for (indice, config_isla) in ga.config_islas.iter().enumerate() {
             assert_eq!(config_isla.tamano_poblacion, 24);
-            assert_casi_igual(
-                config_isla.tasa_mutacion,
-                mutaciones_esperadas[indice],
-            );
+            assert_casi_igual(config_isla.tasa_mutacion, mutaciones_esperadas[indice]);
             assert_casi_igual(config_isla.tasa_cruce, cruces_esperados[indice]);
         }
 
@@ -1344,9 +1354,7 @@ mod tests {
             Some(config.tamano_poblacion as u64)
         );
         assert_casi_igual(
-            api["tasaMutacion"]
-                .as_f64()
-                .expect("tasaMutacion numérica"),
+            api["tasaMutacion"].as_f64().expect("tasaMutacion numérica"),
             config.tasa_mutacion,
         );
         assert_casi_igual(

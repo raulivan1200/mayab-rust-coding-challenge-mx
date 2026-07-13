@@ -217,6 +217,41 @@ fn lifecycle_from_status(status: &str) -> OrderLifecycle {
     }
 }
 
+fn lifecycle_from_order(order: &Value) -> OrderLifecycle {
+    let status = order
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let lifecycle = lifecycle_from_status(status);
+    if matches!(
+        lifecycle,
+        OrderLifecycle::Rejected | OrderLifecycle::Canceled
+    ) {
+        return lifecycle;
+    }
+    let filled = decimal_field(order, "filled_size");
+    let requested = decimal_field(order, "size");
+    match (filled, requested) {
+        (Some(filled), Some(requested)) if requested > rust_decimal::Decimal::ZERO => {
+            if filled >= requested {
+                OrderLifecycle::Filled
+            } else if filled > rust_decimal::Decimal::ZERO {
+                OrderLifecycle::Partial
+            } else {
+                lifecycle
+            }
+        }
+        _ => lifecycle,
+    }
+}
+
+fn decimal_field(value: &Value, field: &str) -> Option<rust_decimal::Decimal> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .and_then(|raw| raw.parse().ok())
+}
+
 fn lifecycle_terminal(lifecycle: OrderLifecycle) -> bool {
     matches!(
         lifecycle,
@@ -225,9 +260,11 @@ fn lifecycle_terminal(lifecycle: OrderLifecycle) -> bool {
 }
 
 fn fills_non_empty(value: &Value) -> bool {
-    value
-        .as_array()
-        .is_some_and(|items| !items.is_empty())
+    value.as_array().is_some_and(|items| !items.is_empty())
+}
+
+fn fill_count(value: &Value) -> usize {
+    value.as_array().map_or(0, Vec::len)
 }
 
 pub struct CoinbaseSandboxTransport {
@@ -413,7 +450,7 @@ pub async fn run_cycle<T: TradingTransport>(
             .get("status")
             .and_then(Value::as_str)
             .unwrap_or("unknown");
-        let lifecycle = lifecycle_from_status(status);
+        let lifecycle = lifecycle_from_order(&state);
         ledger.append(
             "order_status",
             json!({"orderId":order_id,"status":status,"lifecycle":lifecycle,"terminal":lifecycle_terminal(lifecycle)}),
@@ -423,6 +460,7 @@ pub async fn run_cycle<T: TradingTransport>(
             break;
         }
         if tokio::time::Instant::now() >= deadline {
+            let fills_before_cancel = transport.fills(&order_id).await?;
             let cancellation = transport.cancel_order(&order_id).await?;
             ledger.append(
                 "timeout_cancel",
@@ -433,18 +471,18 @@ pub async fn run_cycle<T: TradingTransport>(
                 .get("status")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
-            let final_lifecycle = lifecycle_from_status(final_status);
+            let final_lifecycle = lifecycle_from_order(&final_order);
             ledger.append(
                 "post_timeout_status",
                 json!({"orderId":order_id,"status":final_status,"lifecycle":final_lifecycle,"terminal":lifecycle_terminal(final_lifecycle)}),
             )?;
             let fills_after_cancel = transport.fills(&order_id).await?;
             if fills_non_empty(&fills_after_cancel)
-                && !matches!(final_lifecycle, OrderLifecycle::Filled)
+                && fill_count(&fills_after_cancel) > fill_count(&fills_before_cancel)
             {
                 ledger.append(
                     "late_fill",
-                    json!({"orderId":order_id,"fills":fills_after_cancel,"lifecycle":OrderLifecycle::LateFill}),
+                    json!({"orderId":order_id,"fillsBeforeCancel":fills_before_cancel,"fillsAfterCancel":fills_after_cancel,"lifecycle":OrderLifecycle::LateFill}),
                 )?;
             }
             break;
@@ -492,6 +530,125 @@ fn contains_transfer_capability(value: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ciclo_de_orden_distingue_accepted_partial_filled_canceled_y_rejected() {
+        let casos = [
+            (
+                json!({"status":"open","size":"1","filled_size":"0"}),
+                OrderLifecycle::Accepted,
+            ),
+            (
+                json!({"status":"open","size":"1","filled_size":"0.25"}),
+                OrderLifecycle::Partial,
+            ),
+            (
+                json!({"status":"done","size":"1","filled_size":"1"}),
+                OrderLifecycle::Filled,
+            ),
+            (
+                json!({"status":"canceled","size":"1","filled_size":"0"}),
+                OrderLifecycle::Canceled,
+            ),
+            (
+                json!({"status":"rejected","size":"1","filled_size":"0"}),
+                OrderLifecycle::Rejected,
+            ),
+        ];
+        for (order, esperado) in casos {
+            assert_eq!(lifecycle_from_order(&order), esperado);
+        }
+    }
+
+    struct TimeoutConLateFill {
+        consultas_orden: std::sync::atomic::AtomicUsize,
+        consultas_fills: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl TradingTransport for TimeoutConLateFill {
+        async fn accounts(&self) -> anyhow::Result<Value> {
+            Ok(json!([{"currency":"BTC","balance":"1","available":"1"}]))
+        }
+
+        async fn preflight_permissions(&self) -> anyhow::Result<Value> {
+            Ok(json!({"view":true,"trade":true,"transfer":false}))
+        }
+
+        async fn place_limit_order(&self, _order: &OrderRequest) -> anyhow::Result<Value> {
+            Ok(json!({"id":"order-123"}))
+        }
+
+        async fn order(&self, _order_id: &str) -> anyhow::Result<Value> {
+            let llamada = self
+                .consultas_orden
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if llamada == 0 {
+                Ok(json!({"status":"open","size":"0.001","filled_size":"0"}))
+            } else {
+                Ok(json!({"status":"canceled","size":"0.001","filled_size":"0.001"}))
+            }
+        }
+
+        async fn cancel_order(&self, _order_id: &str) -> anyhow::Result<Value> {
+            Ok(json!({"canceled":true}))
+        }
+
+        async fn fills(&self, _order_id: &str) -> anyhow::Result<Value> {
+            let llamada = self
+                .consultas_fills
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if llamada == 0 {
+                Ok(json!([]))
+            } else {
+                Ok(json!([{"trade_id":"late-1","size":"0.001"}]))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn timeout_cancela_y_registra_late_fill_sin_confundir_fill_previo() {
+        let path = std::env::temp_dir().join(format!(
+            "mayab-testnet-lifecycle-{}-{}.jsonl",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let config = TestnetConfig {
+            api_key: "sandbox".into(),
+            api_secret: "sandbox".into(),
+            passphrase: "sandbox".into(),
+            product_id: "BTC-USD".into(),
+            side: "buy".into(),
+            price: "1".into(),
+            size: "0.001".into(),
+            timeout: Duration::ZERO,
+            poll_interval: Duration::from_millis(1),
+            ledger_path: path.clone(),
+            run_id: "test-run".into(),
+            allowed_egress_ip: "34.120.10.20".parse().unwrap(),
+            secret_version: "test-1".into(),
+        };
+        let transport = TimeoutConLateFill {
+            consultas_orden: std::sync::atomic::AtomicUsize::new(0),
+            consultas_fills: std::sync::atomic::AtomicUsize::new(0),
+        };
+
+        run_cycle(&transport, &config).await.unwrap();
+        let ledger = std::fs::read_to_string(&path).unwrap();
+        let eventos = ledger
+            .lines()
+            .map(|linea| serde_json::from_str::<crate::ledger_audit::LedgerEntry>(linea).unwrap())
+            .collect::<Vec<_>>();
+        assert!(eventos
+            .iter()
+            .any(|evento| evento.event == "timeout_cancel"));
+        assert!(eventos.iter().any(|evento| evento.event == "late_fill"));
+        assert!(eventos.iter().any(|evento| {
+            evento.event == "order_status" && evento.payload["lifecycle"] == "accepted"
+        }));
+        let _ = std::fs::remove_file(path);
+    }
+
     #[test]
     fn allowlist_enumera_solo_superficie_de_trading() {
         assert_eq!(OUTBOUND_ROUTE_ALLOWLIST.len(), 7);

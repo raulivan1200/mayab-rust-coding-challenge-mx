@@ -47,6 +47,29 @@ test("dashboard carga sin errores ni logs de debug por defecto", async ({ page }
   expect(logs).toEqual([]);
 });
 
+test("hero convierte la telemetría Rust en una cifra runtime verificable", async ({ page, request }) => {
+  const estado = await (await request.get("/api/estado")).json();
+  estado.telemetriaPipeline = {
+    ...(estado.telemetriaPipeline || {}),
+    rutasEvaluadas: 3_600_001,
+    computeP50Us: 41,
+    computeP95Us: 75,
+    computeP99Us: 110,
+    schedulingP50Us: 7,
+    schedulingP95Us: 12,
+    schedulingP99Us: 18,
+    eventosPorSegundo: 244_559,
+  };
+  await page.routeWebSocket("**/tiempo-real", ws => ws.send(JSON.stringify(estado)));
+  await page.goto("/");
+
+  const claim = page.locator("#landingRustMetrics");
+  await expect(claim).toContainText("3,600,001 rutas evaluadas por este proceso");
+  await expect(claim).toContainText("cómputo p50 de 41 µs");
+  await expect(claim).toContainText("244,559.0 eventos/s observados");
+  await expect(claim).toContainText("Mayab decide en microsegundos");
+});
+
 test("debug requiere exactamente debug=1", async ({ page }) => {
   const consoleMessages = [];
   page.on("console", message => {
@@ -280,14 +303,14 @@ test("las seis pruebas aceptan clic en su texto y preparan evidencia dentro del 
   await page.locator('[data-jury-proof="economics"] strong').click();
   await expect(page.locator("#tab-evidence")).toHaveClass(/activo/);
   await expect.poll(() => demoFinalCalls).toBe(1);
-  await expect(page.locator("#juryMinuteStatus")).toContainText("12/12 checks verdes");
+  await expect(page.locator("#juryMinuteStatus")).toContainText(/12\/12 (checks verdes|validaciones correctas)/);
 
   await expect(page.locator('[data-jury-proof="download"]')).toHaveAttribute("download", "");
 });
 
 test("la espera del paquete rota mensajes de Bitcoin sin abrir una pantalla vacía", async ({ page }) => {
   await page.route("**/api/paquete-evaluacion", async route => {
-    await new Promise(resolve => setTimeout(resolve, 3_100));
+    await new Promise(resolve => setTimeout(resolve, 6_000));
     await route.fulfill({
       status: 200,
       contentType: "application/json; charset=utf-8",
@@ -301,7 +324,10 @@ test("la espera del paquete rota mensajes de Bitcoin sin abrir una pantalla vac�
   const popup = await popupPromise;
   await expect(popup.locator("#mayabEvidencePercent")).toBeVisible();
   await expect(popup.locator("#mayabEvidenceStatus")).toContainText(/Bitcoin|sats|SHA-256/);
-  await expect.poll(() => popup.locator("#mayabEvidenceStatus").textContent()).toContain("sats");
+  await expect(popup.locator("#mayabEvidenceStatus")).toContainText(
+    /Contando sats|confirmaciones|SHA-256|redondeos creativos/,
+    { timeout: 5_000 },
+  );
 });
 
 test("la prueba de un clic no pinta éxito con una respuesta casi lista", async ({ page }) => {
@@ -478,9 +504,9 @@ test("prueba completa deja preflight 12 de 12 y evidencia económica", async ({ 
   test.setTimeout(120_000);
   await page.goto("/");
   await expect(page.locator("#juryMinute li")).toHaveCount(6);
-  await expect(page.locator("#btnJuryProofHero")).toContainText("Pon a Mayab contra las cuerdas");
+  await expect(page.locator("#btnJuryProofHero")).toContainText("Ver una prueba completa");
   await page.locator("#btnJuryProofHero").click();
-  await expect(page.locator("#juryMinuteStatus")).toContainText("12/12 checks verdes", { timeout: 120_000 });
+  await expect(page.locator("#juryMinuteStatus")).toContainText("12/12 validaciones correctas", { timeout: 120_000 });
 
   const preflight = await (await request.get("/api/preflight")).json();
   expect(preflight).toMatchObject({ listo: true, modo: "ready" });

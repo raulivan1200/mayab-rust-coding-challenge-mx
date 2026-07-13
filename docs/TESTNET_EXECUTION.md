@@ -30,10 +30,14 @@ comparte el motor, rutas Axum o configuración tolerante de la demo.
 ## Ciclo mínimo
 
 El ejecutor consulta perfiles y cuentas, envía una limit post-only pequeña con
-`client_oid` determinista, consulta estado hasta fill o timeout, cancela si
-vence, consulta fills, reconcilia cuentas y exporta exposición final. Cada paso
-se escribe en un JSONL con hash encadenado; al terminar, un lector independiente
-reabre y verifica toda la cadena.
+`client_oid` determinista y adapta la respuesta a estados explícitos `accepted`,
+`partial`, `filled`, `canceled`, `rejected`, `timeout` y `late_fill`. Un
+`status=open` con `filled_size > 0` se reconoce como parcial. Si vence, captura
+fills antes de cancelar, cancela, vuelve a consultar orden/fills y sólo marca
+`late_fill` cuando aparecen ejecuciones nuevas después de la cancelación. Luego
+reconcilia cuentas y exporta exposición final. Cada paso se escribe en un JSONL
+con hash encadenado; al terminar, un lector independiente reabre y verifica toda
+la cadena.
 
 Compilación y validación sin credenciales:
 

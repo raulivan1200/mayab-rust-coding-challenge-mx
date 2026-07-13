@@ -6716,7 +6716,7 @@ strong.metric-value {
     border-color 300ms ease;
 }
 
-.reveal-card:not(.is-visible) {
+.reveal-ready .reveal-card:not(.is-visible) {
   opacity: 0.12 !important;
   clip-path: inset(22% 14% 22% 14% round 28px) !important;
   filter: blur(7px) saturate(0.72) !important;

@@ -69,7 +69,10 @@
             <p class="landing-kicker" data-ui-copy="landingKicker">Mercado en vivo · ejecución simulada</p>
             <h1 data-ui-copy="landingTitle">Arbitraje BTC, explicado decisión por decisión.</h1>
             <p data-ui-copy="landingBody">Mayab compara precios entre exchanges y descuenta comisiones, slippage, latencia y liquidez. Solo acepta una ruta si la utilidad estimada supera el riesgo.</p>
-            <p class="landing-stack-phrase"><strong>Motor en Rust y trazabilidad completa.</strong> El dashboard muestra la señal, los costos, la decisión y el resultado de cada simulación.</p>
+            <p class="landing-stack-phrase" aria-live="polite">
+              <strong>Rust lleva el pulso.</strong>
+              <span id="landingRustMetrics">Un solo binario, sin garbage collector ni saltos entre servicios: del tick a la decisión y de la decisión a la evidencia.</span>
+            </p>
             <div class="landing-actions">
               <button class="landing-cta btc-icon-button" id="btnJuryProofHero" type="button">
                 <span data-ui-copy="landingPrimaryCta">Ver una prueba completa</span>
@@ -1030,7 +1033,7 @@
         <div class="ga-progress">
           <div>
             <span class="ceja">Auto GA</span>
-            <p class="panel-ayuda">Evoluciona con el historial disponible y usa un replay sintético etiquetado si no hay suficientes muestras. El campeón se conserva hasta que un retador lo supere en validación.</p>
+            <p class="panel-ayuda">El campeón offline está congelado con 24 semillas train, 24 holdout y SHA. El GA live explora historial/replay etiquetado, pero no tiene autoridad para autopromoverse ni cambiar ejecución.</p>
             <strong id="gaDuelo" class="ga-duelo">Campeón retenido · Δ 0.00</strong>
             <small id="gaValidacion" class="panel-ayuda">Holdout sellado pendiente · dataset sin huella</small>
           </div>

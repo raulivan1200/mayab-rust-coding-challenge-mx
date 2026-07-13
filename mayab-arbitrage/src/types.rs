@@ -285,6 +285,12 @@ pub struct TransferenciaInventario {
     pub retiro_suspendido: bool,
     #[serde(rename = "confirmacionesRequeridas")]
     pub confirmaciones_requeridas: u32,
+    #[serde(rename = "confirmacionesObservadas")]
+    pub confirmaciones_observadas: u32,
+    #[serde(rename = "minimoRetiro")]
+    pub minimo_retiro: QtyUnits,
+    #[serde(rename = "cumpleMinimo")]
+    pub cumple_minimo: bool,
     #[serde(rename = "cantidadBruta")]
     pub cantidad_bruta: QtyUnits,
     #[serde(rename = "cantidadNeta")]
@@ -601,23 +607,29 @@ pub struct PuntoPareto {
 pub struct ValidacionGa {
     pub campeon: String,
     pub challenger: String,
+    pub autoridad: String,
+    pub artefacto: String,
     pub dataset_hash: String,
     pub semillas_entrenamiento: usize,
     pub semillas_holdout: usize,
     pub holdout_sellado: bool,
+    pub promocion_automatica: bool,
     pub lectura: String,
 }
 
 impl Default for ValidacionGa {
     fn default() -> Self {
         Self {
-            campeon: "baseline_hasta_validar_holdout".to_string(),
-            challenger: "ga_pareto".to_string(),
-            dataset_hash: crate::version::runtime_dataset_hash(),
+            campeon: "ga_offline_v1".to_string(),
+            challenger: "ga_live_explorer".to_string(),
+            autoridad: "offline_only".to_string(),
+            artefacto: "mayab-ga-champion-v1".to_string(),
+            dataset_hash: crate::version::offline_ga_dataset_hash(),
             semillas_entrenamiento: 24,
             semillas_holdout: 24,
             holdout_sellado: true,
-            lectura: "El GA live queda como challenger; la promoción a champion exige holdout sellado y validación fuera de muestra.".to_string(),
+            promocion_automatica: false,
+            lectura: "Campeón offline congelado tras 24 semillas train y 24 holdout; el GA live sólo explora y no tiene autoridad para cambiar ejecución.".to_string(),
         }
     }
 }

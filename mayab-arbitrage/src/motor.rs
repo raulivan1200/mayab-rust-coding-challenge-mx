@@ -5,7 +5,7 @@
 //! el estado consumido por la API y el dashboard.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
@@ -31,8 +31,10 @@ use crate::{
 /// Motor central de arbitraje simulado.
 ///
 /// El motor es seguro para compartirse entre tareas Tokio mediante `Arc<Motor>`.
-/// Sus mutaciones se serializan con `RwLock` y un candado atómico evita dos
-/// ejecuciones simuladas simultáneas.
+/// Sus commits contables se serializan con `RwLock`; el hot path reserva
+/// inventario por `(exchange, activo)` y permite rutas concurrentes cuando no
+/// comparten wallets. El carril global queda limitado a recorridos demo/admin
+/// que mutan varias piezas de estado como una sola operación lógica.
 pub struct Motor {
     state: RwLock<State>,
     persistencia: Option<Arc<dyn Auditoria>>,
@@ -40,7 +42,7 @@ pub struct Motor {
     ops_ejecutadas: AtomicU64,
     ops_fallidas: AtomicU64,
     corridas_jurado: AtomicU64,
-    ejecucion_en_curso: AtomicBool,
+    reservas_inventario: Arc<std::sync::Mutex<HashSet<ClaveReserva>>>,
     kill_switch_emergencia: AtomicBool,
     kill_switch_commit: std::sync::Mutex<()>,
     carril_simulacion: Arc<Mutex<()>>,
@@ -127,11 +129,26 @@ struct LatenciaEstado {
     historial: VecDeque<i64>,
 }
 
-struct EjecucionGuard<'a>(&'a AtomicBool);
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ClaveReserva {
+    exchange: String,
+    activo: String,
+}
 
-impl Drop for EjecucionGuard<'_> {
+struct ReservaInventarioGuard {
+    reservas: Arc<std::sync::Mutex<HashSet<ClaveReserva>>>,
+    claves: Vec<ClaveReserva>,
+}
+
+impl Drop for ReservaInventarioGuard {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
+        let mut reservas = self
+            .reservas
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for clave in &self.claves {
+            reservas.remove(clave);
+        }
     }
 }
 
@@ -229,7 +246,7 @@ impl Motor {
             ops_ejecutadas: AtomicU64::new(0),
             ops_fallidas: AtomicU64::new(0),
             corridas_jurado: AtomicU64::new(0),
-            ejecucion_en_curso: AtomicBool::new(false),
+            reservas_inventario: Arc::new(std::sync::Mutex::new(HashSet::new())),
             kill_switch_emergencia: AtomicBool::new(false),
             kill_switch_commit: std::sync::Mutex::new(()),
             carril_simulacion: Arc::new(Mutex::new(())),
@@ -323,7 +340,6 @@ impl Motor {
     }
 
     async fn analizar(&self, ahora: DateTime<Utc>) {
-        let _carril = self.carril_simulacion.lock().await;
         let inicio_scan = Instant::now();
         let evento_actual = self.eventos.load(Ordering::SeqCst);
         let (
@@ -342,8 +358,7 @@ impl Motor {
                     .kill_switch_commit
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if !self.kill_switch_emergencia.load(Ordering::SeqCst)
-                    && !state.kill_switch_activo
+                if !self.kill_switch_emergencia.load(Ordering::SeqCst) && !state.kill_switch_activo
                 {
                     procesar_transferencias(&mut state, ahora);
                 }
@@ -406,7 +421,7 @@ impl Motor {
             actualizar_circuit_breaker(&mut state, ahora);
 
             let mut costos = state.costos.clone();
-            let estrategia = state.ga.estrategia();
+            let estrategia = state.ga.estrategia_autorizada();
             costos.min_diferencial_neto_bps = costos
                 .min_diferencial_neto_bps
                 .max(estrategia.umbral_min_spread_bps);
@@ -544,32 +559,52 @@ impl Motor {
             return;
         }
 
-        let mejor = oportunidades
+        let mut candidatas = oportunidades
             .into_iter()
             .filter(|o| o.ejecutable)
             .filter(|o| puede_ejecutar(o, ahora, &enfriamiento, costos.enfriamiento_ms))
-            .max_by(|a, b| {
-                let sa = puntuar_oportunidad(
-                    a,
-                    costos.max_operacion_btc,
-                    costos.stale_ms,
-                    &historial,
-                    a.z_score,
-                    &pesos,
-                );
-                let sb = puntuar_oportunidad(
-                    b,
-                    costos.max_operacion_btc,
-                    costos.stale_ms,
-                    &historial,
-                    b.z_score,
-                    &pesos,
-                );
-                sa.total_cmp(&sb)
-            });
+            .collect::<Vec<_>>();
+        candidatas.sort_by(|a, b| {
+            let sa = puntuar_oportunidad(
+                a,
+                costos.max_operacion_btc,
+                costos.stale_ms,
+                &historial,
+                a.z_score,
+                &pesos,
+            );
+            let sb = puntuar_oportunidad(
+                b,
+                costos.max_operacion_btc,
+                costos.stale_ms,
+                &historial,
+                b.z_score,
+                &pesos,
+            );
+            sb.total_cmp(&sa)
+        });
 
-        if let Some(oportunidad) = mejor {
-            self.ejecutar(oportunidad, ahora).await;
+        // Un tick puede despachar varias rutas, pero nunca dos que consuman la
+        // misma wallet/activo. El límite evita convertir un snapshot grande en
+        // una ráfaga sin cota y deja espacio al siguiente tick para revalidar.
+        let mut claves_lote = HashSet::new();
+        let mut lote = Vec::new();
+        for oportunidad in candidatas {
+            let claves = claves_reserva(&oportunidad);
+            if claves.iter().all(|clave| !claves_lote.contains(clave)) {
+                claves_lote.extend(claves);
+                lote.push(oportunidad);
+                if lote.len() == 4 {
+                    break;
+                }
+            }
+        }
+        if !lote.is_empty() {
+            futures_util::future::join_all(
+                lote.into_iter()
+                    .map(|oportunidad| self.ejecutar(oportunidad, ahora)),
+            )
+            .await;
         }
         let mut state = self.state.write().await;
         registrar_muestra_pipeline(
@@ -602,16 +637,12 @@ impl Motor {
     }
 
     async fn ejecutar(&self, oportunidad: Oportunidad, ahora: DateTime<Utc>) {
-        if self
-            .ejecucion_en_curso
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
+        let Some(_reserva) = self.reservar_inventario(&oportunidad) else {
             let mut state = self.state.write().await;
             insertar_evento_sistema(
                 &mut state,
-                "ejecucion_en_curso",
-                "ruta descartada: ya hay una operación simulada en validación/ejecución",
+                "inventario_reservado",
+                "ruta descartada: otra operación reservó una wallet/activo requerido",
                 "media",
                 ahora,
             );
@@ -619,8 +650,10 @@ impl Motor {
                 self.persistir_evento(evento);
             }
             return;
-        }
-        let _guard = EjecucionGuard(&self.ejecucion_en_curso);
+        };
+        // Cede una vez después de reservar para que otras rutas del mismo lote
+        // puedan adquirir inventarios independientes antes del commit contable.
+        tokio::task::yield_now().await;
         let mut state = self.state.write().await;
         let mut op = match revalidar_operacion(&state, &oportunidad, ahora) {
             Ok(op) => op,
@@ -796,7 +829,11 @@ impl Motor {
                     || state.kill_switch_activo
                     || self.kill_switch_emergencia.load(Ordering::SeqCst),
                 modo_conservador: state.modo_conservador,
-                ejecucion_en_curso: self.ejecucion_en_curso.load(Ordering::SeqCst),
+                ejecucion_en_curso: !self
+                    .reservas_inventario
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_empty(),
             },
             configuracion: state.costos.clone(),
             genetico: state.ga.public(),
@@ -806,6 +843,23 @@ impl Motor {
             pares_activos: state.pares_activos.clone(),
             reglas_rebalanceo: state.reglas_rebalanceo.clone(),
         }
+    }
+
+    fn reservar_inventario(&self, oportunidad: &Oportunidad) -> Option<ReservaInventarioGuard> {
+        let claves = claves_reserva(oportunidad);
+        let mut reservas = self
+            .reservas_inventario
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if claves.iter().any(|clave| reservas.contains(clave)) {
+            return None;
+        }
+        reservas.extend(claves.iter().cloned());
+        drop(reservas);
+        Some(ReservaInventarioGuard {
+            reservas: Arc::clone(&self.reservas_inventario),
+            claves,
+        })
     }
 
     /// Lectura acotada de la auditoría para consumidores como el agente de Discord.
@@ -931,13 +985,12 @@ impl Motor {
         state.historial_spreads.clear();
         state.ciclos = 0;
         state.ga = EstadoGa::default();
-        state.ga.validacion.dataset_hash = crate::version::demo_dataset_hash();
+        // La corrida demo cambia su propia huella, no la del campeón offline.
+        // Mezclarlas haría parecer que el GA fue validado sobre datos que acaba
+        // de generar el recorrido de jurado.
         state.demo_forzado = None;
         let secuencia = self.corridas_jurado.fetch_add(1, Ordering::SeqCst) + 1;
-        let corrida_id = format!(
-            "jury-{}-{secuencia:06}",
-            ahora.format("%Y%m%dT%H%M%S%.9fZ")
-        );
+        let corrida_id = format!("jury-{}-{secuencia:06}", ahora.format("%Y%m%dT%H%M%S%.9fZ"));
         state.corrida = EstadoCorrida {
             id: corrida_id.clone(),
             modo: "demo_controlada".to_string(),
@@ -979,8 +1032,7 @@ impl Motor {
                 .kill_switch_commit
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            self.kill_switch_emergencia
-                .store(activo, Ordering::SeqCst);
+            self.kill_switch_emergencia.store(activo, Ordering::SeqCst);
         }
 
         let mut state = self.state.write().await;
@@ -1146,10 +1198,8 @@ impl Motor {
                 })
             }
             EscenarioDemo::FalloSegundaPierna => {
-                let op_id = identidad_corrida(
-                    &state,
-                    &format!("demo-leg2-{}", ahora.timestamp_millis()),
-                );
+                let op_id =
+                    identidad_corrida(&state, &format!("demo-leg2-{}", ahora.timestamp_millis()));
                 let precio = precio_referencia_demo(&state);
                 let Some((compra_en, venta_en)) = state.carteras.mejor_ruta_demo() else {
                     return serde_json::json!({
@@ -1902,8 +1952,8 @@ fn calcular_ga_ablacion(
     // estrategia de esa corrida.
     let semillas_entrenamiento: Vec<u64> = (101..=124).collect();
     let semillas_holdout: Vec<u64> = (401..=424).collect();
-    let reloj_fijo = DateTime::<Utc>::from_timestamp(1_700_000_000, 0)
-        .expect("timestamp reproducible válido");
+    let reloj_fijo =
+        DateTime::<Utc>::from_timestamp(1_700_000_000, 0).expect("timestamp reproducible válido");
     let mut resultados = Vec::new();
 
     for (nombre, ga_cfg) in estrategias {
@@ -1912,14 +1962,8 @@ fn calcular_ga_ablacion(
         for (&semilla_train, &semilla_holdout) in
             semillas_entrenamiento.iter().zip(&semillas_holdout)
         {
-            let train = operaciones_sinteticas_ga(
-                &costos,
-                48,
-                precio_ref,
-                semilla_train,
-                reloj_fijo,
-                true,
-            );
+            let train =
+                operaciones_sinteticas_ga(&costos, 48, precio_ref, semilla_train, reloj_fijo, true);
             let holdout = operaciones_sinteticas_ga(
                 &costos,
                 48,
@@ -2121,12 +2165,26 @@ fn crear_transferencia(
     }
     .to_string();
     let confirmaciones_requeridas = if rebalanceo.activo == "BTC" {
-        if retiro_suspendido { 3 } else { 2 }
+        if retiro_suspendido {
+            3
+        } else {
+            2
+        }
     } else {
         1
     };
+    let minimo_retiro = if rebalanceo.activo == "BTC" {
+        (fee_activo * 2.0).max(0.0005)
+    } else {
+        10.0
+    };
+    let cumple_minimo = cantidad_bruta >= minimo_retiro;
     let capital_bloqueado_usd = cantidad_neta
-        * if rebalanceo.activo == "BTC" { precio } else { 1.0 };
+        * if rebalanceo.activo == "BTC" {
+            precio
+        } else {
+            1.0
+        };
     TransferenciaInventario {
         id: format!("tx-{}", rebalanceo.id),
         rebalanceo_id: rebalanceo.id.clone(),
@@ -2136,12 +2194,17 @@ fn crear_transferencia(
         red_elegida,
         retiro_suspendido,
         confirmaciones_requeridas,
+        confirmaciones_observadas: 0,
+        minimo_retiro,
+        cumple_minimo,
         cantidad_bruta,
         cantidad_neta,
         costo_usd: rebalanceo.costo_usd,
         capital_bloqueado_usd,
         probabilidad_demora,
-        estado: if retiro_suspendido {
+        estado: if !cumple_minimo {
+            "BELOW_MINIMUM".to_string()
+        } else if retiro_suspendido {
             "WITHDRAWAL_SUSPENDED".to_string()
         } else {
             "TRANSFER_REQUESTED".to_string()
@@ -2176,10 +2239,26 @@ fn crear_transferencia(
 fn procesar_transferencias(state: &mut State, ahora: DateTime<Utc>) {
     let mut movimientos: Vec<(String, String, f64)> = Vec::new();
     for transferencia in &mut state.transferencias_inventario {
+        if transferencia.estado == "IN_TRANSIT" {
+            let transcurrido = (ahora - transferencia.creada_en).num_milliseconds().max(0) as f64;
+            let progreso = (transcurrido / transferencia.eta_ms.max(1) as f64).clamp(0.0, 1.0);
+            transferencia.confirmaciones_observadas =
+                (progreso * transferencia.confirmaciones_requeridas as f64).floor() as u32;
+        }
         match transferencia.estado.as_str() {
-            "WITHDRAWAL_SUSPENDED" if ahora
-                >= transferencia.creada_en
-                    + chrono::Duration::milliseconds((transferencia.eta_ms / 2).max(1)) =>
+            "BELOW_MINIMUM" => {
+                transferencia.estado = "FAILED".to_string();
+                transferencia.fallo = Some("cantidad inferior al mínimo de retiro/red".to_string());
+                movimientos.push((
+                    transferencia.desde.clone(),
+                    transferencia.activo.clone(),
+                    transferencia.cantidad_bruta,
+                ));
+            }
+            "WITHDRAWAL_SUSPENDED"
+                if ahora
+                    >= transferencia.creada_en
+                        + chrono::Duration::milliseconds((transferencia.eta_ms / 2).max(1)) =>
             {
                 transferencia.estado = "IN_TRANSIT".to_string();
                 transferencia.intentos += 1;
@@ -2196,6 +2275,7 @@ fn procesar_transferencias(state: &mut State, ahora: DateTime<Utc>) {
             }
             "IN_TRANSIT" if ahora >= transferencia.liquida_en => {
                 transferencia.estado = "CONFIRMED".to_string();
+                transferencia.confirmaciones_observadas = transferencia.confirmaciones_requeridas;
                 transferencia.confirmada_en = Some(ahora);
                 movimientos.push((
                     transferencia.hacia.clone(),
@@ -3012,10 +3092,7 @@ fn insertar_evento_sistema(
     state.eventos_ejecucion.insert(
         0,
         EventoEjecucion {
-            id: identidad_corrida(
-                state,
-                &format!("evt-{}-{}", tipo, ahora.timestamp_millis()),
-            ),
+            id: identidad_corrida(state, &format!("evt-{}-{}", tipo, ahora.timestamp_millis())),
             tipo: tipo.to_string(),
             ruta: "sistema".to_string(),
             detalle: detalle.to_string(),
@@ -3932,6 +4009,26 @@ fn quote_lane(nombre: &str) -> &'static str {
     }
 }
 
+fn claves_reserva(oportunidad: &Oportunidad) -> Vec<ClaveReserva> {
+    let activo_base = oportunidad
+        .par
+        .split_once('/')
+        .map(|(base, _)| base)
+        .filter(|base| !base.is_empty())
+        .unwrap_or("BTC")
+        .to_ascii_uppercase();
+    vec![
+        ClaveReserva {
+            exchange: oportunidad.compra_en.clone(),
+            activo: quote_lane(&oportunidad.compra_en).to_string(),
+        },
+        ClaveReserva {
+            exchange: oportunidad.venta_en.clone(),
+            activo: activo_base,
+        },
+    ]
+}
+
 fn clave_exchange(exchange: &str, par: &str) -> String {
     format!("{exchange}:{par}")
 }
@@ -4294,6 +4391,63 @@ mod tests {
         assert_eq!(carteras.balance("A").usd, 100.0);
         assert!(carteras.balance("B").usd < 19_900.0);
         assert!(eventos.iter().any(|e| e.activo == "USD"));
+    }
+
+    #[tokio::test]
+    async fn liquidacion_modela_red_suspension_minimo_confirmaciones_y_capital_bloqueado() {
+        let motor = Motor::new(cfg_test(), 20_000.0, 2.0, "BTC/USDT".into(), vec![], None);
+        motor
+            .recibir_cotizacion(cot("A", 100.0, 101.0, 1.0, 1.0))
+            .await;
+        let ahora = Utc::now();
+        let mut state = motor.state.write().await;
+        state.costos.exchanges.insert(
+            "A".into(),
+            ExchangeConfig {
+                nombre: "A".into(),
+                fee_taker: 0.001,
+                retiro_btc: 0.0001,
+                confiabilidad: 0.50,
+            },
+        );
+        let rebalanceo = Rebalanceo {
+            id: "reb-liquidacion-realista".into(),
+            desde: "A".into(),
+            hacia: "B".into(),
+            activo: "BTC".into(),
+            cantidad: 0.01,
+            costo_usd: 0.01,
+            razon: "prueba de settlement".into(),
+            tiempo: ahora,
+        };
+        let transferencia = crear_transferencia(&state, &rebalanceo, ahora);
+        let liquida_en = transferencia.liquida_en;
+        assert_eq!(transferencia.red_elegida, "bitcoin-mainnet");
+        assert!(transferencia.retiro_suspendido);
+        assert_eq!(transferencia.estado, "WITHDRAWAL_SUSPENDED");
+        assert_eq!(transferencia.confirmaciones_requeridas, 3);
+        assert_eq!(transferencia.confirmaciones_observadas, 0);
+        assert!(transferencia.cumple_minimo);
+        assert!(transferencia.cantidad_bruta >= transferencia.minimo_retiro);
+        assert!(transferencia.capital_bloqueado_usd > 0.0);
+        assert!(transferencia.probabilidad_demora >= 0.5);
+        state.transferencias_inventario.push_front(transferencia);
+
+        let mitad_settlement_ms = state.costos.rebalance_settlement_ms / 2;
+        procesar_transferencias(
+            &mut state,
+            ahora + chrono::Duration::milliseconds(mitad_settlement_ms),
+        );
+        assert_eq!(state.transferencias_inventario[0].estado, "IN_TRANSIT");
+
+        procesar_transferencias(&mut state, liquida_en + chrono::Duration::milliseconds(1));
+        let liquidada = &state.transferencias_inventario[0];
+        assert_eq!(liquidada.estado, "CONFIRMED");
+        assert_eq!(
+            liquidada.confirmaciones_observadas,
+            liquidada.confirmaciones_requeridas
+        );
+        assert!(liquidada.confirmada_en.is_some());
     }
 
     #[test]
@@ -4662,7 +4816,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reset_jurado_no_libera_una_ejecucion_ajena() {
+    async fn reservas_permiten_rutas_independientes_y_bloquean_inventario_compartido() {
         let motor = Motor::new(
             cfg_test(),
             250_000.0,
@@ -4671,12 +4825,55 @@ mod tests {
             vec![],
             None,
         );
-        motor.ejecucion_en_curso.store(true, Ordering::SeqCst);
+        let carteras = Carteras::new(
+            &[
+                "A".to_string(),
+                "B".to_string(),
+                "C".to_string(),
+                "D".to_string(),
+            ],
+            40_000.0,
+            4.0,
+        );
+        let ahora = Utc::now();
+        let primera = calcular_oportunidad(
+            &cot("A", 100.0, 101.0, 1.0, 1.0),
+            &cot("B", 110.0, 111.0, 1.0, 1.0),
+            &carteras,
+            &cfg_test(),
+            ahora,
+        );
+        let independiente = calcular_oportunidad(
+            &cot("C", 100.0, 101.0, 1.0, 1.0),
+            &cot("D", 110.0, 111.0, 1.0, 1.0),
+            &carteras,
+            &cfg_test(),
+            ahora,
+        );
+        let conflicto = calcular_oportunidad(
+            &cot("A", 100.0, 101.0, 1.0, 1.0),
+            &cot("D", 110.0, 111.0, 1.0, 1.0),
+            &carteras,
+            &cfg_test(),
+            ahora,
+        );
 
-        motor.reiniciar_demo_jurado().await;
+        let reserva_primera = motor
+            .reservar_inventario(&primera)
+            .expect("la primera ruta debe reservar A:USDT y B:BTC");
+        let reserva_independiente = motor
+            .reservar_inventario(&independiente)
+            .expect("una ruta C->D no comparte inventario y puede coexistir");
+        assert!(motor.reservar_inventario(&conflicto).is_none());
+        assert!(motor.estado().await.metricas.ejecucion_en_curso);
 
-        assert!(motor.ejecucion_en_curso.load(Ordering::SeqCst));
-        motor.ejecucion_en_curso.store(false, Ordering::SeqCst);
+        drop(reserva_primera);
+        assert!(
+            motor.reservar_inventario(&conflicto).is_none(),
+            "D:BTC sigue reservada por la ruta independiente"
+        );
+        drop(reserva_independiente);
+        assert!(motor.reservar_inventario(&conflicto).is_some());
     }
 
     #[tokio::test]

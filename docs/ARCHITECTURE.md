@@ -40,7 +40,7 @@ public WS/REST -> normalize quote -> Motor -> risk/decision -> two-leg simulator
 
 ## Concurrency and failure boundaries
 
-Feeds and periodic analysis run as Tokio tasks behind `Arc<Motor>`. A single-trade-in-flight guard prevents incompatible simulated wallet updates. Broadcast is bounded; slow WebSocket clients may miss snapshots and recover on the next one. Market ingestion continues if a browser disconnects. Production readiness fails unless the active backend reports durable storage; credentials are never returned in public state.
+Feeds and periodic analysis run as Tokio tasks behind `Arc<Motor>`. Execution reserves inventory by `(exchange, asset)`: incompatible routes are rejected while independent wallets can proceed in the same batch; the global lane is limited to multi-step demo/admin workflows. Broadcast is bounded; slow WebSocket clients may miss snapshots and recover on the next one. Market ingestion continues if a browser disconnects. Production readiness fails unless the active backend reports durable storage; credentials are never returned in public state.
 
 The deterministic execution matrix is a pure read model: opening it does not
 mutate wallets or persistence. Jury preflight binds its stable `matrixSha256` to
