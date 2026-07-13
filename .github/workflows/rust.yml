@@ -194,13 +194,14 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v7
         with:
-          name: mayab-production-image-${{ github.run_id }}-${{ github.run_attempt }}
+          name: mayab-production-image-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/mayab-production-image.tar.gz
             ${{ runner.temp }}/mayab-production-image.id
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
+          overwrite: true
 
   deploy:
     name: Deploy Cloud Run
@@ -255,7 +256,7 @@ jobs:
       - name: Download the exact image tested by CI
         uses: actions/download-artifact@v8
         with:
-          name: mayab-production-image-${{ github.run_id }}-${{ github.run_attempt }}
+          name: mayab-production-image-${{ github.run_id }}
           path: ${{ runner.temp }}/mayab-production-image
 
       - name: Publish the tested image and resolve its immutable digest
