@@ -296,9 +296,18 @@ test("las seis pruebas aceptan clic en su texto y preparan evidencia dentro del 
   await page.locator('[data-jury-proof="market"] strong').click();
   await expect(page.locator("#tab-mercado")).toHaveClass(/activo/);
   await expect(page.locator("#tab-mercado .panel").first()).toBeVisible();
+  await expect.poll(() => page.evaluate(() => {
+    const pantalla = document.querySelector(".pantalla");
+    const tabs = document.querySelector(".tabs-nav");
+    if (!pantalla || !tabs) return false;
+    const viewport = pantalla.getBoundingClientRect();
+    const destino = tabs.getBoundingClientRect();
+    return destino.top >= viewport.top && destino.top < viewport.top + 48;
+  })).toBe(true);
 
   await page.locator('[data-jury-proof="wallets"] small').click();
   await expect(page.locator("#tab-riesgo")).toHaveClass(/activo/);
+  await expect(page.locator("#tab-riesgo .panel").first()).toBeInViewport();
 
   await page.locator('[data-jury-proof="economics"] strong').click();
   await expect(page.locator("#tab-evidence")).toHaveClass(/activo/);

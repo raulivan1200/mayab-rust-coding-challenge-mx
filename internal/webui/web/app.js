@@ -4564,7 +4564,12 @@ function iniciarLanding() {
   // Si el módulo falla antes de este punto, el HTML permanece visible como
   // fallback progresivo en vez de convertirse en una pantalla en blanco.
   document.documentElement.classList.add("reveal-ready");
-  const ctas = document.querySelectorAll('a[href="#dashboard"]');
+  // Los controles con data-tab-target tienen una navegación más precisa: primero
+  // activan su pestaña y después desplazan el contenedor. No instalar aquí un
+  // segundo manejador que empiece a mover la vista hacia Resumen, porque ambos
+  // scrolls compiten y en algunos navegadores el primer clic termina entre la
+  // landing y el contenido activo.
+  const ctas = document.querySelectorAll('a[href="#dashboard"]:not([data-tab-target])');
   ctas.forEach((cta) => {
     cta.addEventListener("click", (event) => {
       event.preventDefault();

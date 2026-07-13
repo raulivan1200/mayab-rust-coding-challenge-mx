@@ -332,7 +332,7 @@ PY
     echo "El servicio existe pero no expone tráfico previo restaurable" >&2
     exit 1
   fi
-elif grep -Eqi 'NOT_FOUND|not found|cannot find|does not exist' "$TMP_DIR/previous-service.err"; then
+elif grep -Eqi 'NOT_FOUND|not.*found|cannot find|does not exist' "$TMP_DIR/previous-service.err"; then
   SERVICE_EXISTED=false
 else
   cat "$TMP_DIR/previous-service.err" >&2
