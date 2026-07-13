@@ -19,6 +19,10 @@ module.exports = defineConfig({
       AUDITORIA_DB_PATH: "/tmp/mayab-playwright.sqlite",
       DEMO_RENTABLE_INICIAL: "false",
       ENABLED_EXCHANGES: "Binance,Kraken",
+      // Una suite completa abre el dashboard muchas veces desde la misma IP.
+      // Conservamos el rate limit de producción y ampliamos únicamente el
+      // presupuesto del servidor efímero de Playwright.
+      HTTP_READ_RPM: "10000",
     },
   },
 });

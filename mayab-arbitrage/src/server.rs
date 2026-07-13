@@ -184,7 +184,7 @@ async fn json_charset(req: Request, next: Next) -> Response {
 }
 
 async fn rate_limit(State(app): State<EstadoApp>, req: Request, next: Next) -> Response {
-    if matches!(req.uri().path(), "/healthz" | "/readyz") {
+    if !ruta_sujeta_a_rate_limit(req.uri().path()) {
         return next.run(req).await;
     }
     let mutating = !matches!(
@@ -228,6 +228,10 @@ async fn rate_limit(State(app): State<EstadoApp>, req: Request, next: Next) -> R
     bucket.1 += 1;
     drop(buckets);
     next.run(req).await
+}
+
+fn ruta_sujeta_a_rate_limit(path: &str) -> bool {
+    path.starts_with("/api/") || matches!(path, "/metrics" | "/tiempo-real")
 }
 
 pub(crate) async fn healthz() -> Json<serde_json::Value> {
@@ -5403,6 +5407,16 @@ mod tests {
         Operacion, PuntoSerie, Rebalanceo, TelemetriaPipeline, TransicionEjecucion,
     };
     use smallvec::SmallVec;
+
+    #[test]
+    fn rate_limit_no_reemplaza_dashboard_ni_assets_con_json() {
+        for path in ["/", "/index.html", "/app.js", "/styles.css", "/replay/"] {
+            assert!(!ruta_sujeta_a_rate_limit(path), "static path: {path}");
+        }
+        for path in ["/api/estado", "/api/demo", "/metrics", "/tiempo-real"] {
+            assert!(ruta_sujeta_a_rate_limit(path), "protected path: {path}");
+        }
+    }
 
     #[tokio::test]
     async fn production_router_fails_closed_without_admin_token() {
