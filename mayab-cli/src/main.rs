@@ -80,8 +80,21 @@ async fn main() -> anyhow::Result<()> {
     ) {
         anyhow::bail!("STORAGE_MODE no reconocido: {storage_mode}");
     }
+    let allow_ephemeral_production =
+        std::env::var("ALLOW_EPHEMERAL_PRODUCTION").is_ok_and(|value| value == "true");
+    if cfg.entorno == config::Environment::Production
+        && storage_mode != "timescaledb"
+        && !allow_ephemeral_production
+    {
+        anyhow::bail!(
+            "production requiere STORAGE_MODE=timescaledb; el fallback temporal exige ALLOW_EPHEMERAL_PRODUCTION=true"
+        );
+    }
     if cfg.entorno == config::Environment::Production && storage_mode != "timescaledb" {
-        anyhow::bail!("production requiere STORAGE_MODE=timescaledb");
+        tracing::warn!(
+            storage_mode,
+            "producción temporal sin persistencia durable; no usar para trading real"
+        );
     }
     let persistencia: Option<Arc<dyn auditoria::Auditoria>> = if storage_mode == "timescaledb" {
         #[cfg(feature = "timescaledb")]
