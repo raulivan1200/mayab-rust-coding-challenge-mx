@@ -16,6 +16,11 @@ pub(crate) fn routes() -> Router<EstadoApp> {
             get(server::research_walk_forward),
         )
         .route("/api/research/impact", get(server::research_impact))
+        .route("/api/research/economics", get(server::research_economics))
+        .route(
+            "/api/research/execution-matrix",
+            get(server::research_execution_matrix),
+        )
         .route("/api/research/bootstrap", get(server::research_bootstrap))
         .route(
             "/api/research/microstructure",

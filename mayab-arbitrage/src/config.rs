@@ -1,36 +1,48 @@
 //! Configuración del binario a partir de variables de entorno.
 //!
-//! Los valores inválidos no detienen el arranque: se registran en logs y se
-//! sustituyen por defaults seguros para mantener la demo operable.
+//! Los valores numéricos inválidos se registran y se sustituyen por defaults
+//! seguros. Los errores en controles de seguridad detienen el arranque.
 
 use std::{collections::HashMap, env, time::Duration};
 
 use crate::types::{ExchangeConfig, MapaCostos};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 /// Entorno de despliegue: development, staging, production.
 pub enum Environment {
     Development,
     Staging,
     Production,
+    /// Valor no reconocido. Se conserva para impedir que un typo degrade el
+    /// proceso accidentalmente a desarrollo.
+    Unknown(String),
 }
 
 impl Environment {
     pub fn from_env() -> Self {
-        match env::var("ENTORNO")
-            .or_else(|_| env::var("MAYAB_ENV"))
-            .unwrap_or_else(|_| "development".to_string())
-            .to_lowercase()
-            .as_str()
-        {
+        Self::from_sources(
+            env::var("MAYAB_ENV").ok().as_deref(),
+            env::var("ENTORNO").ok().as_deref(),
+        )
+    }
+
+    fn from_sources(mayab_env: Option<&str>, entorno: Option<&str>) -> Self {
+        let value = mayab_env
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| entorno.filter(|value| !value.trim().is_empty()))
+            .unwrap_or("development")
+            .trim()
+            .to_ascii_lowercase();
+        match value.as_str() {
+            "development" | "dev" => Self::Development,
             "production" | "prod" => Self::Production,
             "staging" | "stage" => Self::Staging,
-            _ => Self::Development,
+            _ => Self::Unknown(value),
         }
     }
 
     pub fn requires_admin_token(&self) -> bool {
-        matches!(self, Self::Production)
+        matches!(self, Self::Production | Self::Unknown(_))
     }
 
     pub fn min_token_length(&self) -> usize {
@@ -38,11 +50,8 @@ impl Environment {
             Self::Production => 32,
             Self::Staging => 16,
             Self::Development => 0,
+            Self::Unknown(_) => 32,
         }
-    }
-
-    pub fn is_production(&self) -> bool {
-        matches!(self, Self::Production)
     }
 }
 
@@ -65,7 +74,7 @@ pub struct Config {
     /// Jury Mode siempre precarga evidencia reproducible al arrancar, aunque
     /// `DEMO_RENTABLE_INICIAL` se haya desactivado explícitamente.
     pub judge_mode: bool,
-    pub entorno: String,
+    pub entorno: Environment,
     pub enabled_exchanges: Vec<String>,
     pub symbols: Vec<String>,
 }
@@ -277,9 +286,7 @@ impl Config {
             balance_inicial_btc: positive(env_f64("BALANCE_INICIAL_BTC", 1.25), 1.25),
             demo_rentable_inicial: env_bool("DEMO_RENTABLE_INICIAL", true),
             judge_mode: env_bool("MAYAB_JUDGE_MODE", false),
-            entorno: env_optional("MAYAB_ENV")
-                .or_else(|| env_optional("ENTORNO"))
-                .unwrap_or_else(|| "development".to_string()),
+            entorno: Environment::from_env(),
             enabled_exchanges,
             symbols,
         }
@@ -287,18 +294,44 @@ impl Config {
 
     /// Rechaza configuraciones inseguras antes de abrir sockets o arrancar el motor.
     pub fn validate(&self) -> anyhow::Result<()> {
-        if self.entorno.eq_ignore_ascii_case("production") {
+        if let Environment::Unknown(value) = &self.entorno {
+            anyhow::bail!("entorno no reconocido: {value}; use development, staging o production");
+        }
+        if self.entorno.requires_admin_token() {
             let token = self
                 .token_admin
                 .as_deref()
                 .map(str::trim)
                 .filter(|token| !token.is_empty())
                 .ok_or_else(|| anyhow::anyhow!("ADMIN_TOKEN es obligatorio en production"))?;
-            if token.len() < 32 {
-                anyhow::bail!("ADMIN_TOKEN debe tener al menos 32 caracteres en production");
+            let min_length = self.entorno.min_token_length();
+            if token.len() < min_length {
+                anyhow::bail!(
+                    "ADMIN_TOKEN debe tener al menos {min_length} caracteres en production"
+                );
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod environment_tests {
+    use super::Environment;
+
+    #[test]
+    fn mayab_env_has_precedence_over_legacy_entorno() {
+        assert_eq!(
+            Environment::from_sources(Some("production"), Some("development")),
+            Environment::Production
+        );
+    }
+
+    #[test]
+    fn unknown_environment_never_degrades_to_development() {
+        let environment = Environment::from_sources(Some("prodution"), None);
+        assert_eq!(environment, Environment::Unknown("prodution".into()));
+        assert!(environment.requires_admin_token());
     }
 }
 

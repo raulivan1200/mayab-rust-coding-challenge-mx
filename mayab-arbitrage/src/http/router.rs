@@ -2,7 +2,7 @@ use axum::Router;
 
 use crate::{http::routes, server::EstadoApp};
 
-/// Builds the API route tree in auditable, domain-oriented groups.
+/// Construye el árbol de rutas en grupos auditables por dominio.
 pub(crate) fn api_routes() -> Router<EstadoApp> {
     Router::new()
         .merge(routes::health::routes())

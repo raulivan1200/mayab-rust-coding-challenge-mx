@@ -55,6 +55,7 @@ struct State {
     rebalanceos: VecDeque<Rebalanceo>,
     transferencias_inventario: VecDeque<TransferenciaInventario>,
     trazas_ejecucion: VecDeque<TransicionEjecucion>,
+    ejecuciones_dos_piernas: VecDeque<crate::execution::ExecutionReport>,
     corrida: EstadoCorrida,
     telemetria_pipeline: TelemetriaPipeline,
     eventos_inicio_corrida: u64,
@@ -171,12 +172,14 @@ impl Motor {
                 rebalanceos: VecDeque::with_capacity(64),
                 transferencias_inventario: VecDeque::with_capacity(64),
                 trazas_ejecucion: VecDeque::with_capacity(160),
+                ejecuciones_dos_piernas: VecDeque::with_capacity(32),
                 corrida: EstadoCorrida {
                     id: format!("live-{}", ahora.timestamp_millis()),
                     modo: "mercado_live_simulado".to_string(),
                     iniciada_en: ahora,
                     fuente_pnl: "mercado_publico".to_string(),
                     ejecucion_real: false,
+                    dataset_hash: crate::version::runtime_dataset_hash(),
                 },
                 telemetria_pipeline: TelemetriaPipeline::default(),
                 eventos_inicio_corrida: 0,
@@ -565,10 +568,33 @@ impl Motor {
             }
         }
 
-        let exito = state.carteras.aplicar_operacion(&op);
+        let report = match simular_ejecucion_dos_piernas(
+            &state,
+            &op,
+            crate::execution::ExecutionScenario::BothLegsFilled,
+        ) {
+            Ok(report) => report,
+            Err(error) => {
+                let evento = evento_operacion(
+                    &op,
+                    "fallida",
+                    &format!("ejecutor de dos piernas rechazó la operación: {error}"),
+                    "alta",
+                    ahora,
+                );
+                self.persistir_evento(&evento);
+                state.eventos_ejecucion.push_front(evento);
+                state.eventos_ejecucion.truncate(128);
+                actualizar_historial(&op, &mut state.historial_rutas, false);
+                self.ops_fallidas.fetch_add(1, Ordering::SeqCst);
+                return;
+            }
+        };
+        let exito = state.carteras.aplicar_reporte_ejecucion(&report);
         actualizar_historial(&op, &mut state.historial_rutas, exito);
         if exito {
-            registrar_fsm_comprometida(&mut state, &op, ahora);
+            registrar_reporte_ejecucion(&mut state, &report, ahora);
+            self.persistir_ejecucion(&report);
             self.persistir_operacion(&op);
             state.operaciones.push_front(op.clone());
             state.operaciones.truncate(80);
@@ -647,6 +673,7 @@ impl Motor {
             operaciones: state.operaciones.clone(),
             eventos_ejecucion: state.eventos_ejecucion.clone(),
             trazas_ejecucion: state.trazas_ejecucion.clone(),
+            ejecuciones_dos_piernas: state.ejecuciones_dos_piernas.clone(),
             rebalanceos: state.rebalanceos.clone(),
             transferencias_inventario: state.transferencias_inventario.clone(),
             auditoria_decisiones: state.auditoria_decisiones.clone(),
@@ -753,6 +780,14 @@ impl Motor {
         }
     }
 
+    fn persistir_ejecucion(&self, report: &crate::execution::ExecutionReport) {
+        if let Some(persistencia) = &self.persistencia {
+            if let Err(err) = persistencia.registrar_ejecucion(report) {
+                tracing::warn!(error = %err, id = %report.execution_id, "no se pudo encolar ejecución forense");
+            }
+        }
+    }
+
     /// Reemplaza la configuración de costos y riesgo del motor.
     pub async fn actualizar_config(&self, cfg: MapaCostos) {
         self.state.write().await.costos = cfg;
@@ -773,6 +808,7 @@ impl Motor {
         state.rebalanceos.clear();
         state.transferencias_inventario.clear();
         state.trazas_ejecucion.clear();
+        state.ejecuciones_dos_piernas.clear();
         state.telemetria_pipeline = TelemetriaPipeline::default();
         state.eventos_inicio_corrida = self.eventos.load(Ordering::SeqCst);
         state.ultimo_evento_analizado = self.eventos.load(Ordering::SeqCst);
@@ -800,6 +836,7 @@ impl Motor {
             iniciada_en: ahora,
             fuente_pnl: "demo_controlada".to_string(),
             ejecucion_real: false,
+            dataset_hash: crate::version::demo_dataset_hash(),
         };
         self.ops_ejecutadas.store(0, Ordering::SeqCst);
         self.ops_fallidas.store(0, Ordering::SeqCst);
@@ -952,66 +989,96 @@ impl Motor {
             }
             EscenarioDemo::FalloSegundaPierna => {
                 let op_id = format!("demo-leg2-{}", ahora.timestamp_millis());
-                let ruta = "Binance->OKX".to_string();
-                let transiciones = [
-                    (
-                        "PENDING",
-                        "LEG_A_FILLED",
-                        "compra",
-                        0.01,
-                        0.0,
-                        "primera pierna confirmada",
-                    ),
-                    (
-                        "LEG_A_FILLED",
-                        "LEG_B_REJECTED",
-                        "venta",
-                        0.01,
-                        0.0,
-                        "segunda pierna rechazada",
-                    ),
-                    (
-                        "LEG_B_REJECTED",
-                        "UNWIND_FILLED",
-                        "compensacion",
-                        0.0,
-                        -3.25,
-                        "inventario compensado",
-                    ),
-                    (
-                        "UNWIND_FILLED",
-                        "RECONCILED_LOSS",
-                        "ledger",
-                        0.0,
-                        -3.25,
-                        "sin exposición residual",
-                    ),
-                ];
-                for (idx, (anterior, estado, pierna, exposicion, pnl, detalle)) in
-                    transiciones.into_iter().enumerate()
-                {
-                    state.trazas_ejecucion.push_front(TransicionEjecucion {
-                        id: format!("fsm-{op_id}-{idx}"),
-                        operacion_id: op_id.clone(),
-                        ruta: ruta.clone(),
-                        estado_anterior: anterior.to_string(),
-                        estado: estado.to_string(),
-                        pierna: pierna.to_string(),
-                        detalle: detalle.to_string(),
-                        exposicion_btc: exposicion,
-                        pnl_realizado_usd: pnl,
-                        tiempo: ahora,
+                let precio = precio_referencia(state.cotizaciones.values());
+                let Some((compra_en, venta_en)) = state.carteras.mejor_ruta_demo() else {
+                    return serde_json::json!({
+                        "ok": false,
+                        "modo": "sin_ruta_fondeada",
+                        "error": "se requieren dos wallets fondeadas para probar la segunda pierna"
                     });
-                }
-                state.trazas_ejecucion.truncate(160);
-                insertar_evento_sistema(
-                    &mut state,
-                    "segunda_pierna_reconciliada",
-                    "demo: segunda pierna rechazada; unwind aplicado y exposición BTC llevada a cero",
-                    "alta",
+                };
+                let inventario_venta = state.carteras.balance(&venta_en).btc;
+                let mut op = operacion_demo_fill_parcial(
+                    &state.costos,
+                    precio,
+                    inventario_venta,
+                    &compra_en,
+                    &venta_en,
+                    42,
                     ahora,
                 );
-                serde_json::json!({"ok": true, "modo": "instantaneo", "operacionId": op_id, "estadoFinal": "RECONCILED_LOSS", "exposicionFinalBtc": 0.0})
+                op.id = op_id.clone();
+                op.parcial = false;
+                let report = match simular_ejecucion_dos_piernas(
+                    &state,
+                    &op,
+                    crate::execution::ExecutionScenario::UnwindCheaper,
+                ) {
+                    Ok(report) => report,
+                    Err(error) => {
+                        insertar_evento_sistema(
+                            &mut state,
+                            "segunda_pierna_no_reconciliada",
+                            &format!("demo bloqueada por ejecutor forense: {error}"),
+                            "alta",
+                            ahora,
+                        );
+                        return serde_json::json!({"ok": false, "modo": "bloqueado", "error": error});
+                    }
+                };
+                if !state.carteras.aplicar_reporte_ejecucion(&report) {
+                    insertar_evento_sistema(
+                        &mut state,
+                        "segunda_pierna_no_reconciliada",
+                        "demo bloqueada: el snapshot de wallets cambió antes del commit",
+                        "alta",
+                        ahora,
+                    );
+                    return serde_json::json!({"ok": false, "modo": "wallet_snapshot_stale"});
+                }
+                let pnl = report.pnl_usd.to_f64().unwrap_or(0.0);
+                state.utilidad += pnl;
+                let utilidad_actual = state.utilidad;
+                state.serie_pnl.push_back(PuntoSerie {
+                    tiempo: ahora,
+                    valor: utilidad_actual,
+                });
+                truncar_primeros(&mut state.serie_pnl, 240);
+                registrar_reporte_ejecucion(&mut state, &report, ahora);
+                self.persistir_ejecucion(&report);
+                self.ops_fallidas.fetch_add(1, Ordering::SeqCst);
+                let evento = EventoEjecucion {
+                    id: format!("evt-segunda-pierna-{op_id}"),
+                    tipo: "segunda_pierna_reconciliada".to_string(),
+                    ruta: format!("{compra_en}->{venta_en}"),
+                    detalle: format!(
+                        "segunda pierna rechazada; {:?} elegido por costo; exposición, reservas y ledger conciliados",
+                        report.selected_recovery
+                    ),
+                    severidad: "alta".to_string(),
+                    tiempo: ahora,
+                    utilidad_usd: pnl,
+                    cantidad_btc: op.cantidad_btc,
+                };
+                self.persistir_evento(&evento);
+                state.eventos_ejecucion.push_front(evento);
+                state.eventos_ejecucion.truncate(128);
+                serde_json::json!({
+                    "ok": report.invariants.all_passed,
+                    "modo": "ejecutor_dos_piernas",
+                    "operacionId": op_id,
+                    "estadoFinal": report.state.as_str(),
+                    "exposicionFinalBtc": report.residual_btc.to_f64().unwrap_or(0.0),
+                    "pnlLedgerUsd": report.ledger_pnl_usd.to_f64().unwrap_or(0.0),
+                    "recuperacion": report.selected_recovery,
+                    "walletsAntes": report.wallets_before,
+                    "walletsDespues": report.wallets_after,
+                    "fills": report.fills,
+                    "ledger": report.ledger,
+                    "transiciones": report.transitions,
+                    "invariantes": report.invariants,
+                    "duplicateExecution": report.duplicates_ignored > 0,
+                })
             }
             EscenarioDemo::LiquidezInsuficiente => {
                 insertar_evento_sistema(
@@ -1029,15 +1096,31 @@ impl Motor {
             EscenarioDemo::FillParcial => {
                 state.circuit_breaker_activo = false;
                 let precio = precio_referencia(state.cotizaciones.values());
-                let inventario_venta = state.carteras.balance("OKX").btc;
+                let Some((compra_en, venta_en)) = state.carteras.mejor_ruta_demo() else {
+                    return serde_json::json!({
+                        "ok": false,
+                        "modo": "sin_ruta_fondeada",
+                        "error": "se requieren dos wallets fondeadas para probar el fill parcial"
+                    });
+                };
+                let inventario_venta = state.carteras.balance(&venta_en).btc;
                 let op = operacion_demo_fill_parcial(
                     &state.costos,
                     precio,
                     inventario_venta,
+                    &compra_en,
+                    &venta_en,
                     ahora.timestamp_millis() as u64,
                     ahora,
                 );
-                let exito = state.carteras.aplicar_operacion(&op);
+                let report = simular_ejecucion_dos_piernas(
+                    &state,
+                    &op,
+                    crate::execution::ExecutionScenario::BothLegsFilled,
+                );
+                let exito = report
+                    .as_ref()
+                    .is_ok_and(|report| state.carteras.aplicar_reporte_ejecucion(report));
                 if !exito {
                     insertar_evento_sistema(
                         &mut state,
@@ -1050,6 +1133,10 @@ impl Motor {
                         self.persistir_evento(evento);
                     }
                     return serde_json::json!({ "ok": false, "modo": "sin_inventario" });
+                }
+                if let Ok(report) = report {
+                    registrar_reporte_ejecucion(&mut state, &report, ahora);
+                    self.persistir_ejecucion(&report);
                 }
                 actualizar_historial(&op, &mut state.historial_rutas, true);
                 state.utilidad += op.utilidad_usd;
@@ -1168,20 +1255,30 @@ impl Motor {
                 state.operaciones_riesgo.retain(|op| op.utilidad_usd >= 0.0);
 
                 let precio = precio_referencia(state.cotizaciones.values());
-                let replay = operaciones_sinteticas_ga(
-                    &state.costos,
-                    18,
-                    precio,
-                    ahora.timestamp_millis() as u64 ^ 0x5155_4d45_5243_4144,
-                    ahora,
-                    false,
-                );
+                let seed = if state.corrida.modo == "demo_controlada" {
+                    // Jury Mode debe producir el mismo tape económico aunque
+                    // cambien el timestamp y el id de la sesión.
+                    42 ^ 0x5155_4d45_5243_4144
+                } else {
+                    ahora.timestamp_millis() as u64 ^ 0x5155_4d45_5243_4144
+                };
+                let replay =
+                    operaciones_sinteticas_ga(&state.costos, 18, precio, seed, ahora, false);
                 let mut insertadas = 0usize;
                 for op in replay.operaciones {
-                    let exito = state.carteras.aplicar_operacion(&op);
+                    let Ok(report) = simular_ejecucion_dos_piernas(
+                        &state,
+                        &op,
+                        crate::execution::ExecutionScenario::BothLegsFilled,
+                    ) else {
+                        continue;
+                    };
+                    let exito = state.carteras.aplicar_reporte_ejecucion(&report);
                     if !exito {
                         continue;
                     }
+                    registrar_reporte_ejecucion(&mut state, &report, op.ejecutada_en);
+                    self.persistir_ejecucion(&report);
                     actualizar_historial(&op, &mut state.historial_rutas, true);
                     state.utilidad += op.utilidad_usd;
                     let utilidad_actual = state.utilidad;
@@ -1207,7 +1304,6 @@ impl Motor {
                     state.oportunidades.push_front(oportunidad);
                     state.auditoria_decisiones.push_front(auditoria);
                     state.eventos_ejecucion.push_front(evento);
-                    registrar_fsm_comprometida(&mut state, &op, op.ejecutada_en);
                     insertadas += 1;
                     self.ops_ejecutadas.fetch_add(1, Ordering::SeqCst);
                 }
@@ -1760,6 +1856,37 @@ impl Carteras {
             })
     }
 
+    /// Elige el par ordenado con más capacidad conjunta: USD para comprar y
+    /// BTC para vender. Evita nombres de venues hardcodeados y mantiene las
+    /// demos ejecutables con cualquier subconjunto de exchanges habilitado.
+    fn mejor_ruta_demo(&self) -> Option<(String, String)> {
+        let mut candidates = self
+            .balances
+            .iter()
+            .flat_map(|(buy_name, buy)| {
+                self.balances
+                    .iter()
+                    .filter(move |(sell_name, sell)| {
+                        *sell_name != buy_name && buy.usd > 0.0 && sell.btc > 0.0
+                    })
+                    .map(move |(sell_name, sell)| {
+                        (buy.usd * sell.btc, buy_name.clone(), sell_name.clone())
+                    })
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            right
+                .0
+                .total_cmp(&left.0)
+                .then_with(|| left.1.cmp(&right.1))
+                .then_with(|| left.2.cmp(&right.2))
+        });
+        candidates
+            .into_iter()
+            .next()
+            .map(|(_, buy, sell)| (buy, sell))
+    }
+
     /// Verifica si existe balance para un exchange
     pub fn tiene_balance(&self, exchange: &str) -> bool {
         self.balances.contains_key(exchange)
@@ -1770,6 +1897,7 @@ impl Carteras {
         self.balances.get(exchange).map(|b| b.usd).unwrap_or(0.0)
     }
 
+    #[cfg(test)]
     fn aplicar_operacion(&mut self, op: &Operacion) -> bool {
         if op.cantidad_btc <= 0.0 || op.precio_compra <= 0.0 || op.precio_venta <= 0.0 {
             return false;
@@ -1797,6 +1925,47 @@ impl Carteras {
         if let Some(venta) = self.balances.get_mut(&op.venta_en) {
             venta.usd += ingreso_venta;
             venta.btc -= cantidad;
+        }
+        true
+    }
+
+    fn aplicar_reporte_ejecucion(&mut self, report: &crate::execution::ExecutionReport) -> bool {
+        if !report.invariants.all_passed || report.wallets_before.len() != 2 {
+            return false;
+        }
+        for before in &report.wallets_before {
+            let Some(current) = self.balances.get(&before.venue) else {
+                return false;
+            };
+            let Some(usd) = before.usd.to_f64() else {
+                return false;
+            };
+            let Some(btc) = before.btc.to_f64() else {
+                return false;
+            };
+            if (current.usd - usd).abs() > 0.000001 || (current.btc - btc).abs() > 0.000000001 {
+                return false;
+            }
+        }
+        let mut updates = Vec::with_capacity(report.wallets_after.len());
+        for after in &report.wallets_after {
+            let Some(usd) = after.usd.to_f64() else {
+                return false;
+            };
+            let Some(btc) = after.btc.to_f64() else {
+                return false;
+            };
+            if usd < 0.0 || btc < 0.0 {
+                return false;
+            }
+            updates.push((after.venue.clone(), usd, btc));
+        }
+        for (venue, usd, btc) in updates {
+            let Some(wallet) = self.balances.get_mut(&venue) else {
+                return false;
+            };
+            wallet.usd = usd;
+            wallet.btc = btc;
         }
         true
     }
@@ -2478,36 +2647,141 @@ fn evento_operacion(
     }
 }
 
-/// Registra la confirmación secuencial de ambas piernas de una operación.
-/// La contabilidad de wallets se aplica atómicamente, pero la traza conserva
-/// los estados que un ejecutor real debe confirmar y reconciliar.
-fn registrar_fsm_comprometida(state: &mut State, op: &Operacion, ahora: DateTime<Utc>) {
-    let ruta = format!("{}->{}", op.compra_en, op.venta_en);
-    state.trazas_ejecucion.push_front(TransicionEjecucion {
-        id: format!("fsm-{}-leg-a", op.id),
-        operacion_id: op.id.clone(),
-        ruta: ruta.clone(),
-        estado_anterior: "PENDING".to_string(),
-        estado: "LEG_A_FILLED".to_string(),
-        pierna: "compra".to_string(),
-        detalle: "primera pierna confirmada".to_string(),
-        exposicion_btc: op.cantidad_btc,
-        pnl_realizado_usd: 0.0,
-        tiempo: ahora,
-    });
-    state.trazas_ejecucion.push_front(TransicionEjecucion {
-        id: format!("fsm-{}-commit", op.id),
-        operacion_id: op.id.clone(),
-        ruta,
-        estado_anterior: "LEG_A_FILLED".to_string(),
-        estado: "COMMITTED".to_string(),
-        pierna: "venta".to_string(),
-        detalle: "segunda pierna confirmada; ledger conciliado".to_string(),
-        exposicion_btc: 0.0,
-        pnl_realizado_usd: op.utilidad_usd,
-        tiempo: ahora,
-    });
+fn simular_ejecucion_dos_piernas(
+    state: &State,
+    op: &Operacion,
+    scenario: crate::execution::ExecutionScenario,
+) -> Result<crate::execution::ExecutionReport, String> {
+    let decimal = |value: f64, field: &str| {
+        Decimal::from_f64(value).ok_or_else(|| format!("{field} no es decimal finito"))
+    };
+    let buy = state.carteras.balance(&op.compra_en);
+    let sell = state.carteras.balance(&op.venta_en);
+    let extra_cost =
+        (op.costos.total_usd - op.costos.fee_compra_usd - op.costos.fee_venta_usd).max(0.0);
+    let (rehedge_cost, unwind_cost) = match scenario {
+        crate::execution::ExecutionScenario::RehedgeCheaper => (1.25, 8.0),
+        crate::execution::ExecutionScenario::UnwindCheaper => (8.0, 3.25),
+        _ => (4.0, 3.25),
+    };
+    let shock = (op.precio_compra * 0.0004).max(1.0);
+    crate::execution::simulate(crate::execution::ExecutionRequest {
+        execution_id: op.id.clone(),
+        scenario,
+        buy_wallet: crate::execution::InitialWallet {
+            venue: buy.exchange,
+            usd: decimal(buy.usd, "buy_wallet.usd")?,
+            btc: decimal(buy.btc, "buy_wallet.btc")?,
+        },
+        sell_wallet: crate::execution::InitialWallet {
+            venue: sell.exchange,
+            usd: decimal(sell.usd, "sell_wallet.usd")?,
+            btc: decimal(sell.btc, "sell_wallet.btc")?,
+        },
+        quantity_btc: decimal(op.cantidad_btc, "quantity_btc")?,
+        prices: crate::execution::ExecutionPrices {
+            leg1_buy_price_usd: decimal(op.precio_compra, "precio_compra")?,
+            leg2_sell_price_usd: decimal(op.precio_venta, "precio_venta")?,
+            rehedge_price_usd: decimal(op.precio_venta - shock, "rehedge_price")?,
+            unwind_price_usd: decimal(op.precio_compra - shock, "unwind_price")?,
+        },
+        costs: crate::execution::ExecutionCosts {
+            leg1_fee_usd: decimal(op.costos.fee_compra_usd + extra_cost, "leg1_fee_usd")?,
+            leg2_fee_usd: decimal(op.costos.fee_venta_usd, "leg2_fee_usd")?,
+            rehedge_cost_usd: decimal(rehedge_cost, "rehedge_cost_usd")?,
+            unwind_cost_usd: decimal(unwind_cost, "unwind_cost_usd")?,
+        },
+    })
+    .map_err(|error| error.to_string())
+}
+
+fn registrar_reporte_ejecucion(
+    state: &mut State,
+    report: &crate::execution::ExecutionReport,
+    ahora: DateTime<Utc>,
+) {
+    let buy_venue = report
+        .fills
+        .iter()
+        .find(|fill| fill.leg == crate::execution::ExecutionLeg::Leg1)
+        .map(|fill| fill.venue.as_str())
+        .unwrap_or("compra");
+    let sell_venue = report
+        .fills
+        .iter()
+        .find(|fill| fill.leg == crate::execution::ExecutionLeg::Leg2)
+        .map(|fill| fill.venue.as_str())
+        .or_else(|| {
+            report
+                .wallets_before
+                .iter()
+                .find(|wallet| wallet.venue != buy_venue)
+                .map(|wallet| wallet.venue.as_str())
+        })
+        .unwrap_or("venta");
+    let route = format!("{buy_venue}->{sell_venue}");
+    let leg1 = report
+        .fills
+        .iter()
+        .filter(|fill| fill.leg == crate::execution::ExecutionLeg::Leg1)
+        .map(|fill| fill.quantity_btc)
+        .sum::<Decimal>();
+    let leg2 = report
+        .fills
+        .iter()
+        .filter(|fill| fill.leg == crate::execution::ExecutionLeg::Leg2)
+        .map(|fill| fill.quantity_btc)
+        .sum::<Decimal>();
+    let residual_legs = leg1 - leg2;
+    for transition in &report.transitions {
+        let exposure = match transition.to {
+            crate::execution::ExecutionState::Leg1Partial
+            | crate::execution::ExecutionState::Leg1Filled
+            | crate::execution::ExecutionState::Leg2Submitted => leg1,
+            crate::execution::ExecutionState::Leg2Partial
+            | crate::execution::ExecutionState::Leg2Filled
+            | crate::execution::ExecutionState::Leg2Rejected
+            | crate::execution::ExecutionState::Leg2TimedOut
+            | crate::execution::ExecutionState::RecoverySelected => residual_legs,
+            crate::execution::ExecutionState::Reconciled => report.residual_btc,
+            _ => Decimal::ZERO,
+        };
+        state.trazas_ejecucion.push_front(TransicionEjecucion {
+            id: format!("fsm-{}-{}", report.execution_id, transition.sequence),
+            operacion_id: report.execution_id.clone(),
+            ruta: route.clone(),
+            estado_anterior: transition
+                .from
+                .map(crate::execution::ExecutionState::as_str)
+                .unwrap_or("NONE")
+                .to_string(),
+            estado: transition.to.as_str().to_string(),
+            pierna: match transition.to {
+                crate::execution::ExecutionState::Leg1Submitted
+                | crate::execution::ExecutionState::Leg1Partial
+                | crate::execution::ExecutionState::Leg1Filled => "compra",
+                crate::execution::ExecutionState::Leg2Submitted
+                | crate::execution::ExecutionState::Leg2Partial
+                | crate::execution::ExecutionState::Leg2Filled
+                | crate::execution::ExecutionState::Leg2Rejected
+                | crate::execution::ExecutionState::Leg2TimedOut => "venta",
+                crate::execution::ExecutionState::RecoverySelected => "recuperacion",
+                _ => "ledger",
+            }
+            .to_string(),
+            detalle: transition.detail.clone(),
+            exposicion_btc: exposure.to_f64().unwrap_or(0.0),
+            pnl_realizado_usd: if transition.to == crate::execution::ExecutionState::Reconciled {
+                report.pnl_usd.to_f64().unwrap_or(0.0)
+            } else {
+                0.0
+            },
+            tiempo: ahora,
+        });
+    }
     state.trazas_ejecucion.truncate(160);
+    state.ejecuciones_dos_piernas.push_front(report.clone());
+    state.ejecuciones_dos_piernas.truncate(32);
 }
 
 fn evento_oportunidad(
@@ -2680,6 +2954,8 @@ fn operacion_demo_fill_parcial(
     costos: &MapaCostos,
     precio_ref: f64,
     inventario_venta_btc: f64,
+    compra_en: &str,
+    venta_en: &str,
     seed: u64,
     ahora: DateTime<Utc>,
 ) -> Operacion {
@@ -2695,8 +2971,8 @@ fn operacion_demo_fill_parcial(
         .min((inventario_venta_btc * 0.8).max(0.0));
     let precio_compra = precio_base * 0.9997;
     let mid = precio_base;
-    let fee_compra = config_exchange(costos, "Binance").fee_taker;
-    let fee_venta = config_exchange(costos, "OKX").fee_taker;
+    let fee_compra = config_exchange(costos, compra_en).fee_taker;
+    let fee_venta = config_exchange(costos, venta_en).fee_taker;
     let costos_base = filled * mid * costos.deslizamiento_bps / 10000.0
         + filled * mid * costos.retiro_amortizado_bps / 10000.0
         + filled * mid * costos.latencia_riesgo_bps / 10000.0;
@@ -2726,8 +3002,8 @@ fn operacion_demo_fill_parcial(
         piernas: vec![],
         tipo: crate::types::TipoOportunidad::Lineal,
         id: format!("demo-partial-{seed}"),
-        compra_en: "Binance".to_string(),
-        venta_en: "OKX".to_string(),
+        compra_en: compra_en.to_string(),
+        venta_en: venta_en.to_string(),
         par: "BTC/USD".to_string(),
         cantidad_btc: filled,
         precio_compra,
@@ -3721,7 +3997,7 @@ mod tests {
         let estado = motor.estado().await;
         assert!(!estado.operaciones.is_empty());
         assert!(estado.trazas_ejecucion.iter().any(|trace| {
-            trace.estado == "COMMITTED" && trace.exposicion_btc.abs() < 0.00000001
+            trace.estado == "RECONCILED" && trace.exposicion_btc.abs() < 0.00000001
         }));
         let ga = estado.genetico.expect("estado GA publico");
         assert!(ga.activo);
@@ -3731,6 +4007,45 @@ mod tests {
         assert!(ml_edge.score_actual.is_finite());
         assert!(ml_edge.expected_value_usd.is_finite());
         assert_eq!(ml_edge.features.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn recorrido_jurado_funciona_con_solo_dos_exchanges_habilitados() {
+        let mut config = cfg_test();
+        config
+            .exchanges
+            .retain(|name, _| matches!(name.as_str(), "Binance" | "Kraken"));
+        let motor = Motor::new(config, 250_000.0, 2.5, "BTC/USD".to_string(), vec![], None);
+
+        let rentable = motor
+            .activar_escenario_demo(EscenarioDemo::MercadoRentable)
+            .await;
+        assert_eq!(
+            rentable.get("ok").and_then(|value| value.as_bool()),
+            Some(true)
+        );
+
+        let partial = motor
+            .activar_escenario_demo(EscenarioDemo::FillParcial)
+            .await;
+        assert_eq!(
+            partial.get("ok").and_then(|value| value.as_bool()),
+            Some(true)
+        );
+
+        let leg2 = motor
+            .activar_escenario_demo(EscenarioDemo::FalloSegundaPierna)
+            .await;
+        assert_eq!(leg2.get("ok").and_then(|value| value.as_bool()), Some(true));
+        assert_eq!(
+            leg2.get("estadoFinal").and_then(|value| value.as_str()),
+            Some("RECONCILED")
+        );
+        assert_eq!(
+            leg2.get("exposicionFinalBtc")
+                .and_then(|value| value.as_f64()),
+            Some(0.0)
+        );
     }
 
     #[tokio::test]
@@ -3761,7 +4076,7 @@ mod tests {
             .await
             .trazas_ejecucion
             .iter()
-            .any(|trace| { trace.estado == "COMMITTED" && trace.exposicion_btc.abs() < 1e-8 }));
+            .any(|trace| { trace.estado == "RECONCILED" && trace.exposicion_btc.abs() < 1e-8 }));
 
         motor.analizar(Utc::now()).await;
         let omitida = motor.estado().await.telemetria_pipeline;

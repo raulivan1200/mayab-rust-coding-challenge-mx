@@ -25,7 +25,7 @@
       html[data-theme="light"] { background: #f4e9e1; color-scheme: light; }
     </style>
     <script src="/theme-init.js"></script>
-    <link rel="stylesheet" href="/styles.css?v=20260712-latency-layout" />
+    <link rel="stylesheet" href="/styles.css?v=20260712-jury-dark-contrast" />
   </head>
   <body>
     <noscript>
@@ -66,44 +66,37 @@
 
         <div id="landing-top" class="landing-hero">
           <div class="landing-copy reveal-card">
-            <p class="landing-kicker" data-ui-copy="landingKicker">10 CEX públicos · 90 rutas · evidencia reproducible</p>
+            <p class="landing-kicker" data-ui-copy="landingKicker">Conectando feeds públicos · evidencia reproducible</p>
             <h1 data-ui-copy="landingTitle">Arbitraje que puede explicar cada decisión y sobrevivir una pierna fallida.</h1>
             <p data-ui-copy="landingBody">Mayab compara cada ruta neta de costos, prueba inventario y profundidad, y reconcilia la exposición si la venta simulada falla después de comprar.</p>
             <p class="landing-stack-phrase"><strong>Rust en el camino crítico; vanilla JS en la última milla.</strong> Sin GC en el motor, sin hidratación en el dashboard y sin una cadena de servicios entre la señal y la evidencia.</p>
             <div class="landing-actions">
-              <a class="landing-cta" href="#dashboard">
-                <span data-ui-copy="landingPrimaryCta">Ver a Mayab decidir</span>
+              <button class="landing-cta btc-icon-button" id="btnJuryProofHero" type="button">
+                <span data-ui-copy="landingPrimaryCta">Ejecutar prueba completa</span>
                 <span class="material-icon material-icon-arrow" aria-hidden="true"></span>
-              </a>
+              </button>
               <a class="landing-cta landing-cta-secondary" href="/api/paquete-evaluacion" target="_blank" rel="noopener" title="Abre el reporte JSON con score técnico, métricas, auditoría y cobertura de evaluación" data-ui-copy="landingSecondaryCta">Inspeccionar la evidencia completa</a>
             </div>
             <div class="landing-proof" aria-label="Principios de la demo">
-              <span><strong>01</strong> <span data-ui-copy="proofMarket">10 CEX públicos en tiempo real</span></span>
+              <span><strong>01</strong> <span data-ui-copy="proofMarket">Consultando cobertura real de CEX</span></span>
               <span><strong>02</strong> <span data-ui-copy="proofCosts">Suite Rust multi-capa · conteo sellado por CI</span></span>
               <span><strong>03</strong> <span data-ui-copy="proofSafety">0 BTC residual · capital real: cero</span></span>
             </div>
           </div>
 
-          <div class="landing-card-stack" aria-label="Resumen de capacidades">
-            <article class="landing-card landing-card-blue reveal-card">
-              <span>01</span>
-              <h2>Mercado real</h2>
-              <ul>
-                <li>Feeds públicos WebSocket de exchanges grandes</li>
-                <li>Latencia, frescura y fallback REST visibles</li>
-                <li>Rutas reales separadas de la corrida demo</li>
-              </ul>
-            </article>
-            <article class="landing-card landing-card-yellow reveal-card">
-              <span>02</span>
-              <h2>Resultado reproducible</h2>
-              <ul>
-                <li>Segunda pierna rechazada y unwind auditable</li>
-                <li>Exposición residual final: 0 BTC</li>
-                <li>Replay aislado que no contamina el estado live</li>
-              </ul>
-            </article>
-          </div>
+          <aside class="jury-minute reveal-card" id="juryMinute" aria-labelledby="juryMinuteTitle">
+            <p class="landing-kicker">60 segundos para evaluar</p>
+            <h2 id="juryMinuteTitle">Seis pruebas. Cero promesas sueltas.</h2>
+            <ol>
+              <li><a href="#dashboard" data-jury-proof="market" data-tab-target="tab-mercado"><span>01</span><strong>Mercado público recibido</strong><small id="juryProofMarket">sincronizando feeds</small></a></li>
+              <li><a href="#dashboard" data-jury-proof="economics" data-tab-target="tab-evidence" data-prepare-jury><span>02</span><strong>Costos incluidos</strong><small>waterfall · break-even · capacidad</small></a></li>
+              <li><a href="#dashboard" data-jury-proof="execution" data-tab-target="tab-riesgo" data-prepare-jury><span>03</span><strong>Ejecución adversa conciliada</strong><small id="juryProofExecution">ejecuta la prueba completa</small></a></li>
+              <li><a href="#dashboard" data-jury-proof="wallets" data-tab-target="tab-riesgo"><span>04</span><strong>Wallets conservadas</strong><small id="juryProofWallets">ledger y exposición residual</small></a></li>
+              <li><a href="#dashboard" data-jury-proof="reproducibility" data-tab-target="tab-evidence" data-prepare-jury><span>05</span><strong>Resultado reproducible</strong><small>SHA-256 · holdout · baseline vs GA</small></a></li>
+              <li><a href="/api/export/json" data-jury-proof="download" download><span>06</span><strong>Evidencia descargable</strong><small>JSON canónico · CSV · reporte</small></a></li>
+            </ol>
+            <p id="juryMinuteStatus" class="jury-minute-status" role="status" aria-live="polite">Lista para ejecutar una corrida sintética aislada; capital real: cero.</p>
+          </aside>
         </div>
 
         <div class="landing-grid">
@@ -190,7 +183,7 @@
       </header>
 
       <section class="provenance-strip" aria-label="Procedencia de datos, ejecución y corrida">
-        <article><span>Datos</span><strong id="provenanceData">Conectando… 8 WS · 2 REST</strong><small id="provenanceLatency">Último estado conocido: sincronizando</small></article>
+        <article><span>Datos</span><strong id="provenanceData">Conectando feeds…</strong><small id="provenanceLatency">Último estado conocido: sincronizando</small></article>
         <article><span>Ejecución</span><strong id="provenanceResultTag">Real-market paper result</strong><small>100% simulada · sin custodia</small></article>
         <article><span>Corrida</span><strong id="provenanceRun">La ejecución permanece pausada</strong><small id="provenanceRunMeta">hasta sincronizar libros</small></article>
       </section>
@@ -1202,7 +1195,7 @@
       </div>
       <p class="ceja">Recorrido para jurado</p>
       <h2 id="tutorialTitle">Mercado público en vivo</h2>
-      <p id="tutorialText">10 CEX públicos y 2 adaptadores DEX de investigación normalizan libros, conservan la fuente visible y separan WebSocket de fallback.</p>
+      <p id="tutorialText">Los CEX habilitados se cuentan desde runtime; DEX y módulos de investigación permanecen separados del score core.</p>
       <p id="tutorialProof" class="tutorial-proof"></p>
       <div class="tutorial-actions">
         <button id="tutorialPrev" class="btn-secundario" type="button">Anterior</button>

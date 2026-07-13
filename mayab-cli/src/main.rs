@@ -53,13 +53,28 @@ async fn main() -> anyhow::Result<()> {
     let cfg = config::Config::from_env();
     cfg.validate().context("configuración insegura")?;
 
-    // Fail-closed: require ADMIN_TOKEN in production
-    if cfg.entorno == "production" && cfg.token_admin.is_none() {
-        tracing::error!("ADMIN_TOKEN es requerido en entorno production");
-        anyhow::bail!("ADMIN_TOKEN es requerido en entorno production. Configure ADMIN_TOKEN o use ENTORNO=development para desarrollo.");
-    }
-
-    let persistencia: Option<Arc<dyn auditoria::Auditoria>> =
+    let storage_mode = std::env::var("STORAGE_MODE")
+        .unwrap_or_else(|_| "sqlite_ephemeral".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    let persistencia: Option<Arc<dyn auditoria::Auditoria>> = if storage_mode == "timescaledb" {
+        #[cfg(feature = "timescaledb")]
+        {
+            let url = std::env::var("DATABASE_URL")
+                .context("STORAGE_MODE=timescaledb requiere DATABASE_URL")?;
+            let ts = persistencia_timescale::TimescaleDbAuditoria::abrir(&url)
+                .await
+                .context("TimescaleDB requerido no está disponible")?;
+            tracing::info!("auditoría TimescaleDB activa");
+            Some(Arc::new(ts))
+        }
+        #[cfg(not(feature = "timescaledb"))]
+        {
+            anyhow::bail!(
+                "STORAGE_MODE=timescaledb requiere compilar mayab-cli con --features timescaledb"
+            );
+        }
+    } else {
         match persistencia::Persistencia::abrir(&cfg.auditoria_db_path) {
             Ok(persistencia) => {
                 tracing::info!(ruta = %cfg.auditoria_db_path, "auditoría SQLite activa");
@@ -69,22 +84,6 @@ async fn main() -> anyhow::Result<()> {
                 tracing::warn!(ruta = %cfg.auditoria_db_path, error = %err, "auditoría SQLite desactivada");
                 None
             }
-        };
-    #[cfg(feature = "timescaledb")]
-    let persistencia: Option<Arc<dyn auditoria::Auditoria>> = {
-        if let Ok(url) = std::env::var("DATABASE_URL") {
-            match persistencia_timescale::TimescaleDbAuditoria::abrir(&url).await {
-                Ok(ts) => {
-                    tracing::info!(ruta = %url, "auditoría TimescaleDB activa");
-                    Some(Arc::new(ts))
-                }
-                Err(err) => {
-                    tracing::warn!(ruta = %url, error = %err, "auditoría TimescaleDB no disponible, usando SQLite");
-                    persistencia
-                }
-            }
-        } else {
-            persistencia
         }
     };
     let persistencia = persistencia.map(|backend| {

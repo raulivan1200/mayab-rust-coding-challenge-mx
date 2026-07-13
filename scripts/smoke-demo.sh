@@ -204,7 +204,7 @@ if metricas.get("rebalanceosTotales", 0) <= 0:
 if not estado.get("auditoriaDecisiones"):
     errors.append("estado no contiene auditoria de decisiones")
 trazas = estado.get("trazasEjecucion") or []
-if not any(t.get("estado") == "RECONCILED_LOSS" and abs(t.get("exposicionBtc", 1)) < 1e-9 for t in trazas):
+if not any(t.get("estado") == "RECONCILED" and abs(t.get("exposicionBtc", 1)) < 1e-9 for t in trazas):
     errors.append("estado no contiene FSM de segunda pierna reconciliada sin exposicion")
 if not any(o.get("parcial") for o in estado.get("operaciones", []) + estado.get("oportunidades", [])):
     errors.append("estado no contiene evidencia de fill parcial")

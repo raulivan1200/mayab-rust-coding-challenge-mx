@@ -13,6 +13,7 @@ use std::sync::{
 
 use anyhow::{anyhow, Result};
 
+use crate::execution::ExecutionReport;
 use crate::types::{
     AuditoriaDecision, EstadoPersistencia, EventoEjecucion, Operacion, Oportunidad, Rebalanceo,
 };
@@ -29,6 +30,8 @@ pub trait Auditoria: Send + Sync {
     fn registrar_oportunidades(&self, oportunidades: &[Oportunidad]) -> Result<()>;
     /// Registra decisiones auditadas.
     fn registrar_auditorias(&self, auditorias: &[AuditoriaDecision]) -> Result<()>;
+    /// Persiste el reporte forense completo de una ejecución de dos piernas.
+    fn registrar_ejecucion(&self, ejecucion: &ExecutionReport) -> Result<()>;
     /// Snapshot de estado de la capa de persistencia.
     fn estado(&self) -> EstadoPersistencia;
     /// PnL total acumulado en la auditoría.
@@ -47,6 +50,7 @@ enum EscrituraAuditoria {
     Rebalanceo(Rebalanceo),
     Oportunidades(Vec<Oportunidad>),
     Auditorias(Vec<AuditoriaDecision>),
+    Ejecucion(ExecutionReport),
 }
 
 /// Worker único de persistencia con backpressure acotado y no bloqueante.
@@ -81,6 +85,7 @@ impl AuditoriaEnCola {
                         EscrituraAuditoria::Auditorias(v) => {
                             backend_worker.registrar_auditorias(&v)
                         }
+                        EscrituraAuditoria::Ejecucion(v) => backend_worker.registrar_ejecucion(&v),
                     };
                     pendientes_worker.fetch_sub(1, Ordering::Relaxed);
                     if let Err(error) = resultado {
@@ -144,6 +149,9 @@ impl Auditoria for AuditoriaEnCola {
     }
     fn registrar_auditorias(&self, v: &[AuditoriaDecision]) -> Result<()> {
         self.encolar(EscrituraAuditoria::Auditorias(v.to_vec()))
+    }
+    fn registrar_ejecucion(&self, v: &ExecutionReport) -> Result<()> {
+        self.encolar(EscrituraAuditoria::Ejecucion(v.clone()))
     }
     fn estado(&self) -> EstadoPersistencia {
         let mut estado = self.backend.estado();
@@ -217,6 +225,9 @@ mod tests {
             self.wait_if_blocked()
         }
         fn registrar_auditorias(&self, _: &[AuditoriaDecision]) -> Result<()> {
+            self.wait_if_blocked()
+        }
+        fn registrar_ejecucion(&self, _: &ExecutionReport) -> Result<()> {
             self.wait_if_blocked()
         }
         fn estado(&self) -> EstadoPersistencia {

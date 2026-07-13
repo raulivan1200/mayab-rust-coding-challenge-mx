@@ -15,6 +15,10 @@ MAYAB_JUDGE_MODE="${MAYAB_JUDGE_MODE:-true}"
 AUDITORIA_DB_PATH="${AUDITORIA_DB_PATH:-/data/mayab-auditoria.sqlite}"
 STORAGE_MODE="${STORAGE_MODE:-sqlite_ephemeral}"
 
+if [ -n "${DATABASE_URL_SECRET:-}" ]; then
+  STORAGE_MODE="timescaledb"
+fi
+
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "Falta comando requerido: $1" >&2
@@ -64,6 +68,11 @@ if [ "$MAYAB_ENV" = "production" ] && [ -z "${ADMIN_TOKEN_SECRET:-}" ]; then
   exit 2
 fi
 
+if [ "$MAYAB_ENV" = "production" ] && [ "$STORAGE_MODE" != "timescaledb" ]; then
+  echo "DATABASE_URL_SECRET es obligatorio en producción para persistencia durable" >&2
+  exit 2
+fi
+
 # Build --set-secrets only for secrets that actually exist
 SECRETS=""
 if [ -n "${ADMIN_TOKEN_SECRET:-}" ]; then
@@ -81,6 +90,13 @@ if [ -n "${DISCORD_BOT_TOKEN_SECRET:-}" ]; then
     SECRETS="${SECRETS},DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN_SECRET}"
   else
     SECRETS="DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN_SECRET}"
+  fi
+fi
+if [ -n "${DATABASE_URL_SECRET:-}" ]; then
+  if [ -n "$SECRETS" ]; then
+    SECRETS="${SECRETS},DATABASE_URL=${DATABASE_URL_SECRET}"
+  else
+    SECRETS="DATABASE_URL=${DATABASE_URL_SECRET}"
   fi
 fi
 
@@ -172,12 +188,15 @@ import sys
 preflight = json.load(open(sys.argv[1]))
 readiness = preflight.get("judgeReadiness") or {}
 checks = readiness.get("checks") or []
+persistence = preflight.get("persistencia") or {}
 if not (
     preflight.get("listo") is True
     and readiness.get("status") == "ready"
     and readiness.get("evidenceStatus") == "complete"
     and checks
     and all(check.get("ok") is True for check in checks)
+    and persistence.get("backend") == "timescaledb"
+    and persistence.get("storagePersistent") is True
 ):
     raise SystemExit("preflight del deploy no quedó completamente verde")
 PY

@@ -9,28 +9,29 @@ echo "Generando snapshot de evidencia sellada desde $BASE_URL..."
 
 # 1. Paquete de evaluación (Scorecard, GA, estado actual)
 curl -fsS "$BASE_URL/api/paquete-evaluacion" -o "$OUT_DIR/paquete-evaluacion.json"
-echo "✅ Paquete de evaluación guardado."
+echo "[OK] Paquete de evaluación guardado."
 
 # 2. Export completo de auditoría (operaciones, eventos, rebalanceos, GA)
 curl -fsS "$BASE_URL/api/export/json" -o "$OUT_DIR/auditoria-completa.json"
-echo "✅ Auditoría JSON guardada."
+echo "[OK] Auditoría JSON guardada."
 
 # 3. Export CSV
 curl -fsS "$BASE_URL/api/export/csv" -o "$OUT_DIR/auditoria-completa.csv"
-echo "✅ Auditoría CSV guardada."
+echo "[OK] Auditoría CSV guardada."
 
 # 4. Benchmark de Latencias (Pipeline y Exchange)
 curl -fsS "$BASE_URL/api/latencias" -o "$OUT_DIR/benchmark-latencias.json"
-echo "✅ Benchmark de latencias guardado."
+echo "[OK] Benchmark de latencias guardado."
 
 # 5. Evidencia experimental separada por metodología.
 curl -fsS "$BASE_URL/api/backtest" -o "$OUT_DIR/backtest.json"
 curl -fsS "$BASE_URL/api/ga/sensibilidad" -o "$OUT_DIR/ga-sensibilidad.json"
 curl -fsS "$BASE_URL/api/research/bootstrap" -o "$OUT_DIR/bootstrap.json"
-curl -fsS "$BASE_URL/api/research/out-of-sample" -o "$OUT_DIR/out-of-sample.json"
+curl -fsS "$BASE_URL/api/research/walk-forward" -o "$OUT_DIR/walk-forward.json"
+curl -fsS "$BASE_URL/api/research/execution-matrix" -o "$OUT_DIR/execution-matrix.json"
 curl -fsS "$BASE_URL/api/research/microstructure" -o "$OUT_DIR/microestructura.json"
 curl -fsS "$BASE_URL/api/preflight" -o "$OUT_DIR/preflight.json"
-echo "✅ Backtest, holdout, bootstrap, sensibilidad y preflight guardados."
+echo "[OK] Backtest, holdout, bootstrap, sensibilidad y preflight guardados."
 
 # 6. Generar un manifiesto de procedencia. Los resultados conservan su
 # clasificación de origen; este script no convierte replay/demo en datos reales.
@@ -50,7 +51,7 @@ cat <<EOF > "$OUT_DIR/manifest.json"
   "reproduccion": "POST /api/demo/final; GET /api/paquete-evaluacion"
 }
 EOF
-echo "✅ Manifiesto generado."
+echo "[OK] Manifiesto generado."
 
 # 7. Sellar cada artefacto. Soporta GNU/Linux y macOS.
 if command -v sha256sum >/dev/null 2>&1; then
@@ -58,11 +59,11 @@ if command -v sha256sum >/dev/null 2>&1; then
 else
   (cd "$OUT_DIR" && shasum -a 256 ./*.json ./*.csv > SHA256SUMS)
 fi
-echo "✅ Checksums SHA-256 generados."
+echo "[OK] Checksums SHA-256 generados."
 
 echo ""
 echo "=========================================================="
-echo "🎯 Snapshot de evidencia generado en: $OUT_DIR/"
+echo "Snapshot de evidencia generado en: $OUT_DIR/"
 echo "Puedes empaquetar o hacer commit de este directorio para"
 echo "probar que el motor funciona más allá del /tmp efímero."
 echo "=========================================================="

@@ -36,9 +36,11 @@ tower-http = { version = "0.6", features = ["compression-gzip", "cors", "fs", "t
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tokio-postgres = { version = "0.7", optional = true }
+tokio-postgres-rustls = { version = "0.14", default-features = false, features = ["ring"], optional = true }
+webpki-roots = { version = "1", optional = true }
 
 [features]
-timescaledb = ["dep:tokio-postgres"]
+timescaledb = ["dep:tokio-postgres", "dep:tokio-postgres-rustls", "dep:webpki-roots"]
 testnet-execution = ["dep:async-trait", "dep:base64", "dep:hmac"]
 
 [dev-dependencies]

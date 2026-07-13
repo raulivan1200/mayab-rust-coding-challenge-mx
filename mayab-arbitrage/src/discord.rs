@@ -1,4 +1,8 @@
-//! Discord Interactions + agente NVIDIA con tools del simulador.
+//! Integración con Discord Interactions y agente NVIDIA.
+//!
+//! Las peticiones se autentican con la firma Ed25519 de Discord. El agente sólo
+//! recibe herramientas del simulador: nunca obtiene llaves de exchanges ni una
+//! vía para colocar órdenes reales.
 
 use std::{sync::Arc, time::Duration};
 
@@ -36,6 +40,8 @@ struct ConfigNvidia {
 }
 
 impl ConfigDiscord {
+    /// Carga la configuración opcional de Discord y NVIDIA desde el entorno.
+    /// Los valores vacíos se tratan como ausentes.
     pub fn from_env() -> Self {
         let public_key = env_optional("DISCORD_PUBLIC_KEY").and_then(|value| {
             let bytes = hex::decode(&value)
@@ -76,6 +82,7 @@ impl ConfigDiscord {
         self.public_key.is_some()
     }
 
+    /// Registra únicamente la presencia de cada ajuste, nunca su valor.
     pub fn registrar_estado(&self) {
         tracing::info!(
             interactions = self.public_key.is_some(),
@@ -121,6 +128,10 @@ struct Miembro {
     permissions: String,
 }
 
+/// Verifica y procesa una petición HTTP de Discord Interactions.
+///
+/// El cuerpo se valida antes de deserializarlo. Las consultas a NVIDIA se
+/// difieren para respetar la ventana de respuesta inicial de Discord.
 pub async fn responder_interaccion(
     motor: Arc<Motor>,
     config: &ConfigDiscord,
@@ -256,6 +267,8 @@ fn respuesta(content: &str, ephemeral: bool) -> Response {
     Json(json!({ "type": 4, "data": data })).into_response()
 }
 
+/// Registra los slash commands globalmente o en el servidor de pruebas
+/// configurado. Si faltan credenciales, deja la integración desactivada.
 pub async fn registrar_comandos(config: ConfigDiscord) {
     let (Some(application_id), Some(bot_token)) = (config.application_id, config.bot_token) else {
         tracing::info!(
@@ -277,7 +290,7 @@ pub async fn registrar_comandos(config: ConfigDiscord) {
         json!({"name":"estado","type":1,"description":"Muestra PnL, riesgo, operaciones y GA"}),
         json!({"name":"resumen","type":1,"description":"Resumen compacto de Mayab Arbitraje BTC"}),
         json!({"name":"demo-rentable","type":1,"description":"Prepara el escenario rentable estrictamente simulado"}),
-        json!({"name":"mayab","type":1,"description":"Consulta a la IA o ajusta la simulación con tools","options":[{"name":"pregunta","description":"Ejemplo: muestra el riesgo o cambia el slippage a 0.5 bps","type":3,"required":true,"max_length":600}]}),
+        json!({"name":"mayab","type":1,"description":"Consulta a la IA o ajusta la simulación con herramientas","options":[{"name":"pregunta","description":"Ejemplo: muestra el riesgo o cambia el slippage a 0.5 bps","type":3,"required":true,"max_length":600}]}),
         json!({"name":"ask","type":1,"description":"Pregunta cualquier cosa a Mayab IA","options":[{"name":"pregunta","description":"Pregunta general o sobre datos y configuración de Mayab","type":3,"required":true,"max_length":1200}]}),
     ];
     let client = reqwest::Client::new();

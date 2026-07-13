@@ -20,6 +20,18 @@ test("dashboard carga sin errores ni logs de debug por defecto", async ({ page }
   expect(logs).toEqual([]);
 });
 
+test("debug requiere exactamente debug=1", async ({ page }) => {
+  const debugMessages = [];
+  page.on("console", message => {
+    if (message.text().includes("[mayab-debug]")) debugMessages.push(message.text());
+  });
+
+  await page.goto("/?debug=0");
+  await expect(page.locator("html")).not.toHaveAttribute("data-mayab-debug", "1");
+  expect(await page.evaluate(() => window.mayabDebugMetrics)).toBeUndefined();
+  expect(debugMessages).toEqual([]);
+});
+
 test("replay y consola operativa cargan sin errores de navegador", async ({ page }) => {
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
@@ -141,6 +153,38 @@ test("al cambiar entre mercado y demo el contenido se revela sin hover", async (
   await page.close();
 });
 
+test("las seis pruebas aceptan clic en su texto y preparan evidencia dentro del dashboard", async ({ page }) => {
+  let demoFinalCalls = 0;
+  await page.route("**/api/demo/final", route => {
+    demoFinalCalls += 1;
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json; charset=utf-8",
+      body: JSON.stringify({
+        corridaId: "jury-navigation-test",
+        metricas: { utilidadAcumuladaUsd: 1 },
+        riesgoSegundaPierna: { estadoFinal: "conciliada" },
+        mlEdge: { version: "test" },
+        preflight: { judgeReadiness: { passed: 12, total: 12 } },
+      }),
+    });
+  });
+  await page.goto("/");
+
+  await page.locator('[data-jury-proof="market"] strong').click();
+  await expect(page.locator("#tab-mercado")).toHaveClass(/activo/);
+
+  await page.locator('[data-jury-proof="wallets"] small').click();
+  await expect(page.locator("#tab-riesgo")).toHaveClass(/activo/);
+
+  await page.locator('[data-jury-proof="economics"] strong').click();
+  await expect(page.locator("#tab-evidence")).toHaveClass(/activo/);
+  await expect.poll(() => demoFinalCalls).toBe(1);
+  await expect(page.locator("#juryMinuteStatus")).toContainText("12/12 checks verdes");
+
+  await expect(page.locator('[data-jury-proof="download"]')).toHaveAttribute("download", "");
+});
+
 test("el header y su grid conservan su tamaño al hacer scroll", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   // Esta prueba valida geometría, no animación. Reducir movimiento evita que
@@ -179,4 +223,34 @@ test("demo rentable mantiene PnL positivo y GA activo", async ({ request }) => {
   expect(state.metricas.utilidadAcumuladaUsd).toBeGreaterThan(0);
   expect(state.operaciones.length).toBeGreaterThan(0);
   expect(state.genetico?.activo).toBeTruthy();
+});
+
+test("prueba completa deja preflight 12 de 12 y evidencia económica", async ({ page, request }) => {
+  test.setTimeout(120_000);
+  await page.goto("/");
+  await expect(page.locator("#juryMinute li")).toHaveCount(6);
+  await expect(page.locator("#btnJuryProofHero")).toContainText("Ejecutar prueba completa");
+  await page.locator("#btnJuryProofHero").click();
+  await expect(page.locator("#juryMinuteStatus")).toContainText("12/12 checks verdes", { timeout: 120_000 });
+
+  const preflight = await (await request.get("/api/preflight")).json();
+  expect(preflight).toMatchObject({ listo: true, modo: "ready" });
+  expect(preflight.judgeReadiness).toMatchObject({ status: "ready", passed: 12, total: 12 });
+  expect(preflight.judgeReadiness.checks.every(check => check.ok === true)).toBeTruthy();
+  expect(preflight.judgeReadiness.twoLegEvidence.invariants.allPassed).toBeTruthy();
+
+  const economics = await (await request.get("/api/research/economics")).json();
+  expect(economics.available).toBeTruthy();
+  expect(economics.edgeWaterfall.items.length).toBeGreaterThanOrEqual(7);
+  expect(economics.capacityCurve.points.length).toBeGreaterThanOrEqual(6);
+  expect(economics.decisionFunnel.stages.length).toBeGreaterThanOrEqual(5);
+
+  const matrix = await (await request.get("/api/research/execution-matrix")).json();
+  expect(matrix).toMatchObject({ available: true, total: 12, passed: 12, allPassed: true });
+
+  const version = await (await request.get("/api/version")).json();
+  expect(version.schemaVersion).toBeTruthy();
+  expect(version.evidenceSessionId).toMatch(/^jury-/);
+  expect(version.datasetHash).toMatch(/^sha256:/);
+  expect(version.configHash).toMatch(/^sha256:/);
 });

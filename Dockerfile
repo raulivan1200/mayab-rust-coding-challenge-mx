@@ -23,7 +23,7 @@ RUN mkdir -p mayab-arbitrage/src mayab-cli/src && \
     echo 'fn main() {}' > mayab-cli/src/main.rs && \
     echo 'fn main() {}' > mayab-cli/src/capture_tape.rs && \
     echo 'fn main() {}' > mayab-cli/src/verify_tape.rs && \
-    cargo build --release; \
+    cargo build --release --locked -p mayab-cli --bin mayab-arbitrage --features timescaledb; \
     rm -rf mayab-arbitrage/src mayab-cli/src \
            target/release/deps/mayab_arbitrage-* \
            target/release/deps/libmayab_arbitrage-* \
@@ -39,7 +39,7 @@ COPY mayab-arbitrage/src ./mayab-arbitrage/src
 COPY mayab-cli/src ./mayab-cli/src
 COPY internal/webui ./internal/webui
 RUN touch mayab-cli/src/main.rs mayab-arbitrage/src/lib.rs && \
-    cargo build --release && \
+    cargo build --release --locked -p mayab-cli --bin mayab-arbitrage --features timescaledb && \
     objcopy --compress-debug-sections \
       target/release/mayab-arbitrage /mayab-arbitrage
 

@@ -11,10 +11,24 @@ curl http://localhost:8080/healthz
 
 ```bash
 export PROJECT=mi-proyecto
+export ADMIN_TOKEN_SECRET=mayab-admin-token:latest
+export DATABASE_URL_SECRET=mayab-database-url:latest
 ./scripts/deploy-cloud-run.sh
 ```
 
-Validación automática: `/healthz`, `/api/preflight`, `/api/resumen-llm`, `/`, `/app.js`, `/styles.css`.
+Inicializa una sola vez el secreto de base de datos antes del deploy:
+
+```bash
+psql "$DATABASE_URL" -f scripts/timescaledb/schema.sql
+printf '%s' "$DATABASE_URL" | gcloud secrets versions add mayab-database-url --data-file=-
+```
+
+La conexión administrada usa TLS por defecto (`sslmode=require`). El modo
+`sslmode=disable` queda reservado para una red privada que ya proteja el canal.
+
+Validación automática: `/healthz`, `/readyz`, `/api/version`, `/api/preflight`,
+`/api/resumen-llm`, el tape versionado, los exports y los estáticos del dashboard.
+En producción, preflight no queda verde si `storagePersistent` es falso.
 
 ## Debug
 
@@ -51,8 +65,8 @@ curl -sS http://localhost:8080/api/estado | jq '.metricas.utilidadAcumuladaUsd'
 # Backtest
 curl -sS http://localhost:8080/api/backtest | jq '.comparacion.deltaPnlUsd'
 
-# Preflight (para jurado)
-curl -sS http://localhost:8080/api/preflight | jq '.scorecardFinal'
+# Preflight (para jurado; deben pasar exactamente 12/12 checks)
+curl -sS http://localhost:8080/api/preflight | jq '{listo, modo, judgeReadiness}'
 
 # Lab sweep
 curl -sS http://localhost:8080/api/lab/sweep | jq '.ganador'
@@ -74,21 +88,16 @@ rm -f /tmp/mayab-auditoria.sqlite  # borra auditoría local
 
 ## Interpretar Preflight
 
-El scorecard final incluye:
-
-- **coberturaFuncional**: % de endpoints contratados que responden
-- **exchangesIntegrados**: 10/10 exchanges con cotización reciente
-- **persistenciaSqlite**: auditoría activa
-- **gaFuncional**: GA ha publicado campeón
-- **ejecucionSimulada**: operaciones simuladas en el historial
-- **pnlPositivo**: utilidad acumulada > 0
-- **exhibeFillParcial**: evidencia forense de fill parcial
-- **exhibeCircuitBreaker**: evidencia de circuit breaker
+`judgeReadiness.checks` contiene doce checks estables. `listo=true` exige que
+todos pasen y que el proceso esté operable. Entre ellos están feeds, GA,
+ejecución simulada, PnL, fill parcial, circuit breaker, persistencia y una
+ejecución de dos piernas `RECONCILED` con residual cero e invariantes de wallet,
+ledger, reservas y fills.
 
 ## Seguridad
 
 - Sin API keys de exchanges reales
 - Ejecución limitada al simulador en memoria; no se aceptan llaves API ni órdenes privadas.
 - Sin secretos en logs, sin endpoints de modificación sin autenticación
-- Distroless runtime (sin shell, sin package manager)
-- Non-root user en contenedor
+- Imagen runtime mínima basada en Debian, con solo certificados y `curl` para healthcheck
+- Usuario non-root en contenedor

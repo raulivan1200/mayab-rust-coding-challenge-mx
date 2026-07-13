@@ -9,11 +9,16 @@
 
 use anyhow::Context;
 use serde_json::json;
-use std::future::Future;
+use std::{
+    future::Future,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 use tokio::sync::Mutex;
-use tokio_postgres::{Client, NoTls, Row};
+use tokio_postgres::{config::SslMode, Client, Config as PgConfig, NoTls, Row};
+use tokio_postgres_rustls::MakeRustlsConnect;
 
 use crate::auditoria::Auditoria;
+use crate::execution::ExecutionReport;
 use crate::types::{
     AuditoriaDecision, EstadoPersistencia, EventoEjecucion, Operacion, Oportunidad, Rebalanceo,
 };
@@ -21,28 +26,71 @@ use crate::types::{
 pub struct TimescaleDbAuditoria {
     cliente: Mutex<Client>,
     runtime: tokio::runtime::Handle,
-    url: String,
+    operaciones: AtomicUsize,
+    oportunidades: AtomicUsize,
+    auditorias: AtomicUsize,
+    eventos: AtomicUsize,
+    rebalanceos: AtomicUsize,
+    ejecuciones: AtomicUsize,
 }
 
 impl TimescaleDbAuditoria {
     /// Conecta a TimescaleDB y verifica el esquema.
     pub async fn abrir(url: &str) -> anyhow::Result<Self> {
-        let (cliente, conexion) = tokio_postgres::connect(url, NoTls)
-            .await
-            .with_context(|| format!("no se pudo conectar a TimescaleDB {url}"))?;
-        tokio::spawn(async move {
-            if let Err(err) = conexion.await {
-                tracing::warn!(error = %err, "conexión TimescaleDB cerrada");
-            }
-        });
+        let config: PgConfig = url
+            .parse()
+            .context("DATABASE_URL de TimescaleDB inválida")?;
+        let cliente = if config.get_ssl_mode() == SslMode::Disable {
+            let (cliente, conexion) = config
+                .connect(NoTls)
+                .await
+                .context("no se pudo conectar a TimescaleDB sin TLS")?;
+            tokio::spawn(async move {
+                if let Err(err) = conexion.await {
+                    tracing::warn!(error = %err, "conexión TimescaleDB cerrada");
+                }
+            });
+            cliente
+        } else {
+            let roots =
+                rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            let tls_config = rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            let (cliente, conexion) = config
+                .connect(MakeRustlsConnect::new(tls_config))
+                .await
+                .context("no se pudo conectar a TimescaleDB con TLS")?;
+            tokio::spawn(async move {
+                if let Err(err) = conexion.await {
+                    tracing::warn!(error = %err, "conexión TLS de TimescaleDB cerrada");
+                }
+            });
+            cliente
+        };
         cliente
-            .batch_execute("SELECT 1 FROM operaciones LIMIT 1; SELECT 1 FROM auditorias LIMIT 1;")
+            .batch_execute(
+                "SELECT 1 FROM operaciones LIMIT 1;
+                 SELECT 1 FROM auditorias LIMIT 1;
+                 SELECT 1 FROM ejecuciones LIMIT 1;",
+            )
             .await
             .context("el esquema TimescaleDB no está inicializado")?;
+        let operaciones = contar_tabla(&cliente, "operaciones").await?;
+        let oportunidades = contar_tabla(&cliente, "oportunidades").await?;
+        let auditorias = contar_tabla(&cliente, "auditorias").await?;
+        let eventos = contar_tabla(&cliente, "eventos").await?;
+        let rebalanceos = contar_tabla(&cliente, "rebalanceos").await?;
+        let ejecuciones = contar_tabla(&cliente, "ejecuciones").await?;
         Ok(Self {
             cliente: Mutex::new(cliente),
             runtime: tokio::runtime::Handle::current(),
-            url: url.to_string(),
+            operaciones,
+            oportunidades,
+            auditorias,
+            eventos,
+            rebalanceos,
+            ejecuciones,
         })
     }
 
@@ -55,12 +103,21 @@ impl TimescaleDbAuditoria {
     }
 }
 
-async fn contar_tabla(c: &Client, tabla: &str) -> i64 {
+async fn contar_tabla(c: &Client, tabla: &str) -> anyhow::Result<AtomicUsize> {
+    let total = c
+        .query_one(&format!("SELECT COUNT(*) FROM {tabla}"), &[])
+        .await
+        .with_context(|| format!("no se pudo contar la tabla requerida {tabla}"))?
+        .get::<_, i64>(0)
+        .max(0) as usize;
+    Ok(AtomicUsize::new(total))
+}
+
+async fn contar_tabla_valor(c: &Client, tabla: &str) -> anyhow::Result<i64> {
     c.query_one(&format!("SELECT COUNT(*) FROM {tabla}"), &[])
         .await
-        .ok()
+        .with_context(|| format!("no se pudo contar la tabla {tabla}"))
         .map(|r| r.get::<_, i64>(0))
-        .unwrap_or(0)
 }
 
 fn fila_operacion(fila: &Row) -> Option<Operacion> {
@@ -93,15 +150,17 @@ impl Auditoria for TimescaleDbAuditoria {
             op.costos.total_usd,
             op.parcial,
         );
-        self.block_on(async move {
+        let changed = self.block_on(async move {
             let c = self.cliente.lock().await;
-            c.execute(
+            Ok::<_, anyhow::Error>(c.execute(
                 "INSERT INTO operaciones (tiempo, id, compra_en, venta_en, par, cantidad_btc, utilidad_usd, costo_usd, score, partial_fill, payload_json) VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)",
                 &[&id, &compra, &venta, &par, &cantidad, &utilidad, &costo, &None::<f64>, &parcial, &payload],
             )
-            .await?;
-            Ok::<_, anyhow::Error>(())
-        })
+            .await?)
+        })?;
+        self.operaciones
+            .fetch_add(changed as usize, Ordering::Relaxed);
+        Ok(())
     }
 
     fn registrar_evento(&self, evento: &EventoEjecucion) -> anyhow::Result<()> {
@@ -112,15 +171,16 @@ impl Auditoria for TimescaleDbAuditoria {
             evento.severidad.clone(),
             evento.detalle.clone(),
         );
-        self.block_on(async move {
+        let changed = self.block_on(async move {
             let c = self.cliente.lock().await;
-            c.execute(
+            Ok::<_, anyhow::Error>(c.execute(
                 "INSERT INTO eventos (tiempo, id, tipo, severidad, mensaje, payload_json) VALUES (NOW(), $1, $2, $3, $4, $5::jsonb)",
                 &[&id, &tipo, &severidad, &detalle, &payload],
             )
-            .await?;
-            Ok::<_, anyhow::Error>(())
-        })
+            .await?)
+        })?;
+        self.eventos.fetch_add(changed as usize, Ordering::Relaxed);
+        Ok(())
     }
 
     fn registrar_rebalanceo(&self, r: &Rebalanceo) -> anyhow::Result<()> {
@@ -132,15 +192,17 @@ impl Auditoria for TimescaleDbAuditoria {
             r.cantidad,
             r.costo_usd,
         );
-        self.block_on(async move {
+        let changed = self.block_on(async move {
             let c = self.cliente.lock().await;
-            c.execute(
+            Ok::<_, anyhow::Error>(c.execute(
                 "INSERT INTO rebalanceos (tiempo, id, desde, hacia, cantidad, costo_usd, payload_json) VALUES (NOW(), $1, $2, $3, $4, $5, $6::jsonb)",
                 &[&id, &desde, &hacia, &cantidad, &costo, &payload],
             )
-            .await?;
-            Ok::<_, anyhow::Error>(())
-        })
+            .await?)
+        })?;
+        self.rebalanceos
+            .fetch_add(changed as usize, Ordering::Relaxed);
+        Ok(())
     }
 
     fn registrar_oportunidades(&self, oportunidades: &[Oportunidad]) -> anyhow::Result<()> {
@@ -154,15 +216,16 @@ impl Auditoria for TimescaleDbAuditoria {
                 o.diferencial_neto_bps,
                 payload,
             );
-            self.block_on(async move {
+            let changed = self.block_on(async move {
                 let c = self.cliente.lock().await;
-                c.execute(
+                Ok::<_, anyhow::Error>(c.execute(
                     "INSERT INTO oportunidades (tiempo, id, ruta, utilidad_usd, diferencial, payload_json) VALUES (NOW(), $1, $2, $3, $4, $5::jsonb)",
                     &[&id, &format!("{compra}->{venta}"), &utilidad, &diff, &payload],
                 )
-                .await?;
-                Ok::<_, anyhow::Error>(())
+                .await?)
             })?;
+            self.oportunidades
+                .fetch_add(changed as usize, Ordering::Relaxed);
         }
         Ok(())
     }
@@ -179,46 +242,69 @@ impl Auditoria for TimescaleDbAuditoria {
                 a.decision_reason.clone(),
                 payload,
             );
-            self.block_on(async move {
+            let changed = self.block_on(async move {
                 let c = self.cliente.lock().await;
-                c.execute(
+                Ok::<_, anyhow::Error>(c.execute(
                     "INSERT INTO auditorias (tiempo, id, ruta, decision, score, utilidad_usd, razon, payload_json) VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7::jsonb)",
                     &[&id, &ruta, &decision, &score, &utilidad, &razon, &payload],
                 )
-                .await?;
-                Ok::<_, anyhow::Error>(())
+                .await?)
             })?;
+            self.auditorias
+                .fetch_add(changed as usize, Ordering::Relaxed);
         }
         Ok(())
     }
 
+    fn registrar_ejecucion(&self, execution: &ExecutionReport) -> anyhow::Result<()> {
+        let payload = json!(execution).to_string();
+        let id = execution.execution_id.clone();
+        let scenario = serde_json::to_string(&execution.scenario)?;
+        let state = serde_json::to_string(&execution.state)?;
+        let pnl = execution.pnl_usd.to_string();
+        let changed =
+            self.block_on(async move {
+                let c = self.cliente.lock().await;
+                Ok::<_, anyhow::Error>(c.execute(
+                "INSERT INTO ejecuciones (tiempo, id, escenario, estado, pnl_usd, payload_json)
+                 VALUES (NOW(), $1, $2, $3, $4, $5::jsonb)
+                 ON CONFLICT (id) DO NOTHING",
+                &[&id, &scenario, &state, &pnl, &payload],
+            )
+            .await?)
+            })?;
+        self.ejecuciones
+            .fetch_add(changed as usize, Ordering::Relaxed);
+        Ok(())
+    }
+
     fn estado(&self) -> EstadoPersistencia {
-        self.block_on(async {
+        let health = self.block_on(async {
             let c = self.cliente.lock().await;
-            let operaciones = contar_tabla(&c, "operaciones").await;
-            let oportunidades = contar_tabla(&c, "oportunidades").await;
-            let auditorias = contar_tabla(&c, "auditorias").await;
-            let eventos = contar_tabla(&c, "eventos").await;
-            let rebalanceos = contar_tabla(&c, "rebalanceos").await;
-            EstadoPersistencia {
-                activa: true,
-                backend: "timescaledb".to_string(),
-                ruta: self.url.clone(),
-                operaciones: operaciones.max(0) as usize,
-                oportunidades: oportunidades.max(0) as usize,
-                auditorias: auditorias.max(0) as usize,
-                eventos: eventos.max(0) as usize,
-                rebalanceos: rebalanceos.max(0) as usize,
-                db_bytes: 0,
-                error: None,
-                storage_mode: "timescaledb".to_string(),
-                storage_status: "persistent".to_string(),
-                storage_persistent: true,
-                queue_capacity: 0,
-                queue_pending: 0,
-                queue_dropped: 0,
-            }
-        })
+            c.simple_query("SELECT 1").await
+        });
+        let activa = health.is_ok();
+        EstadoPersistencia {
+            activa,
+            backend: "timescaledb".to_string(),
+            ruta: "timescaledb://[redacted]".to_string(),
+            operaciones: self.operaciones.load(Ordering::Relaxed),
+            oportunidades: self.oportunidades.load(Ordering::Relaxed),
+            auditorias: self.auditorias.load(Ordering::Relaxed),
+            eventos: self.eventos.load(Ordering::Relaxed),
+            rebalanceos: self.rebalanceos.load(Ordering::Relaxed),
+            ejecuciones: self.ejecuciones.load(Ordering::Relaxed),
+            db_bytes: 0,
+            error: health
+                .err()
+                .map(|error| format!("TimescaleDB no saludable: {error}")),
+            storage_mode: "timescaledb".to_string(),
+            storage_status: if activa { "persistent" } else { "unavailable" }.to_string(),
+            storage_persistent: activa,
+            queue_capacity: 0,
+            queue_pending: 0,
+            queue_dropped: 0,
+        }
     }
 
     fn total_pnl(&self) -> f64 {
@@ -238,12 +324,7 @@ impl Auditoria for TimescaleDbAuditoria {
     fn win_rate(&self) -> f64 {
         self.block_on(async {
             let c = self.cliente.lock().await;
-            let total: i64 = c
-                .query_one("SELECT COUNT(*) FROM operaciones", &[])
-                .await
-                .ok()
-                .map(|r| r.get::<_, i64>(0))
-                .unwrap_or(0);
+            let total = contar_tabla_valor(&c, "operaciones").await.unwrap_or(0);
             if total == 0 {
                 return 0.0;
             }
@@ -279,7 +360,7 @@ impl Auditoria for TimescaleDbAuditoria {
             "backend": "timescaledb",
             "totalPnl": self.total_pnl(),
             "winRate": self.win_rate(),
-            "ruta": self.url,
+            "ruta": "timescaledb://[redacted]",
         })
     }
 }

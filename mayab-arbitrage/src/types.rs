@@ -572,11 +572,9 @@ pub struct MapaCostos {
     )]
     pub rebalance_settlement_ms: i64,
     pub exchanges: HashMap<String, ExchangeConfig>,
-    #[serde(
-        rename = "webhookUrl",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "webhookUrl", default, skip_serializing)]
+    /// Destino operativo privado. Puede contener un token en la URL y por eso
+    /// nunca forma parte del estado, WebSocket ni exports públicos.
     pub webhook_url: Option<String>,
 }
 
@@ -640,6 +638,8 @@ pub struct EstadoPersistencia {
     pub eventos: usize,
     pub auditorias: usize,
     pub rebalanceos: usize,
+    #[serde(default)]
+    pub ejecuciones: usize,
     #[serde(rename = "dbBytes", default)]
     pub db_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -670,6 +670,7 @@ impl EstadoPersistencia {
             eventos: 0,
             auditorias: 0,
             rebalanceos: 0,
+            ejecuciones: 0,
             db_bytes: 0,
             error: Some("backend no disponible".to_string()),
             storage_mode: "timescaledb".to_string(),
@@ -693,6 +694,9 @@ pub struct EstadoCorrida {
     pub fuente_pnl: String,
     #[serde(rename = "ejecucionReal")]
     pub ejecucion_real: bool,
+    /// SHA-256 del tape o receta exacta que alimenta esta corrida.
+    #[serde(rename = "datasetHash")]
+    pub dataset_hash: String,
 }
 
 /// Snapshot completo expuesto por `/api/estado` y WebSocket.
@@ -708,6 +712,12 @@ pub struct EstadoPublico {
     pub eventos_ejecucion: VecDeque<EventoEjecucion>,
     #[serde(rename = "trazasEjecucion")]
     pub trazas_ejecucion: VecDeque<TransicionEjecucion>,
+    #[serde(
+        rename = "ejecucionesDosPiernas",
+        default,
+        skip_serializing_if = "VecDeque::is_empty"
+    )]
+    pub ejecuciones_dos_piernas: VecDeque<crate::execution::ExecutionReport>,
     #[serde(rename = "auditoriaDecisiones")]
     pub auditoria_decisiones: VecDeque<AuditoriaDecision>,
     pub rebalanceos: VecDeque<Rebalanceo>,
@@ -740,4 +750,22 @@ pub struct EstadoPublico {
 
 fn default_rebalance_settlement_ms() -> i64 {
     1_800
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MapaCostos;
+
+    #[test]
+    fn webhook_url_is_never_serialized_in_public_configuration() {
+        let config = MapaCostos {
+            webhook_url: Some("https://hooks.example/secret-token".into()),
+            ..MapaCostos::default()
+        };
+
+        let serialized = serde_json::to_value(config).expect("configuración serializable");
+
+        assert!(serialized.get("webhookUrl").is_none());
+        assert!(!serialized.to_string().contains("secret-token"));
+    }
 }

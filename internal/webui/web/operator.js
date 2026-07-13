@@ -3,6 +3,7 @@ const byId=(id)=>document.getElementById(id);
 const number=new Intl.NumberFormat("es-MX",{maximumFractionDigits:2});
 const money=new Intl.NumberFormat("es-MX",{style:"currency",currency:"USD"});
 function metric(data,key,fallback=0){return data.metricas?.[key]??fallback}
+function renderDefinitions(target,items){target.replaceChildren(...items.flatMap(([term,value])=>{const dt=document.createElement("dt");dt.textContent=term;const dd=document.createElement("dd");dd.textContent=String(value);return[dt,dd]}))}
 function render(data){
   const connected=(data.cotizaciones||[]).filter((quote)=>quote.conectado).length;
   byId("pnl").textContent=money.format(metric(data,"utilidadAcumuladaUsd"));
@@ -15,7 +16,7 @@ function render(data){
   const banner=byId("banner"); banner.className=`banner ${circuit?"bad":"ok"}`;
   banner.textContent=circuit?"Circuit breaker activo · ejecución simulada detenida":"Motor operativo · simulación sin fondos reales";
   const persistence=data.persistencia||{};
-  byId("risk").innerHTML=`<dt>Estado de riesgo</dt><dd>${metric(data,"estadoRiesgo","sin dato")}</dd><dt>Drawdown máximo</dt><dd>${money.format(metric(data,"maxDrawdownUsd"))}</dd><dt>Persistencia</dt><dd>${persistence.activa?"activa":"inactiva"}</dd><dt>Rebalanceos</dt><dd>${number.format(metric(data,"rebalanceosTotales"))}</dd>`;
+  renderDefinitions(byId("risk"),[["Estado de riesgo",metric(data,"estadoRiesgo","sin dato")],["Drawdown máximo",money.format(metric(data,"maxDrawdownUsd"))],["Persistencia",persistence.activa?"activa":"inactiva"],["Rebalanceos",number.format(metric(data,"rebalanceosTotales"))]]);
   byId("exchanges").replaceChildren(...Object.entries(data.exchangesActivos||{}).sort().map(([name,on])=>{const el=document.createElement("span");el.className=`pill ${on?"on":""}`;el.textContent=`${name} · ${on?"ON":"OFF"}`;return el}));
   byId("events").replaceChildren(...(data.eventosEjecucion||[]).slice(-8).reverse().map((event)=>{const el=document.createElement("li");el.textContent=event.descripcion||event.detalle||event.tipo||"Evento del motor";return el}));
 }

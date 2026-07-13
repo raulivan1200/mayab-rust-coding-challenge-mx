@@ -19,7 +19,7 @@ hardware/dataset. La metodología y sus límites están en
 | Suite Rust multi-capa | conteo y resultado del CI del SHA entregable |
 | 24 semillas pareadas | baseline y campeón GA sobre el mismo holdout |
 | 10,000 remuestras bootstrap | IC temporal, efecto y corrección Holm |
-| 0 BTC residual tras fallar la venta | `POST /api/demo/caos` termina en `RECONCILED_LOSS` |
+| 0 BTC residual tras fallar la venta | `POST /api/demo/caos` termina en `RECONCILED` con ledger y reservas conciliadas |
 | p50 / p95 / p99 del pipeline | valores runtime en `GET /api/latencias` y `GET /api/jurado` |
 
 La cifra operacional principal no es un spread bruto: es **cero exposición residual después de una segunda pierna rechazada**, con la transición completa y su pérdida de unwind auditadas. Las cifras runtime se publican desde el proceso evaluado; no se congelan en marketing.
@@ -61,7 +61,7 @@ Visita `http://127.0.0.1:8080/` o `/operator`. Para el recorrido reproducible co
 
 ## Guía del proyecto
 
-El resto del README explica, en orden, el problema y la evidencia, arquitectura, modelo de rentabilidad neta, exchanges/símbolos, wallets/riesgo, benchmarks, observabilidad, seguridad, operación local, Docker/Cloud Run, configuración, endpoints, pruebas, extensión de exchanges, roadmap, contribución y el apéndice para jurado. Documentos de referencia: [arquitectura](docs/ARCHITECTURE.md), [seguridad](docs/SECURITY_MODEL.md), [operaciones](docs/OPERATIONS.md), [añadir exchange](docs/ADDING_EXCHANGE.md) y [decisiones](docs/DESIGN_DECISIONS.md).
+El resto del README explica, en orden, el problema y la evidencia, arquitectura, modelo de rentabilidad neta, exchanges/símbolos, wallets/riesgo, benchmarks, observabilidad, seguridad, operación local, Docker/Cloud Run, configuración, endpoints, pruebas, extensión de exchanges, roadmap, contribución y el apéndice para jurado. Documentos de referencia: [arquitectura](docs/ARCHITECTURE.md), [seguridad](docs/SECURITY_MODEL.md), [operaciones](docs/OPERATIONS.md), [MCP-lite y Discord](docs/MCP_DISCORD.md), [añadir exchange](docs/ADDING_EXCHANGE.md) y [decisiones](docs/DESIGN_DECISIONS.md).
 
 | Feature | Estado | Dónde se prueba | Evidencia |
 |---|---|---|---|
@@ -289,11 +289,11 @@ El servidor mantiene una tarea Tokio por cada feed de mercado WebSocket y un cic
 El motor no presenta ese caso como un simple circuit breaker. La demo publica una máquina de estados auditable:
 
 ```text
-PENDING
-→ LEG_A_FILLED
-→ LEG_B_REJECTED
-→ UNWIND_FILLED
-→ RECONCILED_LOSS
+DETECTED → RESERVED
+→ LEG1_SUBMITTED → LEG1_FILLED
+→ LEG2_SUBMITTED → LEG2_REJECTED
+→ RECOVERY_SELECTED
+→ RECONCILED
 ```
 
 La exposición temporal aparece en la traza, el unwind registra su PnL realizado y la conciliación exige `exposicionFinalBtc = 0`. Se reproduce con `POST /api/demo/caos`, se ve en la tabla **FSM de ejecución y conciliación** y forma parte del gate de release.
@@ -473,6 +473,18 @@ cargo run
 
 `AUDITORIA_DB_PATH` apunta a SQLite local. `STORAGE_MODE=sqlite_ephemeral` es el valor seguro por defecto y no promete retención entre instancias. Usa `STORAGE_MODE=sqlite_persistent` solamente cuando `/data` esté respaldado por un volumen durable; la API expone `storageMode`, `storageStatus` y `storagePersistent`.
 
+Para producción, `STORAGE_MODE=timescaledb` selecciona el backend PostgreSQL/
+TimescaleDB sin fallback silencioso. Requiere compilar el feature `timescaledb`,
+una `DATABASE_URL` con `sslmode=require` (salvo redes privadas configuradas
+explícitamente con `sslmode=disable`) y el esquema versionado:
+
+```bash
+psql "$DATABASE_URL" -f scripts/timescaledb/schema.sql
+cargo run -p mayab-cli --bin mayab-arbitrage --features timescaledb
+```
+
+La URL nunca se publica: estado y logs muestran `timescaledb://[redacted]`.
+
 `ENABLED_EXCHANGES` y `SYMBOLS` son listas separadas por comas. La persistencia
 usa un worker con cola acotada; `queueCapacity`, `queuePending` y `queueDropped`
 permiten observar backpressure sin meter SQLite en el hot path.
@@ -497,13 +509,17 @@ RETIRO_BTC_BYBIT=0.00010
 La demo pública actual apunta a Cloud Run. Es la opción recomendada para el comité porque soporta WebSockets, HTTPS automático, logs centralizados y despliegue directo desde el repo.
 
 Deploy manual desde el código fuente. El script deja una sola instancia
-caliente porque wallets, GA, WebSocket y SQLite viven en el proceso:
+caliente porque wallets, GA y WebSocket viven en el proceso; la auditoría queda
+en TimescaleDB durable. Antes, crea dos secretos en Secret Manager: el token de
+administración y la `DATABASE_URL` cuyo esquema ya fue inicializado.
 
 ```bash
 PROJECT=arahli-495117 \
 REGION=us-central1 \
 MIN_INSTANCES=1 \
 MAX_INSTANCES=1 \
+ADMIN_TOKEN_SECRET=mayab-admin-token:latest \
+DATABASE_URL_SECRET=mayab-database-url:latest \
 ./scripts/deploy-cloud-run.sh
 ```
 
@@ -603,10 +619,10 @@ fly deploy
 GET  /                     tablero web embebido
 GET  /healthz              verificación de salud para ejecución local
 GET  /api/healthz          verificación de salud canónica para Cloud Run y monitores externos
-GET  /api/version          SHA, fecha, versión y ambiente inmutables del build desplegado
+GET  /api/version          build, schema, sesión y hashes canónicos de dataset/configuración
 GET  /api/estado           captura JSON completa del estado (incluye estado genético)
 GET  /api/jurado           Jury Mode: rúbrica, scorecard, cobertura, checks y enlaces de auditoría
-GET  /api/preflight        checklist operativo de demo: feeds, riesgo, GA, UI y exportación
+GET  /api/preflight        gate 12/12: operación, evidencia, conciliación y persistencia
 GET  /api/resumen-llm      snapshot compacto para jueces, scripts y agentes LLM
 POST /api/discord/interactions webhook firmado para slash commands de Discord
 GET  /api/mcp/manifest     catálogo MCP-lite de herramientas para agentes LLM
@@ -615,6 +631,8 @@ GET  /api/paquete-evaluacion scorecard, evidencia y guion reproducible para jura
 GET  /api/latencias        wire latency + pipeline p50/p95/p99, throughput y coalescing
 GET  /api/backtest         backtest reproducible con bootstrap temporal pareado e IC 95%
 GET  /api/lab/sweep        Research Lab: sweep Conservador/Balanceado/Agresivo/GA Edge
+GET  /api/research/economics waterfall, break-even, capacidad y embudo observados
+GET  /api/research/execution-matrix matriz determinista de 12 escenarios de ejecución
 GET  /api/export/json      descarga reporte completo de auditoría en JSON
 GET  /api/export/csv       descarga bitácora unificada en CSV
 POST /api/config           actualizar parámetros de simulación
@@ -627,7 +645,7 @@ GET  /api/ga/config        configuración actual del GA
 POST /api/ga/config        actualizar configuración del GA (tamaño población, tasas, etc.)
 POST /api/ga/evolucionar   forzar evolución manual; usa replay sintético si no hay trades reales
 POST /api/exchanges        activar/desactivar un exchange en la simulación
-WS   /tiempo-real          transmisión del estado en vivo (180ms)
+WS   /tiempo-real          transmisión del estado en vivo cada 450 ms (~2.2 Hz)
 ```
 
 ### Bot de Discord (opcional)
@@ -635,8 +653,9 @@ WS   /tiempo-real          transmisión del estado en vivo (180ms)
 El mismo binario puede atender Discord mediante Interactions HTTP, una opción
 adecuada para Cloud Run porque no mantiene otro WebSocket abierto. Cada petición
 se valida con Ed25519 antes de leerla. El bot publica `/estado`, `/resumen`,
-`/demo-rentable` y `/mayab pregunta:<texto>`; este último usa NVIDIA NIM como
-agente con tools locales sobre la simulación.
+`/demo-rentable`, `/mayab pregunta:<texto>` y `/ask pregunta:<texto>`; los dos
+últimos usan NVIDIA NIM como agente con herramientas locales sobre la
+simulación.
 
 Perfil sugerido en Discord Developer Portal:
 
@@ -668,7 +687,7 @@ comandos no requieren permisos adicionales del bot.
 La IA requiere una key nueva y privada en `NVIDIA_API_KEY`. El agente intenta
 los modelos de `NVIDIA_MODELS` en orden y continúa con el siguiente ante errores,
 timeouts o respuestas inválidas. Los defaults comprobados son Nemotron 3 Nano
-Omni, Nemotron 3 Nano y Nemotron 3 Ultra. Sus tools son:
+Omni, Nemotron 3 Nano y Nemotron 3 Ultra. Sus herramientas son:
 
 - `get_state`: métricas, riesgo, operaciones y GA.
 - `get_config`: parámetros vigentes del motor.
@@ -676,6 +695,11 @@ Omni, Nemotron 3 Nano y Nemotron 3 Ultra. Sus tools son:
 - `prepare_demo`: escenario rentable estrictamente simulado.
 - `update_parameters`: modifica límites simples validados; solo aparece para
   miembros con `Manage Server` o `Administrator`.
+
+`prepare_demo` y `/demo-rentable` cambian únicamente el estado simulado y están
+disponibles para cualquier usuario que pueda invocar los comandos instalados.
+La configuración completa, el flujo de firma y los límites de autorización se
+detallan en [MCP-lite y Discord](docs/MCP_DISCORD.md).
 
 Discord recibe primero una respuesta diferida y el resultado de NVIDIA se
 publica después, evitando exceder la ventana inicial de Interactions. Las keys
@@ -721,6 +745,10 @@ El endpoint devuelve:
 
 ### Bridge MCP-lite para agentes
 
+MCP-lite es un contrato HTTP/JSON propio, no un servidor compatible de forma
+directa con el transporte MCP estándar. Un cliente MCP estándar necesita un
+adaptador; el manifiesto lo declara explícitamente.
+
 ```bash
 curl http://localhost:8080/api/mcp/manifest
 
@@ -729,7 +757,7 @@ curl -X POST http://localhost:8080/api/mcp/call \
   -d '{"tool":"summarize_for_llm"}'
 ```
 
-El bridge expone herramientas read-only (`preflight`, `jury_mode`, `summarize_for_llm`, `evaluation_package`, `latency_ranking`, `backtest`, `research_lab_sweep`) y herramientas mutables de demo (`prepare_demo_final`, `evolve_ga`, `demo_scenario`). Si `ADMIN_TOKEN` está configurado, las mutables requieren `Authorization: Bearer <token>` o `X-Admin-Token`.
+El bridge expone herramientas de lectura (`get_state`, `preflight`, `jury_mode`, `summarize_for_llm`, `evaluation_package`, `latency_ranking`, `backtest`, `research_lab_sweep`) y herramientas mutables de demo (`prepare_demo_final`, `evolve_ga`, `demo_scenario`). En producción, las mutables requieren `Authorization: Bearer <token>` o `X-Admin-Token`; en desarrollo local el token es opcional. El catálogo, los argumentos y las respuestas están en [MCP-lite y Discord](docs/MCP_DISCORD.md).
 
 ### Ejemplo de paquete para jurado
 

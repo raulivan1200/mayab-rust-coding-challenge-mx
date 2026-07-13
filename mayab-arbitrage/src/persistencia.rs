@@ -17,12 +17,14 @@ const LIMITE_OPORTUNIDADES: usize = 25_000;
 const LIMITE_EVENTOS: usize = 15_000;
 const LIMITE_AUDITORIAS: usize = 25_000;
 const LIMITE_REBALANCEOS: usize = 5_000;
+const LIMITE_EJECUCIONES: usize = 10_000;
 const MANTENIMIENTO_CADA_ESCRITURAS: usize = 256;
 
 use anyhow::{anyhow, Context};
 use rusqlite::{params, Connection};
 
 use crate::auditoria::Auditoria;
+use crate::execution::ExecutionReport;
 use crate::types::{
     AuditoriaDecision, EstadoPersistencia, EventoEjecucion, Operacion, Oportunidad, Rebalanceo,
 };
@@ -35,6 +37,7 @@ pub struct Persistencia {
     eventos: AtomicUsize,
     auditorias: AtomicUsize,
     rebalanceos: AtomicUsize,
+    ejecuciones: AtomicUsize,
     db_bytes: AtomicU64,
     escrituras_desde_mantenimiento: AtomicUsize,
 }
@@ -63,6 +66,7 @@ impl Persistencia {
         let eventos = contar_tabla(&conn, "eventos")?;
         let auditorias = contar_tabla(&conn, "auditorias")?;
         let rebalanceos = contar_tabla(&conn, "rebalanceos")?;
+        let ejecuciones = contar_tabla(&conn, "ejecuciones")?;
         Ok(Self {
             ruta: ruta.to_string(),
             conn: Mutex::new(conn),
@@ -71,6 +75,7 @@ impl Persistencia {
             eventos: AtomicUsize::new(eventos),
             auditorias: AtomicUsize::new(auditorias),
             rebalanceos: AtomicUsize::new(rebalanceos),
+            ejecuciones: AtomicUsize::new(ejecuciones),
             db_bytes: AtomicU64::new(tamano_sqlite(ruta)),
             escrituras_desde_mantenimiento: AtomicUsize::new(0),
         })
@@ -82,10 +87,7 @@ impl Persistencia {
             .map(|value| value.trim().to_ascii_lowercase())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| "sqlite_ephemeral".to_string());
-        let storage_persistent = matches!(
-            storage_mode.as_str(),
-            "sqlite_persistent" | "volume" | "timescaledb"
-        );
+        let storage_persistent = matches!(storage_mode.as_str(), "sqlite_persistent" | "volume");
         EstadoPersistencia {
             activa: true,
             backend: "sqlite".to_string(),
@@ -95,6 +97,7 @@ impl Persistencia {
             eventos: self.eventos.load(Ordering::Relaxed),
             auditorias: self.auditorias.load(Ordering::Relaxed),
             rebalanceos: self.rebalanceos.load(Ordering::Relaxed),
+            ejecuciones: self.ejecuciones.load(Ordering::Relaxed),
             db_bytes: self.db_bytes.load(Ordering::Relaxed),
             error: None,
             storage_mode,
@@ -251,6 +254,27 @@ impl Persistencia {
         Ok(())
     }
 
+    pub fn registrar_ejecucion(&self, report: &ExecutionReport) -> anyhow::Result<()> {
+        let conn = self.conn()?;
+        let changed = conn.execute(
+            "INSERT OR IGNORE INTO ejecuciones
+             (id, tiempo, escenario, estado, pnl_usd, payload_json)
+             VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?2, ?3, ?4, ?5)",
+            params![
+                report.execution_id,
+                serde_json::to_string(&report.scenario)?,
+                serde_json::to_string(&report.state)?,
+                report.pnl_usd.to_string(),
+                serde_json::to_string(report)?,
+            ],
+        )?;
+        if changed > 0 {
+            self.ejecuciones.fetch_add(1, Ordering::Relaxed);
+            self.mantenimiento_si_corresponde(&conn, changed)?;
+        }
+        Ok(())
+    }
+
     pub fn total_pnl(&self) -> f64 {
         self.try_total_pnl().unwrap_or_else(|error| {
             tracing::error!(%error, "no se pudo consultar el P&L persistido");
@@ -323,6 +347,7 @@ impl Persistencia {
             "eventos": self.eventos.load(Ordering::Relaxed),
             "auditorias": self.auditorias.load(Ordering::Relaxed),
             "rebalanceos": self.rebalanceos.load(Ordering::Relaxed),
+            "ejecuciones": self.ejecuciones.load(Ordering::Relaxed),
             "dbBytes": self.db_bytes.load(Ordering::Relaxed),
         })
     }
@@ -358,6 +383,8 @@ impl Persistencia {
             .store(contar_tabla(conn, "auditorias")?, Ordering::Relaxed);
         self.rebalanceos
             .store(contar_tabla(conn, "rebalanceos")?, Ordering::Relaxed);
+        self.ejecuciones
+            .store(contar_tabla(conn, "ejecuciones")?, Ordering::Relaxed);
         self.db_bytes
             .store(tamano_sqlite(&self.ruta), Ordering::Relaxed);
         Ok(())
@@ -371,6 +398,7 @@ fn aplicar_retencion(conn: &Connection) -> anyhow::Result<()> {
         ("eventos", LIMITE_EVENTOS),
         ("auditorias", LIMITE_AUDITORIAS),
         ("rebalanceos", LIMITE_REBALANCEOS),
+        ("ejecuciones", LIMITE_EJECUCIONES),
     ] {
         let sql = format!(
             "DELETE FROM {tabla} WHERE rowid NOT IN \
@@ -450,11 +478,20 @@ fn inicializar_schema(conn: &Connection) -> anyhow::Result<()> {
             costo_usd TEXT NOT NULL,
             payload_json TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS ejecuciones (
+            id TEXT PRIMARY KEY,
+            tiempo TEXT NOT NULL,
+            escenario TEXT NOT NULL,
+            estado TEXT NOT NULL,
+            pnl_usd TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        );
         CREATE INDEX IF NOT EXISTS idx_operaciones_tiempo ON operaciones(tiempo DESC);
         CREATE INDEX IF NOT EXISTS idx_oportunidades_tiempo ON oportunidades(tiempo DESC);
         CREATE INDEX IF NOT EXISTS idx_eventos_tiempo ON eventos(tiempo DESC);
         CREATE INDEX IF NOT EXISTS idx_auditorias_tiempo ON auditorias(tiempo DESC);
         CREATE INDEX IF NOT EXISTS idx_rebalanceos_tiempo ON rebalanceos(tiempo DESC);
+        CREATE INDEX IF NOT EXISTS idx_ejecuciones_tiempo ON ejecuciones(tiempo DESC);
         CREATE INDEX IF NOT EXISTS idx_operaciones_ruta ON operaciones(ruta, tiempo DESC);
         CREATE INDEX IF NOT EXISTS idx_eventos_tipo ON eventos(tipo, tiempo DESC);
         CREATE INDEX IF NOT EXISTS idx_auditorias_decision ON auditorias(decision, tiempo DESC);
@@ -487,6 +524,9 @@ impl Auditoria for Persistencia {
     }
     fn registrar_auditorias(&self, auditorias: &[AuditoriaDecision]) -> anyhow::Result<()> {
         Persistencia::registrar_auditorias(self, auditorias)
+    }
+    fn registrar_ejecucion(&self, ejecucion: &ExecutionReport) -> anyhow::Result<()> {
+        Persistencia::registrar_ejecucion(self, ejecucion)
     }
     fn estado(&self) -> EstadoPersistencia {
         Persistencia::estado(self)
@@ -531,5 +571,38 @@ mod tests {
             .query_row("SELECT MIN(tiempo) FROM auditorias", [], |row| row.get(0))
             .unwrap();
         assert_eq!(mas_antigua, "00002");
+    }
+
+    #[test]
+    fn ejecucion_forense_es_idempotente_y_sobrevive_reapertura() {
+        let path = std::env::temp_dir().join(format!(
+            "mayab-execution-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path_str = path.to_string_lossy().to_string();
+        let report = crate::execution::standard_matrix()
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+
+        {
+            let persistence = Persistencia::abrir(&path_str).unwrap();
+            persistence.registrar_ejecucion(&report).unwrap();
+            persistence.registrar_ejecucion(&report).unwrap();
+            assert_eq!(persistence.estado().ejecuciones, 1);
+        }
+        {
+            let reopened = Persistencia::abrir(&path_str).unwrap();
+            assert_eq!(reopened.estado().ejecuciones, 1);
+        }
+
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{path_str}{suffix}"));
+        }
     }
 }

@@ -20,8 +20,8 @@
                     │                       │           │
               ┌─────▼─────┐          ┌──────▼──────┐   │
               │   ga.rs   │          │ persistencia│   │
-              │ (GA híbrido│          │  (SQLite)   │   │
-              │  single-   │          │  Auditoria  │   │
+              │ (GA híbrido │          │  (SQLite)   │   │
+              │  multi-     │          │  Auditoria  │   │
               │  objetivo)  │          │   trait     │   │
               └───────────┘          └─────────────┘   │
                     │                       │           │
@@ -56,6 +56,9 @@
 | `motor` | Simulación, carteras, adversidad, demo, GA loop | chrono, rand |
 | `ga` | Población, fitness, selección, cruce, mutación, recocido, evolución diferencial | rand |
 | `server` | Axum router, WebSocket push, preflight, LLM resumen, backtest, lab sweep, prometheus | axum, tower-http |
+| `http` | Grupos de rutas y política de origen | axum, tower-http |
+| `discord` | Firma Ed25519, slash commands y agente NVIDIA acotado | ed25519-dalek, reqwest |
+| `execution` | Máquina de estados para dos piernas, unwind y conciliación | rust_decimal |
 | `types` | Contrato JSON del dominio, serde | serde, serde_json |
 | `persistencia` | SQLite (WAL, indices, aggregate queries), `Auditoria` trait impl | rusqlite |
 | `auditoria` | `Auditoria` trait (repository pattern) | — |
@@ -69,8 +72,14 @@
 3. `motor::analizar()` (cada ~70ms) busca oportunidades cross-exchange
 4. GA optimiza umbral y tamaño de posición cada 500 ciclos
 5. `motor::ejecutar()` aplica carteras y adversidad únicamente sobre el estado simulado
-6. `server` expone estado vía WebSocket push y REST API
+6. `server` expone estado vía WebSocket cada 450 ms y REST API
 7. `persistencia::Persistencia` audita operaciones, eventos, rebalanceos, oportunidades
+8. Discord y MCP-lite reutilizan los mismos contratos y DTO validados; no tienen
+   acceso a ejecución real ni a llaves de exchanges
+
+MCP-lite es una interfaz HTTP/JSON propia y no el transporte MCP estándar. El
+contrato y los límites del bot se describen en
+[`docs/MCP_DISCORD.md`](docs/MCP_DISCORD.md).
 
 ## Carpetas
 

@@ -6,7 +6,7 @@ let gaAutoEnCurso = false;
 let gaAutoSolicitada = false;
 const ID_PESTANA = `tab-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const DEBUG_ACTIVO =
-  new URLSearchParams(location.search).has("debug") ||
+  new URLSearchParams(location.search).get("debug") === "1" ||
   localStorage.getItem("mayabDebug") === "1";
 const INTERVALO_CANVAS_MS = 1000 / 30;
 let ultimoFrameCanvas = 0;
@@ -31,12 +31,12 @@ const WS_RECONNECT_MAX = 15_000;
 // Fuente única para el copy editorial de la interfaz. Los estados que cambian
 // en runtime también salen de aquí para evitar variantes dispersas.
 const UI_COPY = Object.freeze({
-  landingKicker: "10 CEX públicos · 90 rutas · evidencia reproducible",
+  landingKicker: "Conectando feeds públicos · evidencia reproducible",
   landingTitle: "Arbitraje que puede explicar cada decisión y sobrevivir una pierna fallida.",
   landingBody: "Mayab compara cada ruta neta de costos, prueba inventario y profundidad, y reconcilia la exposición si la venta simulada falla después de comprar.",
-  landingPrimaryCta: "Ver a Mayab decidir",
+  landingPrimaryCta: "Ejecutar prueba completa",
   landingSecondaryCta: "Inspeccionar la evidencia completa",
-  proofMarket: "10 CEX públicos en tiempo real + 2 adaptadores DEX de investigación",
+  proofMarket: "Consultando cobertura real de CEX",
   proofCosts: "Suite Rust multi-capa · conteo sellado por CI",
   proofSafety: "Capital real: cero",
   socket: Object.freeze({
@@ -386,7 +386,7 @@ function iniciarHerramientasTablas() {
       <div class="tabla-acciones">
         <button type="button" class="tabla-accion tabla-accion-filtro" aria-expanded="false" aria-controls="${id}-filtro" title="Filtrar filas">⌕ <span>Filtrar</span></button>
         <button type="button" class="tabla-accion tabla-accion-descarga" title="Descargar filas visibles como CSV">↓ <span>Descargar</span></button>
-        <button type="button" class="tabla-accion tabla-accion-fullscreen" title="Ver tabla en pantalla completa">⛶ <span>Pantalla completa</span></button>
+        <button type="button" class="tabla-accion tabla-accion-fullscreen" title="Ver tabla en pantalla completa"><span>Pantalla completa</span></button>
       </div>`;
     scroll.before(toolbar);
 
@@ -942,13 +942,27 @@ function actualizarModoOperacion(datos) {
 }
 
 function renderProvenance(datos) {
-  const activos = Object.values(datos.exchangesActivos || {}).filter(Boolean).length || 10;
-  const frescos = (datos.cotizaciones || []).filter((cot) => cot.conectado && cot.ultimoMensaje !== "rest_fallback").length;
-  const restFallback = (datos.cotizaciones || []).filter((cot) => cot.conectado && cot.ultimoMensaje === "rest_fallback").length;
-  const textoDin = `${activos} configurados · ${frescos} WS frescos · ${restFallback} REST fallback`;
+  const exchanges = datos.exchangesActivos || {};
+  const configurados = Object.keys(exchanges).length;
+  const activos = Object.values(exchanges).filter(Boolean).length;
+  const staleMs = Number(datos.configuracion?.staleMs || 0);
+  const generadoMs = Date.parse(datos.generadoEn || "");
+  const unicos = (quotes) => new Set(quotes.map((cot) => cot.exchange).filter(Boolean)).size;
+  const quotes = (datos.cotizaciones || []).filter((cot) => exchanges[cot.exchange] !== false);
+  const esFresco = (cot) => {
+    const recibidoMs = Date.parse(cot.recibidaEn || "");
+    return cot.conectado === true && Number.isFinite(recibidoMs) && Number.isFinite(generadoMs)
+      && Math.max(0, generadoMs - recibidoMs) <= staleMs;
+  };
+  const frescos = unicos(quotes.filter((cot) => esFresco(cot) && cot.ultimoMensaje !== "rest_fallback"));
+  const restFallback = unicos(quotes.filter((cot) => esFresco(cot) && cot.ultimoMensaje === "rest_fallback"));
+  const ruteables = unicos(quotes.filter((cot) => esFresco(cot) && Number(cot.bid) > 0 && Number(cot.ask) > Number(cot.bid)));
+  const rutas = Math.max(0, ruteables * Math.max(0, ruteables - 1));
+  const textoDin = `${configurados} adaptadores · ${activos} habilitados · ${frescos} WS frescos · ${restFallback} REST · ${ruteables} ruteables`;
   
-  document.querySelectorAll('[data-ui-copy="landingKicker"]').forEach(el => el.textContent = `${textoDin} · 90 rutas · inteligencia evolutiva`);
+  document.querySelectorAll('[data-ui-copy="landingKicker"]').forEach(el => el.textContent = `${textoDin} · ${rutas} rutas ahora`);
   document.querySelectorAll('[data-ui-copy="proofMarket"]').forEach(el => el.textContent = textoDin);
+  setText("juryProofMarket", `${frescos} WS frescos · ${ruteables} venues ruteables`);
   
   setText("provenanceData", `${frescos} WS · ${restFallback} REST`);
   setText("provenanceLatency", `Último estado conocido: ${textoDin}`);
@@ -960,6 +974,12 @@ function renderProvenance(datos) {
 
   const esDemoRentable = (datos.eventosEjecucion || []).some((e) => String(e.tipo || "") === "demo_rentable");
   setText("provenanceResultTag", esDemoRentable ? "Synthetic demo result" : "Real-market paper result");
+  const reconciliada = (datos.trazasEjecucion || []).find((trace) =>
+    ["RECONCILED", "RECONCILED_LOSS"].includes(String(trace.estado || ""))
+      && Math.abs(Number(trace.exposicionBtc || 0)) <= 1e-8,
+  );
+  setText("juryProofExecution", reconciliada ? `${reconciliada.estado} · 0 BTC residual` : "ejecuta la prueba completa");
+  setText("juryProofWallets", reconciliada ? "ledger conciliado · reservas liberadas" : `${numero.format((datos.balances || []).length)} wallets visibles`);
 }
 
 function actualizarDetallePnl(datos) {
@@ -1343,6 +1363,7 @@ function iniciarPresets() {
 function iniciarDemo() {
   const btnFinal = $("btnDemoFinal");
   const btnFinalTop = $("btnDemoFinalTop");
+  const btnFinalHero = $("btnJuryProofHero");
   const btnReset = $("btnResetDemo");
   const btnCaos = $("btnDemoCaos");
   if (btnFinal) {
@@ -1350,6 +1371,9 @@ function iniciarDemo() {
   }
   if (btnFinalTop) {
     btnFinalTop.addEventListener("click", prepararDemoFinal);
+  }
+  if (btnFinalHero) {
+    btnFinalHero.addEventListener("click", prepararDemoFinal);
   }
   if (btnReset) {
     btnReset.addEventListener("click", reiniciarDemoJurado);
@@ -1462,10 +1486,13 @@ async function reiniciarDemoJurado() {
 async function prepararDemoFinal() {
   const btn = $("btnDemoFinal");
   const btnTop = $("btnDemoFinalTop");
+  const btnHero = $("btnJuryProofHero");
+  const minuteStatus = $("juryMinuteStatus");
   const feedback = $("demoFeedback");
   const estado = $("demoEstado");
   const textoOriginal = btn?.textContent || "Cargar demo ganadora";
   const textoTopOriginal = btnTop?.textContent || "Preparar demo auditada";
+  const textoHeroOriginal = btnHero?.textContent || "Ejecutar prueba completa";
   if (btn) {
     btn.disabled = true;
     btn.textContent = "Cargando...";
@@ -1474,7 +1501,12 @@ async function prepararDemoFinal() {
     btnTop.disabled = true;
     btnTop.textContent = "Preparando…";
   }
+  if (btnHero) {
+    btnHero.disabled = true;
+    btnHero.textContent = "Ejecutando 6 pruebas…";
+  }
   if (estado) estado.textContent = "armando evidencia";
+  if (minuteStatus) minuteStatus.textContent = "Ejecutando tape, operación rentable, fallo de segunda pierna, recuperación, wallets, GA y export…";
   mostrarFeedback(feedback, "Cargando corrida rentable, GA, fill parcial y rebalanceo...", true);
 
   try {
@@ -1485,6 +1517,7 @@ async function prepararDemoFinal() {
     if (!res.ok) {
       mostrarFeedback(feedback, `No se pudo cargar la demo ganadora: ${await mensajeErrorApi(res, "error de API")}`, false);
       if (estado) estado.textContent = "rechazado";
+      if (minuteStatus) minuteStatus.textContent = "La instancia rechazó la prueba; abre el checklist para ver el bloqueo exacto.";
       return;
     }
     const body = await res.json();
@@ -1496,13 +1529,24 @@ async function prepararDemoFinal() {
       `Corrida ${body?.corridaId || "de jurado"} lista: PnL ${dinero.format(pnl)}, segunda pierna ${body?.riesgoSegundaPierna?.estadoFinal || "conciliada"}, score evolutivo ${body?.mlEdge?.version || "ok"}, GA ${gen ?? body?.mercadoRentable?.generacionGa ?? "activo"}.`,
       true,
     );
+    if (minuteStatus) {
+      const checks = body?.preflight?.judgeReadiness;
+      minuteStatus.textContent = `${checks?.passed || 0}/${checks?.total || 12} checks verdes · corrida ${body?.corridaId || "jury"} · evidencia SHA-256 lista para descargar.`;
+      minuteStatus.classList.add("ok");
+    }
+    preflightCache = body?.preflight || null;
+    ultimoPreflightMs = preflightCache ? Date.now() : 0;
     try {
       const lab = await fetch("/api/lab/sweep");
       if (lab.ok) renderLabSweep(await lab.json());
     } catch (_) {}
+    if ($("tab-evidence")?.classList.contains("activo")) {
+      await cargarEvidenceLab();
+    }
   } catch (e) {
     if (estado) estado.textContent = "error";
     mostrarFeedback(feedback, "Error de red al cargar la demo ganadora", false);
+    if (minuteStatus) minuteStatus.textContent = "La prueba no terminó; revisa la conexión y vuelve a intentarlo.";
   } finally {
     if (btn) {
       btn.disabled = false;
@@ -1511,6 +1555,10 @@ async function prepararDemoFinal() {
     if (btnTop) {
       btnTop.disabled = false;
       btnTop.textContent = textoTopOriginal;
+    }
+    if (btnHero) {
+      btnHero.disabled = false;
+      btnHero.textContent = textoHeroOriginal;
     }
   }
 }
@@ -2134,11 +2182,13 @@ async function cargarEvidenceLab() {
   const boton = $("btnEvidenceReload");
   if (!status || !grid) return;
   boton.disabled = true;
-  status.textContent = "Consultando ocho contratos de solo lectura…";
+  status.textContent = "Consultando contratos de solo lectura y economía de la última decisión…";
   const endpoints = [
     ["tapes", "/api/research/tapes"],
     ["walk", "/api/research/walk-forward"],
     ["impact", "/api/research/impact"],
+    ["economics", "/api/research/economics"],
+    ["execution", "/api/research/execution-matrix"],
     ["bootstrap", "/api/research/bootstrap"],
     ["microstructure", "/api/research/microstructure"],
     ["ou", "/api/research/ou"],
@@ -2147,11 +2197,16 @@ async function cargarEvidenceLab() {
   ];
   try {
     const respuestas = await Promise.all(endpoints.map(async ([clave, url]) => {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
-      return [clave, url, await res.json()];
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return [clave, url, await res.json(), null];
+      } catch (error) {
+        return [clave, url, null, error instanceof Error ? error.message : "no disponible"];
+      }
     }));
-    const evidencia = Object.fromEntries(respuestas.map(([clave, , data]) => [clave, data]));
+    const evidencia = Object.fromEntries(respuestas.map(([clave, , data, error]) => [clave, data || { error } ]));
+    const disponibles = respuestas.filter(([, , data]) => data).length;
     const tape = evidencia.tapes?.tapes?.[0];
     const wf = evidencia.walk?.gaVsBaselines || {};
     const principal = evidencia.bootstrap?.bootstrap?.principal?.deltasCandidatoMenosBaseline || {};
@@ -2162,21 +2217,25 @@ async function cargarEvidenceLab() {
     const calibrators = micro.calibration || [];
     const winnerCalibration = calibrators.find((x) => x.model === micro.winnerByBrier);
     const ou = evidencia.ou?.report || {};
+    const economics = evidencia.economics || {};
+    const execution = evidencia.execution || {};
     const cards = [
-      ["Proveniencia y hash del tape", tape
+      ["CORE · Proveniencia y hash del tape", tape
         ? `<strong>${escapeHtml(tape.provenance)}</strong><code>${escapeHtml(tape.sha256)}</code><small>${numero.format(tape.events || 0)} eventos · ${numero.format(tape.bytes || 0)} bytes</small>`
         : `<strong>No disponible</strong><small>${escapeHtml(evidencia.tapes?.error || "No hay tape montado")}</small>`, "/api/research/tapes"],
-      ["Split train / calibration / holdout", `<strong>50% / 20% / 30%</strong><small>Campeón congelado: ${wf.campeonCongelado ? "sí" : "no"} · holdout no visto: ${wf.semillasHoldoutNoVistas?.length || 0} semillas</small>`, "/api/research/walk-forward"],
-      ["GA vs baselines", `<strong>${escapeHtml(wf.ganador || "sin resultado")}</strong><small>${escapeHtml(wf.lectura || "Sin lectura disponible")}</small>`, "/api/research/walk-forward"],
-      ["Comparación de impacto", `<strong>Default: ${escapeHtml(impacto.modeloPredeterminado || "—")}</strong><small>${numero.format(impacto.candidatos || 0)} candidatos pareados · menor error: ${escapeHtml(impacto.respuestas?.modeloConMenorErrorContraMarkout || "—")}</small>`, "/api/research/impact"],
-      ["Bootstrap CI", `<strong>Δ PnL IC 95%: ${pnlCi.length === 2 ? `${dinero.format(pnlCi[0])} a ${dinero.format(pnlCi[1])}` : "no disponible"}</strong><small>${numero.format(evidencia.bootstrap?.bootstrap?.remuestras || 0)} remuestras · bloque principal ${numero.format(evidencia.bootstrap?.bootstrap?.bloquePrincipalSegundos || 0)} s</small>`, "/api/research/bootstrap"],
-      ["Microestructura y calibración", `<strong>${escapeHtml(micro.winnerByBrier || "sin resultado")}</strong><small>${numero.format(micro.observations || 0)} observaciones · ${escapeHtml(micro.sourceKind || "fuente desconocida")} · Brier ${formato(winnerCalibration?.brierScore || 0, 4)}</small><small>Quote age, asincronía, microprice, OFI multinivel, markouts y Wilson 95%.</small>`, "/api/research/microstructure"],
-      ["OU fuera de muestra", `<strong>${escapeHtml(ou.decision || "sin resultado")}</strong><small>${numero.format(ou.observations || 0)} spreads · ${escapeHtml(ou.sourceKind || "fuente desconocida")} · ADF ${formato(ou.stationarity?.adfTStat || 0, 3)} · KPSS ${formato(ou.stationarity?.kpssStat || 0, 3)}</small><small>Estimación A · selección B · evaluación única C · separado del GA.</small>`, "/api/research/ou"],
-      ["Auditoría del ledger", `<strong>${Object.values(ledger.checks || {}).every(Boolean) ? "Checks del snapshot pasan" : "Revisión requerida"}</strong><code>${escapeHtml(ledger.snapshotSha256 || "sin hash")}</code><small>${numero.format(ledger.counts?.operations || 0)} operaciones · ${numero.format(ledger.counts?.decisionAudits || 0)} decisiones auditadas</small>`, "/api/research/ledger-audit"],
-      ["Limitaciones conocidas", `<strong>${escapeHtml(evidencia.readiness?.status || "estado desconocido")}</strong><ul>${(evidencia.readiness?.limitations || []).map(x => `<li>${escapeHtml(x)}</li>`).join("")}</ul>`, "/api/readiness/live"],
+      ["CORE · Split train / calibration / holdout", `<strong>50% / 20% / 30%</strong><small>Campeón congelado: ${wf.campeonCongelado ? "sí" : "no"} · holdout no visto: ${wf.semillasHoldoutNoVistas?.length || 0} semillas</small>`, "/api/research/walk-forward"],
+      ["CORE · GA vs baselines", `<strong>${escapeHtml(wf.ganador || "sin resultado")}</strong><small>${escapeHtml(wf.lectura || "Sin lectura disponible")}</small>`, "/api/research/walk-forward"],
+      ["CORE · Comparación de impacto", `<strong>Default: ${escapeHtml(impacto.modeloPredeterminado || "—")}</strong><small>${numero.format(impacto.candidatos || 0)} candidatos pareados · menor error: ${escapeHtml(impacto.respuestas?.modeloConMenorErrorContraMarkout || "—")}</small>`, "/api/research/impact"],
+      ["CORE · Bootstrap CI", `<strong>Δ PnL IC 95%: ${pnlCi.length === 2 ? `${dinero.format(pnlCi[0])} a ${dinero.format(pnlCi[1])}` : "no disponible"}</strong><small>${numero.format(evidencia.bootstrap?.bootstrap?.remuestras || 0)} remuestras · bloque principal ${numero.format(evidencia.bootstrap?.bootstrap?.bloquePrincipalSegundos || 0)} s</small>`, "/api/research/bootstrap"],
+      ["EXPERIMENTAL · Microestructura", `<strong>${escapeHtml(micro.winnerByBrier || "sin resultado")}</strong><small>${numero.format(micro.observations || 0)} observaciones · ${escapeHtml(micro.sourceKind || "fuente desconocida")} · Brier ${formato(winnerCalibration?.brierScore || 0, 4)}</small><small>Research fuera del score core: quote age, OFI, markouts y Wilson 95%.</small>`, "/api/research/microstructure"],
+      ["EXPERIMENTAL · OU fuera de muestra", `<strong>${escapeHtml(ou.decision || "sin resultado")}</strong><small>${numero.format(ou.observations || 0)} spreads · ${escapeHtml(ou.sourceKind || "fuente desconocida")} · ADF ${formato(ou.stationarity?.adfTStat || 0, 3)} · KPSS ${formato(ou.stationarity?.kpssStat || 0, 3)}</small><small>Research separado del GA y fuera del score core.</small>`, "/api/research/ou"],
+      ["CORE · Auditoría del ledger", `<strong>${Object.values(ledger.checks || {}).every(Boolean) ? "Checks del snapshot pasan" : "Revisión requerida"}</strong><code>${escapeHtml(ledger.snapshotSha256 || "sin hash")}</code><small>${numero.format(ledger.counts?.operations || 0)} operaciones · ${numero.format(ledger.counts?.decisionAudits || 0)} decisiones auditadas</small>`, "/api/research/ledger-audit"],
+      ["CORE · Matriz forense de ejecución", `<strong>${execution.allPassed ? `${numero.format(execution.passed || 0)}/${numero.format(execution.total || 12)} escenarios conciliados` : "Revisión requerida"}</strong><code>${escapeHtml(execution.matrixSha256 || "sin hash")}</code><small>fills parciales · timeouts · duplicados · restart · retry · re-hedge/unwind · 10 invariantes por caso</small>`, "/api/research/execution-matrix"],
+      ["ALCANCE · Limitaciones conocidas", `<strong>${escapeHtml(evidencia.readiness?.status || "estado desconocido")}</strong><ul>${(evidencia.readiness?.limitations || []).map(x => `<li>${escapeHtml(x)}</li>`).join("")}</ul>`, "/api/readiness/live"],
     ];
-    grid.innerHTML = cards.map(([titulo, contenido, url]) => `<article class="evidence-lab-card"><h3>${escapeHtml(titulo)}</h3>${contenido}<a href="${url}" target="_blank" rel="noopener">Abrir artefacto JSON</a></article>`).join("");
-    status.textContent = "8 de 8 contratos respondieron. Los resultados reflejan esta instancia.";
+    grid.innerHTML = `${renderEconomicsEvidence(economics)}${cards.map(([titulo, contenido, url]) => `<article class="evidence-lab-card"><h3>${escapeHtml(titulo)}</h3>${contenido}<a class="btn-link evidence-artifact-link" href="${url}" target="_blank" rel="noopener">Abrir artefacto JSON</a></article>`).join("")}`;
+    grid.querySelector("[data-run-jury]")?.addEventListener("click", prepararDemoFinal);
+    status.textContent = `${disponibles} de ${endpoints.length} contratos respondieron. Cada ausencia queda aislada; los demás resultados siguen siendo evaluables.`;
   } catch (error) {
     status.textContent = `No se pudo completar Evidence Lab: ${error.message}`;
     grid.innerHTML = "";
@@ -2184,6 +2243,67 @@ async function cargarEvidenceLab() {
   } finally {
     boton.disabled = false;
   }
+}
+
+function renderEconomicsEvidence(economics) {
+  if (!economics?.available) {
+    return `<article class="evidence-lab-card economics-unavailable"><h3>CORE · Economía de la decisión</h3><strong>No disponible todavía</strong><small>${escapeHtml(economics?.reason || economics?.error || "Ejecuta la prueba completa para generar una operación con costos.")}</small><button type="button" class="btn-link" data-run-jury>Ejecutar prueba completa</button></article>`;
+  }
+
+  const waterfall = economics.edgeWaterfall || {};
+  const waterfallItems = waterfall.items || [];
+  const waterfallMax = Math.max(...waterfallItems.map((item) => Math.abs(Number(item.valueUsd || 0))), 0.01);
+  const waterfallHtml = waterfallItems.map((item) => {
+    const value = Number(item.valueUsd || 0);
+    const width = Math.max(2, Math.abs(value) / waterfallMax * 100);
+    return `<li class="${value >= 0 ? "positive" : "negative"}"><span>${escapeHtml(item.label || item.key)}</span><i><b style="width:${width}%"></b></i><strong>${dinero.format(value)}</strong></li>`;
+  }).join("");
+
+  const frontier = economics.breakEvenFrontier || {};
+  const frontierPct = Math.max(0, Math.min(100, Number(frontier.currentTotalCostUsd || 0) / Math.max(Number(frontier.maxTotalCostUsd || 0), 0.01) * 100));
+  const points = economics.capacityCurve?.points || [];
+  const maxCapacityPnl = Math.max(...points.map((point) => Math.abs(Number(point.expectedPnlUsd || 0))), 0.01);
+  const capacityHtml = points.map((point) => {
+    const pnl = Number(point.expectedPnlUsd || 0);
+    const width = Math.max(2, Math.abs(pnl) / maxCapacityPnl * 100);
+    return `<li class="${pnl >= 0 ? "positive" : "negative"}${point.insideObservedCapacity ? "" : " extrapolated"}"><span>${btc.format(point.quantityBtc || 0)} BTC</span><i><b style="width:${width}%"></b></i><strong>${dinero.format(pnl)}</strong></li>`;
+  }).join("");
+
+  const stages = economics.decisionFunnel?.stages || [];
+  const funnelBase = Math.max(Number(stages[0]?.count || 0), 1);
+  const funnelHtml = stages.map((stage) => {
+    const count = Number(stage.count || 0);
+    const width = Math.max(count > 0 ? 4 : 0, count / funnelBase * 100);
+    return `<li><span>${escapeHtml(stage.label || stage.key)}</span><i><b style="width:${width}%"></b></i><strong>${numero.format(count)}</strong></li>`;
+  }).join("");
+
+  return `
+    <article class="evidence-lab-card economics-card economics-waterfall">
+      <h3>CORE · Edge Waterfall</h3>
+      <small>${escapeHtml(economics.source?.route || "ruta")}: dónde desaparece el spread.</small>
+      <ol>${waterfallHtml}</ol>
+      <strong class="economics-verdict">${waterfall.reconciledWithinCent ? "Ledger y waterfall concilian al centavo" : "Revisar conciliación"}</strong>
+      <a class="btn-link evidence-artifact-link" href="/api/research/economics" target="_blank" rel="noopener">Abrir datos</a>
+    </article>
+    <article class="evidence-lab-card economics-card economics-frontier">
+      <h3>CORE · Break-even Frontier</h3>
+      <small>Cuánto costo adicional destruye el edge neto.</small>
+      <div class="frontier-track" aria-label="Costo actual contra costo de break-even"><b style="width:${frontierPct}%"></b></div>
+      <dl><div><dt>Costo actual</dt><dd>${dinero.format(frontier.currentTotalCostUsd || 0)}</dd></div><div><dt>Break-even</dt><dd>${dinero.format(frontier.maxTotalCostUsd || 0)}</dd></div><div><dt>Headroom</dt><dd>${formato(frontier.additionalCostHeadroomBps || 0, 2)} bps</dd></div></dl>
+      <a class="btn-link evidence-artifact-link" href="/api/research/economics" target="_blank" rel="noopener">Abrir datos</a>
+    </article>
+    <article class="evidence-lab-card economics-card economics-capacity">
+      <h3>CORE · Capacity Curve</h3>
+      <small>PnL esperado por tamaño; el tramado marca extrapolación sobre 100% de profundidad observada.</small>
+      <ol>${capacityHtml}</ol>
+      <a class="btn-link evidence-artifact-link" href="/api/research/economics" target="_blank" rel="noopener">Abrir datos</a>
+    </article>
+    <article class="evidence-lab-card economics-card economics-funnel">
+      <h3>CORE · Decision Funnel</h3>
+      <small>Rutas que sobreviven frescura, profundidad, costos y riesgo.</small>
+      <ol>${funnelHtml}</ol>
+      <a class="btn-link evidence-artifact-link" href="/api/research/economics" target="_blank" rel="noopener">Abrir datos</a>
+    </article>`;
 }
 
 function renderBacktest(datos) {
@@ -2445,7 +2565,7 @@ function renderOportunidades(datos) {
     const tdRuta = document.createElement("td");
     let ruta = escapeHtml(`${o.compraEn} -> ${o.ventaEn}`);
     if (o.tipo === "Triangular") {
-      ruta = `<span class="badge-triangular" title="Arbitraje Triangular">🔺</span> ${ruta}`;
+      ruta = `<span class="badge-triangular" title="Arbitraje triangular">TRI</span> ${ruta}`;
     }
     tdRuta.innerHTML = ruta;
 
@@ -2511,7 +2631,7 @@ function renderDetalleOportunidad(datos) {
   const decisionActual = auditoria?.decisionActual ?? seleccionada.decisionActual;
   const decisionThreshold = auditoria?.decisionThreshold ?? seleccionada.decisionThreshold;
   const esTriangular = seleccionada.tipo === "Triangular";
-  const badgeTriangular = esTriangular ? `<span class="badge-triangular" title="Arbitraje Triangular">🔺</span>` : "";
+  const badgeTriangular = esTriangular ? `<span class="badge-triangular" title="Arbitraje triangular">TRI</span>` : "";
 
   let piernasHtml = "";
   if (esTriangular && seleccionada.piernas) {
@@ -2575,7 +2695,7 @@ function renderOperaciones(datos) {
 
     const tdBuy = document.createElement("td");
     const esTriangular = o.tipo === "Triangular";
-    const badgeTri = esTriangular ? `<span class="badge-triangular" title="Arbitraje Triangular">🔺</span> ` : "";
+    const badgeTri = esTriangular ? `<span class="badge-triangular" title="Arbitraje triangular">TRI</span> ` : "";
     tdBuy.innerHTML = `${badgeTri}${escapeHtml(o.compraEn)}<br><span>${dinero.format(o.precioCompra)}</span>`;
 
     const tdSell = document.createElement("td");
@@ -3926,11 +4046,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.querySelectorAll("[data-tab-target]").forEach((control) => {
     const activar = (event) => {
-      if (event.type === "click" && event.target !== control && event.target.closest("a, button, input, select, textarea")) return;
+      const controlInteractivo = event.target.closest("a, button, input, select, textarea");
+      if (event.type === "click" && controlInteractivo && controlInteractivo !== control) return;
+      if (event.type === "click" && control.matches('a[href^="#"]')) event.preventDefault();
       const target = control.getAttribute("data-tab-target");
       const tab = document.querySelector(`.tab-btn[data-tab="${target}"]`);
       if (!tab) return;
       tab.click();
+      if (control.hasAttribute("data-prepare-jury")) prepararDemoFinal();
       // Usar el contenedor que realmente hace scroll evita dos animaciones
       // compitiendo entre sí, especialmente en Safari/Chrome móvil.
       requestAnimationFrame(() => irAlDashboard());

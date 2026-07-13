@@ -145,6 +145,31 @@ async fn integration_demo_mercado_rentable_genera_pnl_positivo() {
 }
 
 #[tokio::test]
+async fn integration_demo_final_preserva_inventario_para_evidencia_forense() {
+    let (app, _motor) = make_test_app().await;
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/demo/final")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(result["fillParcial"]["partialFill"], true);
+    assert_eq!(result["riesgoSegundaPierna"]["ok"], true);
+    assert_eq!(result["riesgoSegundaPierna"]["estadoFinal"], "RECONCILED");
+    assert_eq!(result["riesgoSegundaPierna"]["exposicionFinalBtc"], 0.0);
+    assert!(result["mercadoRentable"]["operacionesInsertadas"]
+        .as_u64()
+        .is_some_and(|count| count > 0));
+}
+
+#[tokio::test]
 async fn integration_ga_evolucionar_con_replay_sintetico() {
     let (app, _motor) = make_test_app().await;
 

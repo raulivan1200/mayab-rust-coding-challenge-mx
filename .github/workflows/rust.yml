@@ -64,6 +64,9 @@ jobs:
           cargo test --workspace --all-targets --locked --features testnet-execution
           ./scripts/check-testnet-safety.sh
 
+      - name: Check durable persistence build
+        run: cargo check -p mayab-cli --bin mayab-arbitrage --locked --features timescaledb
+
       - name: Build release binary
         run: cargo build --workspace --all-targets --release --locked
 
@@ -163,6 +166,7 @@ jobs:
       MIN_INSTANCES: "1"
       MAX_INSTANCES: "1"
       ADMIN_TOKEN_SECRET: ${{ vars.ADMIN_TOKEN_SECRET }}
+      DATABASE_URL_SECRET: ${{ vars.DATABASE_URL_SECRET }}
     steps:
       - uses: actions/checkout@v7
 

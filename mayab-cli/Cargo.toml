@@ -9,6 +9,9 @@ publish = false
 [[bin]]
 name = "mayab-arbitrage"
 path = "src/main.rs"
+# La documentación pública pertenece al crate de biblioteca del mismo nombre.
+# Desactivar rustdoc aquí evita que el binario sobrescriba ese índice.
+doc = false
 
 [[bin]]
 name = "capture-tape"

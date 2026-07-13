@@ -62,6 +62,17 @@ CREATE TABLE IF NOT EXISTS rebalanceos (
     payload_json  JSONB
 );
 
+-- Estado terminal/checkpoint por id: tabla transaccional regular para que el
+-- mismo execution_id sea idempotente incluso después de reiniciar el proceso.
+CREATE TABLE IF NOT EXISTS ejecuciones (
+    tiempo        TIMESTAMPTZ NOT NULL,
+    id            TEXT PRIMARY KEY,
+    escenario     TEXT NOT NULL,
+    estado        TEXT NOT NULL,
+    pnl_usd       TEXT NOT NULL,
+    payload_json  JSONB NOT NULL
+);
+
 -- Convertir en hypertables (solo si aún no lo son).
 SELECT create_hypertable('operaciones', 'tiempo', if_not_exists => TRUE);
 SELECT create_hypertable('eventos', 'tiempo', if_not_exists => TRUE);
@@ -76,3 +87,4 @@ SELECT add_retention_policy('auditorias', INTERVAL '90 days', if_not_exists => T
 CREATE INDEX IF NOT EXISTS idx_operaciones_ruta ON operaciones (ruta, tiempo DESC);
 CREATE INDEX IF NOT EXISTS idx_eventos_tipo ON eventos (tipo, tiempo DESC);
 CREATE INDEX IF NOT EXISTS idx_auditorias_decision ON auditorias (decision, tiempo DESC);
+CREATE INDEX IF NOT EXISTS idx_ejecuciones_tiempo ON ejecuciones (tiempo DESC);

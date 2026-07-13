@@ -5,6 +5,7 @@ pub mod config;
 pub mod discord;
 pub mod estrategia;
 pub mod evaluation;
+pub mod execution;
 pub mod ga;
 pub mod http;
 pub mod impacto;

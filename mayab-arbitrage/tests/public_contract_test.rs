@@ -65,6 +65,11 @@ public_get_contract!(
     "/api/research/microstructure"
 );
 public_get_contract!(contract_research_impact, "/api/research/impact");
+public_get_contract!(contract_research_economics, "/api/research/economics");
+public_get_contract!(
+    contract_research_execution_matrix,
+    "/api/research/execution-matrix"
+);
 public_get_contract!(contract_research_bootstrap, "/api/research/bootstrap");
 public_get_contract!(contract_research_walk_forward, "/api/research/walk-forward");
 public_get_contract!(contract_research_ou, "/api/research/ou");
