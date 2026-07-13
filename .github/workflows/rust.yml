@@ -64,7 +64,10 @@ jobs:
           cargo test --workspace --all-targets --locked --features testnet-execution
           ./scripts/check-testnet-safety.sh
 
-      - name: Check durable persistence build
+      - name: Test durable persistence feature
+        run: cargo test -p mayab-arbitrage --all-targets --locked --features timescaledb
+
+      - name: Check production binary with durable persistence
         run: cargo check -p mayab-cli --bin mayab-arbitrage --locked --features timescaledb
 
       - name: Build release binary
@@ -123,17 +126,25 @@ jobs:
           ./scripts/smoke-demo.sh
 
   container:
-    name: Build production container
+    name: Build and test production container
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
-      - name: Build multi-stage image
+      - name: Build one provenance-stable candidate image
+        shell: bash
         run: |
+          set -euo pipefail
+          build_time="$(git show -s --format=%cI "$GITHUB_SHA")"
+          release_version="$(awk -F '"' '/^version = "/ { print $2; exit }' Cargo.toml)"
+          test -n "$build_time"
+          test -n "$release_version"
           docker build --pull --no-cache --tag mayab-btc-arbitrage:ci \
             --build-arg MAYAB_GIT_SHA="$GITHUB_SHA" \
-            --build-arg MAYAB_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" .
+            --build-arg MAYAB_BUILD_TIME="$build_time" \
+            --build-arg MAYAB_RELEASE_VERSION="$release_version" \
+            --build-arg MAYAB_BUILD_ENV=production .
 
       - name: Verify non-root runtime metadata
         run: |
@@ -167,15 +178,38 @@ jobs:
           echo "container did not become healthy" >&2
           exit 1
 
+      - name: Export the exact tested image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_id="$(docker image inspect mayab-btc-arbitrage:ci --format '{{.Id}}')"
+          printf '%s\n' "$image_id" > "$RUNNER_TEMP/mayab-production-image.id"
+          docker save --output "$RUNNER_TEMP/mayab-production-image.tar" mayab-btc-arbitrage:ci
+          gzip -1 "$RUNNER_TEMP/mayab-production-image.tar"
+
+      - name: Upload the exact tested image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v7
+        with:
+          name: mayab-production-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/mayab-production-image.tar.gz
+            ${{ runner.temp }}/mayab-production-image.id
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
   deploy:
     name: Deploy Cloud Run
     if: >-
       github.event_name == 'push' &&
-      (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main') &&
+      github.ref == 'refs/heads/main' &&
       vars.GCP_PROJECT_ID != '' &&
       vars.WIF_PROVIDER != '' &&
       vars.WIF_SERVICE_ACCOUNT != '' &&
       vars.GAR_REPOSITORY != '' &&
+      vars.RUNTIME_SERVICE_ACCOUNT != '' &&
       vars.ADMIN_TOKEN_SECRET != '' &&
       vars.DATABASE_URL_SECRET != ''
     needs: [ci, container]
@@ -192,6 +226,7 @@ jobs:
       REGION: ${{ vars.GCP_REGION || 'us-central1' }}
       SERVICE: ${{ vars.CLOUD_RUN_SERVICE || 'mayab-btc-arbitrage' }}
       GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY }}
+      RUNTIME_SERVICE_ACCOUNT: ${{ vars.RUNTIME_SERVICE_ACCOUNT }}
       MIN_INSTANCES: "1"
       MAX_INSTANCES: "1"
       ADMIN_TOKEN_SECRET: ${{ vars.ADMIN_TOKEN_SECRET }}
@@ -212,110 +247,36 @@ jobs:
         with:
           project_id: ${{ vars.GCP_PROJECT_ID }}
 
-      - name: Build and publish immutable image
+      - name: Download the exact image tested by CI
+        uses: actions/download-artifact@v8
+        with:
+          name: mayab-production-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mayab-production-image
+
+      - name: Publish the tested image and resolve its immutable digest
         id: image
         shell: bash
         run: |
           set -euo pipefail
           registry="${REGION}-docker.pkg.dev"
-          image="${registry}/${PROJECT}/${GAR_REPOSITORY}/${SERVICE}:${GITHUB_SHA}"
+          image="${registry}/${PROJECT}/${GAR_REPOSITORY}/${SERVICE}:${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          expected_id="$(tr -d '\r\n' < "$RUNNER_TEMP/mayab-production-image/mayab-production-image.id")"
+          gunzip -c "$RUNNER_TEMP/mayab-production-image/mayab-production-image.tar.gz" | docker load
+          actual_id="$(docker image inspect mayab-btc-arbitrage:ci --format '{{.Id}}')"
+          test -n "$expected_id"
+          test "$actual_id" = "$expected_id"
           gcloud auth configure-docker "$registry" --quiet
-          docker build --pull --no-cache --tag "$image" \
-            --build-arg MAYAB_GIT_SHA="$GITHUB_SHA" \
-            --build-arg MAYAB_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --build-arg MAYAB_RELEASE_VERSION="1.0.0-final" \
-            --build-arg MAYAB_BUILD_ENV=production .
+          docker tag mayab-btc-arbitrage:ci "$image"
           docker push "$image"
-          echo "uri=$image" >> "$GITHUB_OUTPUT"
+          digest="$(docker buildx imagetools inspect "$image" | awk '$1 == "Digest:" { print $2; exit }')"
+          printf '%s\n' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          immutable="${image%:*}@${digest}"
+          docker pull "$immutable"
+          remote_id="$(docker image inspect "$immutable" --format '{{.Id}}')"
+          test "$remote_id" = "$expected_id"
+          echo "uri=$immutable" >> "$GITHUB_OUTPUT"
 
-      - name: Deploy one warm production instance
+      - name: Deploy candidate, smoke it off-traffic and promote atomically
         env:
           IMAGE: ${{ steps.image.outputs.uri }}
         run: ./scripts/deploy-cloud-run.sh
-
-      - name: Resolve public URL
-        id: service
-        shell: bash
-        run: |
-          set -euo pipefail
-          url=$(gcloud run services describe "$SERVICE" \
-            --project "$PROJECT" \
-            --region "$REGION" \
-            --format='value(status.url)')
-          test -n "$url"
-          echo "url=$url" >> "$GITHUB_OUTPUT"
-
-      - name: Public smoke test - healthz
-        env:
-          BASE_URL: ${{ steps.service.outputs.url }}
-        run: |
-          set -euo pipefail
-          for _ in $(seq 1 30); do
-            if curl -fsS "${BASE_URL}/healthz" | grep -q '"ok":true' \
-              && curl -fsS "${BASE_URL}/api/healthz" | grep -q '"ok":true'; then
-              echo "healthz canonical and compatibility alias OK"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "healthz failed" >&2
-          exit 1
-
-      - name: Public smoke test - readyz
-        env:
-          BASE_URL: ${{ steps.service.outputs.url }}
-        run: |
-          set -euo pipefail
-          for _ in $(seq 1 60); do
-            if curl -fsS "${BASE_URL}/readyz" | grep -q '"ready":true'; then
-              echo "readyz OK"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "readyz failed" >&2
-          curl -fsS "${BASE_URL}/readyz" || true
-          exit 1
-
-      - name: Public smoke test - full demo
-        env:
-          BASE_URL: ${{ steps.service.outputs.url }}
-        run: |
-          set -euo pipefail
-          secret_name="${ADMIN_TOKEN_SECRET%%:*}"
-          secret_version="${ADMIN_TOKEN_SECRET#*:}"
-          if [[ "$secret_version" == "$ADMIN_TOKEN_SECRET" ]]; then secret_version=latest; fi
-          ADMIN_TOKEN="$(gcloud secrets versions access "$secret_version" --secret "$secret_name" --project "$PROJECT")"
-          test -n "$ADMIN_TOKEN"
-          export ADMIN_TOKEN
-          ./scripts/smoke-demo.sh
-
-      - name: Leave jury demo ready
-        if: always() && steps.service.outputs.url != ''
-        env:
-          BASE_URL: ${{ steps.service.outputs.url }}
-        run: |
-          set -euo pipefail
-          secret_name="${ADMIN_TOKEN_SECRET%%:*}"
-          secret_version="${ADMIN_TOKEN_SECRET#*:}"
-          if [[ "$secret_version" == "$ADMIN_TOKEN_SECRET" ]]; then secret_version=latest; fi
-          ADMIN_TOKEN="$(gcloud secrets versions access "$secret_version" --secret "$secret_name" --project "$PROJECT")"
-          test -n "$ADMIN_TOKEN"
-          curl -fsS -X POST "$BASE_URL/api/demo/final" \
-            -H 'Content-Type: application/json' \
-            -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-            -d '{}' >/dev/null
-          preflight="$(curl -fsS "$BASE_URL/api/preflight")"
-          jq -e '
-            .listo == true and
-            .judgeReadiness.status == "ready" and
-            .judgeReadiness.passed == 12 and
-            .judgeReadiness.total == 12 and
-            (.judgeReadiness.checks | length == 12) and
-            all(.judgeReadiness.checks[]; .ok == true) and
-            .judgeReadiness.executionMatrix.passed == 12 and
-            .judgeReadiness.executionMatrix.total == 12 and
-            .judgeReadiness.executionMatrix.allPassed == true and
-            .judgeReadiness.twoLegEvidence.invariants.allPassed == true
-          ' <<<"$preflight" >/dev/null
-          echo "public jury state ready"

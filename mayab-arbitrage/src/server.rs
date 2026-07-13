@@ -932,13 +932,16 @@ fn construir_research_tapes() -> serde_json::Value {
                 "tapes": [{
                     "id": "research-tape-default",
                     "path": path.display().to_string(),
-                    "provenance": if std::env::var_os("MAYAB_RESEARCH_TAPE").is_some() { "configured_artifact" } else { "repository_capture" },
+                    "provenance": if std::env::var_os("MAYAB_RESEARCH_TAPE").is_some() { "configured_artifact_unverified" } else { "repository_sample_unverified" },
+                    "classification": "unverified_market_sample",
+                    "authenticityVerified": false,
+                    "captureManifestVerified": false,
                     "sha256": hex::encode(Sha256::digest(&bytes)),
                     "bytes": bytes.len(),
                     "events": events,
                     "immutableReference": true
                 }],
-                "limitations": ["El hash prueba integridad de bytes, no autenticidad del exchange.", "La captura incluida es pequeña y no representa todos los regímenes de mercado."]
+                "limitations": ["El hash prueba integridad de bytes, no autenticidad del exchange.", "Sin manifest verificado este archivo es una muestra funcional, no evidencia empírica publicable.", "La muestra incluida es pequeña y no representa todos los regímenes de mercado."]
             })
         }
         Err(error) => json!({
@@ -1855,7 +1858,6 @@ pub(crate) async fn kill_switch_http(
         Ok(payload) => payload,
         Err(err) => return rechazo_json(err).into_response(),
     };
-    let _recorrido = app.motor.bloquear_recorrido_simulado().await;
     app.motor.set_kill_switch(payload.activo).await;
     Json(json!({ "ok": true, "activo": payload.activo, "simulacion": true })).into_response()
 }
@@ -2655,13 +2657,14 @@ fn construir_resumen_llm(estado: &EstadoPublico) -> serde_json::Value {
             "fitnessDelRepresentantePareto": g.mejor_fitness,
             "maxFitness": g.mejor_fitness.max(g.retador_fitness),
             "meanFitness": g.fitness_promedio,
-            "champion": "baseline_hasta_validar_holdout",
-            "challenger": "ga_pareto",
+            "champion": g.validacion.campeon.clone(),
+            "challenger": g.validacion.challenger.clone(),
             "diversidad": g.diversidad,
             "umbralOptimizado": g.umbral_optimizado,
             "maxOperacionOptimizadaBtc": g.max_operacion_optimizada_btc,
             "toleranciaLatenciaMs": g.tolerancia_latencia_ms,
             "metaheuristicas": g.metaheuristicas,
+            "validacion": g.validacion.clone(),
         })),
         "mlEdge": estado.ml_edge.as_ref().map(|m| json!({
             "modelo": m.modelo,
@@ -3662,7 +3665,7 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
             "Incluye backtest determinístico, Research Lab sweep y exportaciones JSON/CSV de auditoría.",
         ),
         criterio(
-            "persistencia_sqlite_local",
+            "persistencia_auditoria",
             persistencia.map(|p| p.activa).unwrap_or(false),
             persistencia
                 .map(|p| {
@@ -3678,11 +3681,11 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
             persistencia
                 .map(|p| {
                     format!(
-                        "SQLite en {} con {} ops, {} oportunidades, {} auditorias y {} eventos.",
-                        p.ruta, p.operaciones, p.oportunidades, p.auditorias, p.eventos
+                        "Backend {} ({}) en {} con {} ops, {} oportunidades, {} auditorias y {} eventos.",
+                        p.backend, p.storage_status, p.ruta, p.operaciones, p.oportunidades, p.auditorias, p.eventos
                     )
                 })
-                .unwrap_or_else(|| "Sin SQLite de auditoría.".into()),
+                .unwrap_or_else(|| "Sin backend de auditoría configurado.".into()),
         ),
     ];
     let checks_cumplidos = criterios
@@ -3693,7 +3696,7 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
     let mut paquete = json!({
         "generadoEn": estado.generado_en,
         "nombre": "Mayab Arbitraje BTC - paquete de evaluación",
-        "modo": "demo segura read-only",
+        "modo": "demo segura de evaluación; sólo muta estado simulado",
         "provenance": provenance,
         "evidenceSummary": {
             "pass": checks_cumplidos,
@@ -3711,7 +3714,7 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
                 "scoring evolutivo con EV, supervivencia, fill probability, adverse selection y contribuciones por variable",
                 "decision inspector con costos, pesos GA y balances previos",
                 "preflight y paquete de evaluación para revisar sin navegar toda la UI",
-                "auditoría SQLite local y exports JSON/CSV; retención externa explicitada para Cloud Run",
+                "auditoría seleccionable: SQLite local o TimescaleDB durable, con exports JSON/CSV",
                 "seguridad explícita: sin API keys, custodia ni órdenes reales"
             ],
             "riesgosDeOtrosProyectosQueEvitamos": [
@@ -3756,14 +3759,12 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
         },
         "scriptDemo": [
             "GET /api/healthz",
-            "GET /api/preflight",
             "POST /api/demo/reset",
             "POST /api/demo/final",
-            "POST /api/ga/evolucionar {\"usarReplaySiVacio\":true,\"muestras\":96}",
-            "POST /api/demo {\"escenario\":\"mercado_rentable\"}",
-            "GET /api/lab/sweep",
-            "GET /api/research/microstructure",
-            "GET /api/research/ou",
+            "GET /api/preflight",
+            "GET /api/research/execution-matrix",
+            "GET /api/research/economics",
+            "GET /api/research/ledger-audit",
             "GET /api/paquete-evaluacion",
             "GET /api/export/json"
         ],
@@ -3775,7 +3776,7 @@ fn construir_paquete_evaluacion(estado: &EstadoPublico) -> serde_json::Value {
             "Research Lab: campeon GA contra baseline y presets sobre 24 semillas comunes, sin ocultar derrotas.",
             "Auditoría por decisión: score, costos, z-score, latencia, pesos GA y balances previos.",
             "Demo rentable controlada para probar valor aunque el mercado real este plano.",
-            "SQLite local para auditoría durante la vida de la instancia, con exports para retención externa.",
+            "SQLite local para desarrollo y TimescaleDB durable en producción, con el mismo contrato de auditoría y exports.",
             "Límites explícitos de seguridad: no API keys, no custodia, no órdenes reales."
         ],
         "endpoints": {
@@ -4019,17 +4020,17 @@ fn cobertura_finalista(estado: &EstadoPublico) -> serde_json::Value {
             "README, scripts/release-check.sh y scripts/smoke-demo.sh.",
         ),
         cobertura_item(
-            "auditoria_local_exports",
+            "auditoria_backend_exports",
             exports && persistencia.map(|p| p.activa).unwrap_or(false),
             persistencia
                 .map(|p| {
                     format!(
-                        "SQLite activa={} en {}, operaciones={}, oportunidades={}, auditorias={}.",
-                        p.activa, p.ruta, p.operaciones, p.oportunidades, p.auditorias
+                        "Backend {} activo={} estado={} en {}, operaciones={}, oportunidades={}, auditorias={}.",
+                        p.backend, p.activa, p.storage_status, p.ruta, p.operaciones, p.oportunidades, p.auditorias
                     )
                 })
-                .unwrap_or_else(|| "SQLite no inicializada; exports siguen disponibles.".into()),
-            "GET /api/export/json, /api/export/csv y AUDITORIA_DB_PATH.",
+                .unwrap_or_else(|| "Backend de auditoría no inicializado; exports del snapshot siguen disponibles.".into()),
+            "GET /api/export/json, /api/export/csv, STORAGE_MODE y estado de persistencia.",
         ),
         cobertura_item(
             "ia_explicable_ga",
@@ -4273,7 +4274,7 @@ fn recomendaciones_ganadoras(estado: &EstadoPublico) -> Vec<&'static str> {
         .map(|p| !p.activa)
         .unwrap_or(true)
     {
-        recomendaciones.push("Revisar AUDITORIA_DB_PATH y permisos de SQLite; documentar export o backend externo para retención entre instancias.");
+        recomendaciones.push("Revisar STORAGE_MODE y la salud del backend de auditoría; en producción se exige TimescaleDB durable y cola sin pérdidas.");
     }
     if estado
         .genetico
@@ -6197,6 +6198,7 @@ mod tests {
                 inyecciones_diferenciales: 1,
                 frontera_pareto: vec![],
                 metaheuristicas: vec!["torneo".to_string(), "annealing".to_string()],
+                validacion: Default::default(),
             }),
             ml_edge: Some(EstadoMlEdge {
                 activo: true,

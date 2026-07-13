@@ -26,6 +26,8 @@ La cifra operacional principal no es un spread bruto: es **cero exposición resi
 
 [Aplicación pública en Cloud Run](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app)
 
+[Repositorio público en GitHub](https://github.com/raulivan1200/mayab-btc-arbitrage)
+
 [![Rust CI](https://github.com/raulivan1200/mayab-btc-arbitrage/actions/workflows/rust.yml/badge.svg)](https://github.com/raulivan1200/mayab-btc-arbitrage/actions/workflows/rust.yml)
 [![Security](https://github.com/raulivan1200/mayab-btc-arbitrage/actions/workflows/security.yml/badge.svg)](https://github.com/raulivan1200/mayab-btc-arbitrage/actions/workflows/security.yml)
 [![Coverage](https://github.com/raulivan1200/mayab-btc-arbitrage/actions/workflows/coverage.yml/badge.svg)](https://github.com/raulivan1200/mayab-btc-arbitrage/actions/workflows/coverage.yml)
@@ -44,6 +46,8 @@ Abre la [aplicación pública](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.a
 Requiere una toolchain estable de Rust.
 
 ```bash
+git clone https://github.com/raulivan1200/mayab-btc-arbitrage.git
+cd mayab-btc-arbitrage
 cargo run
 ```
 
@@ -65,7 +69,7 @@ El resto del README explica, en orden, el problema y la evidencia, arquitectura,
 
 | Feature | Estado | Dónde se prueba | Evidencia |
 |---|---|---|---|
-| Arbitraje y Ejecución Simulada | Completado | `POST /api/demo/final` | Inspector de decisiones y auditoría SQLite |
+| Arbitraje y Ejecución Simulada | Completado | `POST /api/demo/final` | Inspector de decisiones y auditoría SQLite/TimescaleDB |
 | Riesgo y Escenarios Adversos | Completado | `POST /api/demo/caos` | Bitácora de eventos y circuit breaker |
 | Gestión de Wallets y Rebalanceo | Completado | Dashboard > "Forzar rebalanceo" | Movimiento interno auditado con costo |
 | Optimización Genética Híbrida | Completado | Dashboard > Panel GA | Visualización de pesos, convergencia y fitness |
@@ -78,6 +82,86 @@ La comparación externa con los rivales públicos y las brechas P0/P1/P2 está e
 
 El sistema corre como un solo binario Rust: conexiones WebSocket concurrentes sobre Tokio, motor de decisión, simulador de carteras, optimización genética ligera, API Axum e interfaz web servida por el mismo proceso. Esa arquitectura reduce latencia operativa, simplifica el despliegue y permite demostrar el sistema en vivo sin una cadena pesada de servicios.
 
+## Respuesta directa a la rúbrica técnica
+
+### Profundidad y parametrización
+
+**Mayab no tiene una estrategia rígida: tiene un espacio de control explícito, validado y auditable.** El catálogo contiene **35 controles globales + 4 controles por venue configurado**. Con los 10 CEX públicos son **75 variables independientes**; si también se cargan los dos adaptadores DEX experimentales son **83**. No se cuentan métricas calculadas, campos decorativos ni aliases de variables de entorno. El total efectivo y el catálogo, con categoría, procedencia, mutabilidad y restricción de cada entrada, se calculan en runtime en `GET /api/paquete-evaluacion` bajo `parametrizacion`.
+
+La configuración se divide por nivel para no confundir facilidad de uso con superficie operativa:
+
+| Nivel | Controles | Cómo se ajustan |
+|---|---:|---|
+| Estrategia, costos, riesgo, adversidad y rebalanceo | 22 | `POST /api/config`; 21 están expuestos directamente en el dashboard y `rebalanceSettlementMs` queda disponible por API/entorno |
+| GA | 5 | población, mutación y cruce vía `POST /api/ga/config`; tamaño de replay y fallback sintético al evolucionar |
+| Operación e integración | 3 | kill switch, webhook y reglas explícitas de rebalanceo mediante API administrativa |
+| Universo y capital inicial | 5 | pares, capital, inventario BTC e intervalo del pipeline mediante entorno al arrancar |
+| Cada venue | 4 | fee taker, retiro BTC, confiabilidad y activo/inactivo; **4 × N venues** |
+
+El usuario puede cambiar en caliente tamaño máximo de orden, utilidad y diferencial neto mínimos, slippage, cooldown, stale timeout, riesgo de latencia, retiro amortizado, basis USD/USDT, circuit breaker, volatilidad, probabilidades de fallo/shock y política/costo de rebalanceo. También puede editar costos por exchange, activar o desactivar venues y usar presets Balanceado, Agresivo, Seguro y Estrés. Los pares y el conjunto inicial de exchanges se fijan al arrancar con `SYMBOLS` y `ENABLED_EXCHANGES`; la participación de cada exchange se conmuta después sin reiniciar.
+
+**Frase de defensa:** *la decisión no pregunta si existe spread; pregunta si queda utilidad neta ejecutable después de fees, profundidad, slippage, retiro amortizado, basis, latencia, inventario y riesgo.*
+
+### Robustez ante escenarios adversos
+
+**El motor modela fallos como estados contables, no como mensajes de error.** Antes de ejecutar, descarta libros stale, limita la cantidad por hasta 10 niveles de profundidad, balance USD en compra y BTC prefundeado en venta, y revalida la ruta con el snapshot más fresco. Un candado `single-trade-in-flight` evita gastar el mismo inventario desde dos ticks concurrentes.
+
+| Escenario | Respuesta del sistema | Evidencia reproducible |
+|---|---|---|
+| Liquidez o balance insuficiente | Reduce `filledQtyBtc` y marca fill parcial; si el ejecutable llega a cero, descarta con `SKIP_THIN_OR_INVENTORY` | `POST /api/demo {"escenario":"fill_parcial"}` y `liquidez_insuficiente` |
+| Mercado movido entre señal y ejecución | Recalcula precio, costos y utilidad; cancela si la ruta dejó de superar los límites | escenario `mercado_movido` + inspector de decisiones |
+| Orden rechazada | No confirma balances ni P&L como si hubiera fill; registra rechazo y eleva la métrica de fallo | escenario `fallo_orden` + timeline/export |
+| Segunda pierna rechazada | Reserva inventario, registra la exposición temporal, elige recovery, hace unwind simulado y exige conciliación | `POST /api/demo/caos`; FSM termina en `RECONCILED` y `exposicionFinalBtc = 0` |
+| Pérdida acumulada o volatilidad extrema | Activa circuit breaker; en modo conservador duplica el diferencial mínimo | escenario `circuit_breaker` + `/api/estado` |
+| Feed desconectado, stale o inconsistente | Deja de rutear ese libro; intenta snapshot REST público etiquetado y publica gaps/checksums/resyncs en métricas | `/api/preflight`, `/api/latencias` y `/metrics` |
+
+La prueba fuerte es `POST /api/demo/caos`: encadena fill parcial, baja liquidez, fallo de segunda pierna, unwind, circuit breaker, rebalanceo y recuperación. No basta con “capturar la excepción”; la corrida valida reservas, ledger, conservación de BTC, ecuación de wallets, P&L realizado y exposición residual cero.
+
+**Frase de defensa:** *fallar seguro significa terminar conciliado: ninguna pierna rechazada puede desaparecer detrás de un log ni dejar BTC fantasma.*
+
+### Gestión de wallets y rebalanceo
+
+**Sí: Mayab mantiene inventario operativo por exchange y lo rebalancea automáticamente, dentro de una simulación prefundeada.** Cada venue conserva saldos USD y BTC; una compra consume USD en origen y una venta consume BTC en destino. Esto elimina la suposición irreal de transferir activos instantáneamente después de detectar una oportunidad.
+
+Cada 100 ciclos, el motor compara cada wallet contra su inventario inicial objetivo. Si USD o BTC cae más de `rebalanceUmbralPct`, busca el venue con mayor superávit y mueve como máximo `rebalanceMaxTransferPct` del déficit. El movimiento descuenta el costo configurado o el retiro BTC del exchange, bloquea el capital durante `rebalanceSettlementMs`, usa una clave de idempotencia y registra origen, destino, activo, cantidad neta, costo, razón y estado de liquidación. Las reglas administrativas permiten añadir transferencias operativas explícitas y validadas; IDs duplicados, montos inválidos o venues desconocidos se rechazan.
+
+Esto es **gestión de inventario**, no custodia ni una transferencia on-chain real. Su valor técnico es demostrar que la estrategia incorpora capital fragmentado, costo de reposición y tiempo de settlement en vez de asumir una wallet global infinita.
+
+**Frase de defensa:** *el edge sólo es operable si existe inventario en ambas puntas; Mayab trata el balance por venue como restricción de primer orden, no como detalle posterior.*
+
+### Calidad de interfaz y visualización
+
+**La interfaz permite reconstruir en tiempo real qué vio el bot, qué decidió, por qué lo decidió y qué efecto contable produjo.** Un WebSocket en `/tiempo-real` transmite el estado aproximadamente cada 450 ms. El dashboard muestra:
+
+- mapa/heatmap de rutas y feeds LIVE/REST/DEMO;
+- oportunidades detectadas, aceptadas y descartadas;
+- inspector forense con spread bruto y neto, stack de costos, profundidad, cantidad pedida/ejecutada, score EV, Z-Score, pesos GA, umbral y `decisionCode`;
+- historial de operaciones, fills parciales y fallos;
+- P&L acumulado y costo de rebalanceo por separado;
+- wallets USD/BTC por exchange, capital en tránsito y tabla de rebalanceos;
+- latencia por venue y p50/p95/p99 del pipeline;
+- timeline de eventos, circuit breaker, modo conservador y FSM de conciliación;
+- GA: generación, fitness, diversidad, convergencia, pesos y frente de Pareto;
+- exportación JSON/CSV y resumen Markdown para auditoría fuera de la UI.
+
+La demo no depende de que aparezca una oportunidad real: `POST /api/demo/final` prepara una corrida completa y `POST /api/demo {"escenario":"mercado_rentable"}` mantiene visible el flujo rentable, siempre etiquetado como sintético.
+
+**Frase de defensa:** *el dashboard no sólo enseña resultados; enseña la cadena causal completa señal → decisión → ejecución → ledger → P&L.*
+
+### Decisiones técnicas defendibles
+
+| Decisión | Razón | Trade-off reconocido |
+|---|---|---|
+| Un binario Rust con Tokio + Axum | Menos saltos entre señal, motor, estado y evidencia; despliegue reproducible | Estado operativo en memoria exige una sola instancia o coordinación externa |
+| `rust_decimal` en matemática financiera | Evita que errores binarios de punto flotante gobiernen fees, balances y P&L | El JSON conserva `number` para interoperabilidad con el dashboard |
+| Prefunding por exchange | Hace visibles las restricciones reales de inventario y el fallo de segunda pierna | Reduce oportunidades frente al supuesto irreal de capital global |
+| USD y USDT separados por defecto | Evita arbitrajes falsos causados por el basis fiat/stablecoin | El cruce requiere opt-in y costo explícito |
+| WebSocket-first + REST fallback etiquetado | Mantiene continuidad observable sin ocultar degradación del feed | Un snapshot REST no se presenta como continuidad WebSocket |
+| Demo sintética determinista | Permite evaluar ejecución, P&L, GA y caos aunque el mercado esté plano | Nunca se usa como evidencia de rentabilidad live |
+| SQLite local / TimescaleDB en producción | Auditoría simple en desarrollo y durable en Cloud Run | SQLite en `/tmp` se declara efímero y producción falla cerrado sin TimescaleDB |
+
+Los ADR completos están en [`docs/ADRs`](docs/ADRs), y los límites de arquitectura, seguridad y evidencia están en [ARCHITECTURE.md](docs/ARCHITECTURE.md), [SECURITY_MODEL.md](docs/SECURITY_MODEL.md) y [QUANTITATIVE_EVIDENCE.md](docs/QUANTITATIVE_EVIDENCE.md).
+
 ## Jurado en 60 segundos
 
 1. Abre la [aplicación pública](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app) y revisa el badge LIVE/DEMO/REST, P&L, mapa de rutas, wallets, eventos y panel GA. Si prefieres una visita guiada, pulsa **Recorrido de 2 min** en el encabezado; es opcional.
@@ -85,7 +169,7 @@ El sistema corre como un solo binario Rust: conexiones WebSocket concurrentes so
 3. Abre `/api/preflight`: confirma `judgeReadiness.status=ready`, checks completos y la rúbrica oficial de 5 criterios.
 4. La instancia pública queda precargada automáticamente al arrancar en `MAYAB_JUDGE_MODE=true` con una corrida auditada completa: GA, PnL positivo, fill parcial, mercado movido, liquidez insuficiente, segunda pierna rechazada con unwind a exposición cero y rebalanceo. El jurado puede reiniciar y repetir únicamente los recorridos cerrados `/api/demo/reset`, `/api/demo/final` y `/api/demo/caos`; cualquier otra mutación sigue protegida por `ADMIN_TOKEN`.
 5. En local, o como operador autenticado, pulsa **Ejecutar prueba completa** en la portada y **Forzar rebalanceo** en el dashboard para reproducir la corrida y el movimiento interno con costo explícito.
-6. Abre `/api/paquete-evaluacion`: verás scorecard, huella de auditoría, recomendaciones finales, backtest reproducible, evidencia SQLite y diferenciadores listos para revisión.
+6. Abre `/api/paquete-evaluacion`: verás scorecard, huella de auditoría, recomendaciones finales, backtest reproducible, estado del backend de evidencia y diferenciadores listos para revisión.
 
 Validación automática equivalente:
 
@@ -280,9 +364,9 @@ El crate `mayab-arbitrage` contiene `config`, `mercado` (con el trait
 `persistencia` (SQLite), `persistencia_timescale` (TimescaleDB, feature
 `timescaledb`) y `metricas` (Prometheus), además de
 `server`. El mapa de mantenimiento completo está en
-[ARCHITECTURE.md](ARCHITECTURE.md).
+[ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-Mapa de mantenimiento con responsabilidades por archivo: [ARCHITECTURE.md](ARCHITECTURE.md).
+Mapa de mantenimiento con responsabilidades por archivo: [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 El servidor mantiene una tarea Tokio por cada feed de mercado WebSocket y un ciclo de análisis periódico independiente. La interfaz web recibe actualizaciones en tiempo real mediante una conexión WebSocket única en `/tiempo-real` y puede modificar parámetros en caliente consumiendo las APIs `/api/config`, `/api/exchanges`, `/api/ga/config` vía POST.
 
@@ -394,7 +478,7 @@ En builds release el filtro por defecto baja a `error`; usa `RUST_LOG=info` o `R
 Pruebas:
 
 ```bash
-cargo test
+cargo test --workspace
 make check
 ```
 
@@ -484,8 +568,9 @@ cargo run
 
 Para producción, `STORAGE_MODE=timescaledb` selecciona el backend PostgreSQL/
 TimescaleDB sin fallback silencioso. Requiere compilar el feature `timescaledb`,
-una `DATABASE_URL` con `sslmode=require` (salvo redes privadas configuradas
-explícitamente con `sslmode=disable`) y el esquema versionado:
+una `DATABASE_URL` con `sslmode=require` y el esquema versionado. El modo
+`sslmode=disable` falla cerrado incluso en desarrollo salvo que el operador
+declare además `ALLOW_INSECURE_DATABASE=true`; nunca se admite en producción:
 
 El binario rechaza valores desconocidos de `STORAGE_MODE` y, cuando
 `MAYAB_ENV=production`, no arranca con SQLite: exige `timescaledb`.
@@ -524,14 +609,16 @@ La demo pública actual apunta a Cloud Run. Es la opción recomendada para el co
 
 Deploy manual desde el código fuente. El script deja una sola instancia
 caliente porque wallets, GA y WebSocket viven en el proceso; la auditoría queda
-en TimescaleDB durable. Antes, crea dos secretos en Secret Manager: el token de
-administración y la `DATABASE_URL` cuyo esquema ya fue inicializado.
+en TimescaleDB durable. Antes, crea dos secretos en Secret Manager (token de
+administración y `DATABASE_URL`) y una service account runtime dedicada con
+acceso mínimo a esas versiones de secreto.
 
 ```bash
 PROJECT=arahli-495117 \
 REGION=us-central1 \
 MIN_INSTANCES=1 \
 MAX_INSTANCES=1 \
+RUNTIME_SERVICE_ACCOUNT=mayab-runtime@arahli-495117.iam.gserviceaccount.com \
 ADMIN_TOKEN_SECRET=mayab-admin-token:latest \
 DATABASE_URL_SECRET=mayab-database-url:latest \
 ./scripts/deploy-cloud-run.sh
@@ -558,7 +645,7 @@ curl -sS https://tu-url-publica/api/preflight
 ### CI/CD automático
 
 El workflow `.github/workflows/rust.yml` ejecuta formato, Clippy, tests, build
-release y smoke local en cada push o pull request. En un push verde a `master`,
+release y smoke local en cada push o pull request. En un push verde a `main`,
 además:
 
 1. autentica GitHub en Google Cloud mediante OIDC/Workload Identity Federation;
@@ -576,16 +663,45 @@ CLOUD_RUN_SERVICE
 GAR_REPOSITORY
 WIF_PROVIDER
 WIF_SERVICE_ACCOUNT
+RUNTIME_SERVICE_ACCOUNT
 ADMIN_TOKEN_SECRET
 DATABASE_URL_SECRET
 ```
 
+`RUNTIME_SERVICE_ACCOUNT` es la identidad dedicada del contenedor y sólo debe
+tener acceso a los secretos y servicios que necesita en runtime.
 `ADMIN_TOKEN_SECRET` y `DATABASE_URL_SECRET` son referencias `nombre:versión`
 de Secret Manager. El workflow lee el mismo `ADMIN_TOKEN_SECRET` desplegado para
 el smoke; no necesita duplicar el token como GitHub Actions Secret.
 
+Permisos mínimos que no deben confundirse entre identidades:
+
+- la cuenta runtime necesita `roles/secretmanager.secretAccessor` sobre
+  `ADMIN_TOKEN_SECRET` y `DATABASE_URL_SECRET`;
+- la cuenta `WIF_SERVICE_ACCOUNT` necesita `roles/run.admin`,
+  `roles/artifactregistry.writer`, acceso a leer `ADMIN_TOKEN_SECRET` para el
+  smoke y `roles/iam.serviceAccountUser` **sobre** la cuenta runtime;
+- la federación OIDC debe limitarse al repositorio y a `refs/heads/main`.
+
+Ejemplo para los enlaces específicos (sustituye nombres y proyecto):
+
+```bash
+gcloud secrets add-iam-policy-binding mayab-admin-token \
+  --member="serviceAccount:${RUNTIME_SERVICE_ACCOUNT}" \
+  --role=roles/secretmanager.secretAccessor
+gcloud secrets add-iam-policy-binding mayab-database-url \
+  --member="serviceAccount:${RUNTIME_SERVICE_ACCOUNT}" \
+  --role=roles/secretmanager.secretAccessor
+gcloud secrets add-iam-policy-binding mayab-admin-token \
+  --member="serviceAccount:${WIF_SERVICE_ACCOUNT}" \
+  --role=roles/secretmanager.secretAccessor
+gcloud iam service-accounts add-iam-policy-binding "${RUNTIME_SERVICE_ACCOUNT}" \
+  --member="serviceAccount:${WIF_SERVICE_ACCOUNT}" \
+  --role=roles/iam.serviceAccountUser
+```
+
 Los pull requests nunca despliegan. La identidad federada está condicionada al
-repositorio y a `refs/heads/master`. Para revisar el último rollout:
+repositorio y a `refs/heads/main`. Para revisar el último rollout:
 
 ```bash
 gh run list --workflow rust.yml --limit 5
@@ -658,6 +774,8 @@ GET  /api/export/json      descarga reporte completo de auditoría en JSON
 GET  /api/export/csv       descarga bitácora unificada en CSV
 GET  /api/export/evidence  resumen Markdown con sesión y hashes de procedencia
 POST /api/config           actualizar parámetros de simulación
+POST /api/rebalance/rules  definir reglas operativas de rebalanceo validadas
+POST /api/admin/kill-switch pausar o reanudar ejecuciones simuladas
 POST /api/demo             disparar escenario adverso o demo rentable controlada
 POST /api/demo/reset       reiniciar balances, PnL, riesgo y GA conservando feeds/configuración
 POST /api/demo/caos        prueba encadenada de resiliencia con recuperación y checks finales
@@ -713,7 +831,7 @@ Omni, Nemotron 3 Nano y Nemotron 3 Ultra. Sus herramientas son:
 
 - `get_state`: métricas, riesgo, operaciones y GA.
 - `get_config`: parámetros vigentes del motor.
-- `get_audit_history`: resumen SQLite y últimas operaciones, en modo solo lectura.
+- `get_audit_history`: resumen del backend de auditoría y últimas operaciones, en modo solo lectura.
 - `prepare_demo`: escenario rentable estrictamente simulado.
 - `update_parameters`: modifica límites simples validados; solo aparece para
   miembros con `Manage Server` o `Administrator`.
@@ -787,7 +905,7 @@ El bridge expone herramientas de lectura (`get_state`, `preflight`, `jury_mode`,
 curl http://localhost:8080/api/paquete-evaluacion
 ```
 
-El endpoint devuelve un scorecard con criterios de demo segura, datos en tiempo real, motor ejecutable, scoring evolutivo explicable, GA, riesgo, auditoría SQLite local, Research Lab y backtest/export. También incluye `scriptDemo`, `evidencia`, `huellaAuditoria` y los endpoints que permiten reproducir la revisión.
+El endpoint devuelve un scorecard con criterios de demo segura, datos en tiempo real, motor ejecutable, scoring evolutivo explicable, GA, riesgo, backend de auditoría efectivo, Research Lab y backtest/export. También incluye `scriptDemo`, `evidencia`, `huellaAuditoria` y los endpoints que permiten reproducir la revisión.
 
 Para convertir ese scorecard en una prueba repetible:
 
@@ -877,9 +995,9 @@ La respuesta indica `fuente`:
 #### 5. Documentación y Verificabilidad
 | Feature | Estado | Dónde se prueba | Evidencia |
 |---|---|---|---|
-| README operativo y arquitectura | Completado | Repo raíz | `README.md`, `ARCHITECTURE.md` |
+| README operativo y arquitectura | Completado | Repo + `docs/` | `README.md`, `docs/ARCHITECTURE.md` |
 | Paquete de evaluación | Completado | `GET /api/paquete-evaluacion` | Scorecard con benchmark, backtest reproducible |
-| Auditoría local | Completado | `GET /api/export/json` | Base de datos SQLite y exportación CSV/JSON |
+| Auditoría seleccionable | Completado | `GET /api/export/json` | SQLite local o TimescaleDB productivo y exportación CSV/JSON |
 
 ## Robustez y escenarios adversos
 
@@ -936,7 +1054,7 @@ calibran en B; después todos los métodos recorren exactamente el mismo C una
 sola vez. El reporte conserva estrategias perdedoras y ventanas negativas.
 
 ```bash
-cargo run --bin evaluate-tape -- \
+cargo run -p mayab-arbitrage --bin evaluate-tape -- \
   --tape artifacts/tapes/run-001 \
   --split 50,20,30 \
   --seed 20260712 \
@@ -958,6 +1076,11 @@ libro y vuelve a calcular hashes y conteos antes de aceptar la cinta:
 ```bash
 cargo run -p mayab-cli --bin verify-tape -- artifacts/tapes/run-001
 ```
+
+El archivo pequeño incluido en `data/captura_real.json` es sólo una muestra de
+compatibilidad para parser/UI y se publica como `repository_sample_unverified`;
+no supera el gate empírico ni se atribuye a una sesión live. Sólo un tape o
+corpus con manifiesto verificado puede llamarse `public_market_capture`.
 
 El número de eventos solo se publica junto con `datasetId` y `sha256`. Una demo
 sintética o un replay generado no puede etiquetarse como

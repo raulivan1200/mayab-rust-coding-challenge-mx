@@ -5,6 +5,7 @@ edition = "2021"
 description = "Binario ejecutable de Mayab Arbitraje BTC (ensambla feeds, motor, API y dashboard)."
 license = "MIT"
 publish = false
+default-run = "mayab-arbitrage"
 
 [[bin]]
 name = "mayab-arbitrage"

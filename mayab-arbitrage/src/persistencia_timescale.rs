@@ -8,6 +8,7 @@
 //! El motor no cambia: basta intercambiar la implementación de `Auditoria`.
 
 use anyhow::Context;
+use chrono::Utc;
 use serde_json::json;
 use std::{
     future::Future,
@@ -28,7 +29,7 @@ use crate::types::{
 };
 
 pub struct TimescaleDbAuditoria {
-    cliente: Arc<Mutex<Client>>,
+    cliente: Mutex<Client>,
     runtime: tokio::runtime::Handle,
     operaciones: AtomicUsize,
     oportunidades: AtomicUsize,
@@ -45,6 +46,11 @@ impl TimescaleDbAuditoria {
         let mut config: PgConfig = url
             .parse()
             .context("DATABASE_URL de TimescaleDB inválida")?;
+        let allow_insecure = std::env::var("ALLOW_INSECURE_DATABASE").ok();
+        aplicar_politica_tls(
+            &mut config,
+            valor_habilita_base_insegura(allow_insecure.as_deref()),
+        )?;
         if config
             .get_connect_timeout()
             .map(|timeout| *timeout > Duration::from_secs(5))
@@ -59,34 +65,7 @@ impl TimescaleDbAuditoria {
             _ => "-c statement_timeout=5000 -c lock_timeout=5000".to_string(),
         };
         config.options(bounded_options);
-        let cliente = if config.get_ssl_mode() == SslMode::Disable {
-            let (cliente, conexion) = config
-                .connect(NoTls)
-                .await
-                .context("no se pudo conectar a TimescaleDB sin TLS")?;
-            tokio::spawn(async move {
-                if let Err(err) = conexion.await {
-                    tracing::warn!(error = %err, "conexión TimescaleDB cerrada");
-                }
-            });
-            cliente
-        } else {
-            let roots =
-                rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-            let tls_config = rustls::ClientConfig::builder()
-                .with_root_certificates(roots)
-                .with_no_client_auth();
-            let (cliente, conexion) = config
-                .connect(MakeRustlsConnect::new(tls_config))
-                .await
-                .context("no se pudo conectar a TimescaleDB con TLS")?;
-            tokio::spawn(async move {
-                if let Err(err) = conexion.await {
-                    tracing::warn!(error = %err, "conexión TLS de TimescaleDB cerrada");
-                }
-            });
-            cliente
-        };
+        let cliente = conectar_timescale(&config, "auditoria").await?;
         cliente
             .batch_execute(
                 "SELECT 1 FROM operaciones LIMIT 1;
@@ -102,11 +81,11 @@ impl TimescaleDbAuditoria {
         let eventos = contar_tabla(&cliente, "eventos").await?;
         let rebalanceos = contar_tabla(&cliente, "rebalanceos").await?;
         let ejecuciones = contar_tabla(&cliente, "ejecuciones").await?;
-        let cliente = Arc::new(Mutex::new(cliente));
+        let cliente_salud = conectar_timescale(&config, "health-probe").await?;
         let health_ok = Arc::new(AtomicBool::new(true));
-        iniciar_sondeo_salud(&cliente, &health_ok);
+        iniciar_sondeo_salud(cliente_salud, &health_ok);
         Ok(Self {
-            cliente,
+            cliente: Mutex::new(cliente),
             runtime: tokio::runtime::Handle::current(),
             operaciones,
             oportunidades,
@@ -127,19 +106,69 @@ impl TimescaleDbAuditoria {
     }
 }
 
-fn iniciar_sondeo_salud(cliente: &Arc<Mutex<Client>>, health_ok: &Arc<AtomicBool>) {
-    let cliente = Arc::downgrade(cliente);
+fn valor_habilita_base_insegura(valor: Option<&str>) -> bool {
+    valor == Some("true")
+}
+
+fn aplicar_politica_tls(config: &mut PgConfig, allow_insecure: bool) -> anyhow::Result<()> {
+    match config.get_ssl_mode() {
+        SslMode::Disable if !allow_insecure => anyhow::bail!(
+            "sslmode=disable requiere ALLOW_INSECURE_DATABASE=true; use TLS en producción"
+        ),
+        SslMode::Disable | SslMode::Require => Ok(()),
+        SslMode::Prefer => {
+            config.ssl_mode(SslMode::Require);
+            Ok(())
+        }
+        _ => {
+            config.ssl_mode(SslMode::Require);
+            Ok(())
+        }
+    }
+}
+
+async fn conectar_timescale(config: &PgConfig, proposito: &'static str) -> anyhow::Result<Client> {
+    if config.get_ssl_mode() == SslMode::Disable {
+        let (cliente, conexion) = config
+            .connect(NoTls)
+            .await
+            .with_context(|| format!("no se pudo conectar a TimescaleDB sin TLS ({proposito})"))?;
+        tokio::spawn(async move {
+            if let Err(error) = conexion.await {
+                tracing::warn!(%error, proposito, "conexión TimescaleDB cerrada");
+            }
+        });
+        return Ok(cliente);
+    }
+
+    let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let tls_config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let (cliente, conexion) = config
+        .connect(MakeRustlsConnect::new(tls_config))
+        .await
+        .with_context(|| format!("no se pudo conectar a TimescaleDB con TLS ({proposito})"))?;
+    tokio::spawn(async move {
+        if let Err(error) = conexion.await {
+            tracing::warn!(%error, proposito, "conexión TLS de TimescaleDB cerrada");
+        }
+    });
+    Ok(cliente)
+}
+
+fn iniciar_sondeo_salud(cliente: Client, health_ok: &Arc<AtomicBool>) {
     let health_ok = Arc::downgrade(health_ok);
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(5)).await;
-            let (Some(cliente), Some(health_ok)) = (cliente.upgrade(), health_ok.upgrade()) else {
+            let Some(health_ok) = health_ok.upgrade() else {
                 break;
             };
-            let resultado = tokio::time::timeout(Duration::from_secs(2), async {
-                let cliente = cliente.lock().await;
-                cliente.simple_query("SELECT 1").await
-            })
+            let resultado = tokio::time::timeout(
+                Duration::from_secs(2),
+                cliente.simple_query("SELECT 1"),
+            )
             .await;
             health_ok.store(matches!(resultado, Ok(Ok(_))), Ordering::Release);
         }
@@ -183,8 +212,9 @@ fn fila_operacion(fila: &Row) -> Option<Operacion> {
 impl Auditoria for TimescaleDbAuditoria {
     fn registrar_operacion(&self, op: &Operacion) -> anyhow::Result<()> {
         let payload = json!(op).to_string();
-        let (id, compra, venta, par, cantidad, utilidad, costo, parcial) = (
+        let (id, tiempo, compra, venta, par, cantidad, utilidad, costo, parcial) = (
             op.id.clone(),
+            op.ejecutada_en.clone(),
             op.compra_en.clone(),
             op.venta_en.clone(),
             op.par.clone(),
@@ -201,8 +231,8 @@ impl Auditoria for TimescaleDbAuditoria {
                      ON CONFLICT DO NOTHING RETURNING 1
                  )
                  INSERT INTO operaciones (tiempo, id, compra_en, venta_en, par, cantidad_btc, utilidad_usd, costo_usd, score, partial_fill, payload_json)
-                 SELECT NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb FROM claimed",
-                &[&id, &compra, &venta, &par, &cantidad, &utilidad, &costo, &None::<f64>, &parcial, &payload],
+                 SELECT $2, $1, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb FROM claimed",
+                &[&id, &tiempo, &compra, &venta, &par, &cantidad, &utilidad, &costo, &None::<f64>, &parcial, &payload],
             )
             .await?)
         })?;
@@ -213,8 +243,9 @@ impl Auditoria for TimescaleDbAuditoria {
 
     fn registrar_evento(&self, evento: &EventoEjecucion) -> anyhow::Result<()> {
         let payload = json!(evento).to_string();
-        let (id, tipo, severidad, detalle) = (
+        let (id, tiempo, tipo, severidad, detalle) = (
             evento.id.clone(),
+            evento.tiempo.clone(),
             evento.tipo.clone(),
             evento.severidad.clone(),
             evento.detalle.clone(),
@@ -228,8 +259,8 @@ impl Auditoria for TimescaleDbAuditoria {
                      ON CONFLICT DO NOTHING RETURNING 1
                  )
                  INSERT INTO eventos (tiempo, id, tipo, severidad, mensaje, payload_json)
-                 SELECT NOW(), $1, $2, $3, $4, $5::jsonb FROM claimed",
-                    &[&id, &tipo, &severidad, &detalle, &payload],
+                 SELECT $2, $1, $3, $4, $5, $6::jsonb FROM claimed",
+                    &[&id, &tiempo, &tipo, &severidad, &detalle, &payload],
                 )
                 .await?,
             )
@@ -240,8 +271,9 @@ impl Auditoria for TimescaleDbAuditoria {
 
     fn registrar_rebalanceo(&self, r: &Rebalanceo) -> anyhow::Result<()> {
         let payload = json!(r).to_string();
-        let (id, desde, hacia, cantidad, costo) = (
+        let (id, tiempo, desde, hacia, cantidad, costo) = (
             r.id.clone(),
+            r.tiempo.clone(),
             r.desde.clone(),
             r.hacia.clone(),
             r.cantidad,
@@ -255,8 +287,8 @@ impl Auditoria for TimescaleDbAuditoria {
                      ON CONFLICT DO NOTHING RETURNING 1
                  )
                  INSERT INTO rebalanceos (tiempo, id, desde, hacia, cantidad, costo_usd, payload_json)
-                 SELECT NOW(), $1, $2, $3, $4, $5, $6::jsonb FROM claimed",
-                &[&id, &desde, &hacia, &cantidad, &costo, &payload],
+                 SELECT $2, $1, $3, $4, $5, $6, $7::jsonb FROM claimed",
+                &[&id, &tiempo, &desde, &hacia, &cantidad, &costo, &payload],
             )
             .await?)
         })?;
@@ -268,14 +300,16 @@ impl Auditoria for TimescaleDbAuditoria {
     fn registrar_oportunidades(&self, oportunidades: &[Oportunidad]) -> anyhow::Result<()> {
         for o in oportunidades {
             let payload = json!(o).to_string();
-            let (id, compra, venta, utilidad, diff, payload) = (
+            let (id, tiempo, compra, venta, utilidad, diff, payload) = (
                 o.id.clone(),
+                o.detectada_en.clone(),
                 o.compra_en.clone(),
                 o.venta_en.clone(),
                 o.utilidad_usd,
                 o.diferencial_neto_bps,
                 payload,
             );
+            let ruta = format!("{compra}->{venta}");
             let changed = self.block_on(async move {
                 let c = self.cliente.lock().await;
                 Ok::<_, anyhow::Error>(c.execute(
@@ -284,8 +318,8 @@ impl Auditoria for TimescaleDbAuditoria {
                          ON CONFLICT DO NOTHING RETURNING 1
                      )
                      INSERT INTO oportunidades (tiempo, id, ruta, utilidad_usd, diferencial, payload_json)
-                     SELECT NOW(), $1, $2, $3, $4, $5::jsonb FROM claimed",
-                    &[&id, &format!("{compra}->{venta}"), &utilidad, &diff, &payload],
+                     SELECT $2, $1, $3, $4, $5, $6::jsonb FROM claimed",
+                    &[&id, &tiempo, &ruta, &utilidad, &diff, &payload],
                 )
                 .await?)
             })?;
@@ -298,8 +332,9 @@ impl Auditoria for TimescaleDbAuditoria {
     fn registrar_auditorias(&self, auditorias: &[AuditoriaDecision]) -> anyhow::Result<()> {
         for a in auditorias {
             let payload = json!(a).to_string();
-            let (id, ruta, decision, score, utilidad, razon, payload) = (
+            let (id, tiempo, ruta, decision, score, utilidad, razon, payload) = (
                 a.id.clone(),
+                a.tiempo.clone(),
                 a.ruta.clone(),
                 a.decision_code.clone(),
                 a.score,
@@ -315,8 +350,8 @@ impl Auditoria for TimescaleDbAuditoria {
                          ON CONFLICT DO NOTHING RETURNING 1
                      )
                      INSERT INTO auditorias (tiempo, id, ruta, decision, score, utilidad_usd, razon, payload_json)
-                     SELECT NOW(), $1, $2, $3, $4, $5, $6, $7::jsonb FROM claimed",
-                    &[&id, &ruta, &decision, &score, &utilidad, &razon, &payload],
+                     SELECT $2, $1, $3, $4, $5, $6, $7, $8::jsonb FROM claimed",
+                    &[&id, &tiempo, &ruta, &decision, &score, &utilidad, &razon, &payload],
                 )
                 .await?)
             })?;
@@ -332,14 +367,19 @@ impl Auditoria for TimescaleDbAuditoria {
         let scenario = serde_json::to_string(&execution.scenario)?;
         let state = serde_json::to_string(&execution.state)?;
         let pnl = execution.pnl_usd.to_string();
+        let tiempo = Utc::now();
         let changed =
             self.block_on(async move {
                 let c = self.cliente.lock().await;
                 Ok::<_, anyhow::Error>(c.execute(
-                "INSERT INTO ejecuciones (tiempo, id, escenario, estado, pnl_usd, payload_json)
-                 VALUES (NOW(), $1, $2, $3, $4, $5::jsonb)
+                "WITH claimed AS (
+                     INSERT INTO audit_idempotency_keys (kind, id) VALUES ('ejecucion', $1)
+                     ON CONFLICT DO NOTHING RETURNING 1
+                 )
+                 INSERT INTO ejecuciones (tiempo, id, escenario, estado, pnl_usd, payload_json)
+                 SELECT $2, $1, $3, $4, $5, $6::jsonb FROM claimed
                  ON CONFLICT (id) DO NOTHING",
-                &[&id, &scenario, &state, &pnl, &payload],
+                &[&id, &tiempo, &scenario, &state, &pnl, &payload],
             )
             .await?)
             })?;
@@ -428,5 +468,59 @@ impl Auditoria for TimescaleDbAuditoria {
             "winRate": self.win_rate(),
             "ruta": "timescaledb://[redacted]",
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(sslmode: Option<&str>) -> PgConfig {
+        let suffix = sslmode
+            .map(|mode| format!("?sslmode={mode}"))
+            .unwrap_or_default();
+        format!("postgresql://mayab@localhost/mayab{suffix}")
+            .parse()
+            .expect("config PostgreSQL de prueba válida")
+    }
+
+    #[test]
+    fn opt_in_inseguro_requiere_true_exacto() {
+        assert!(valor_habilita_base_insegura(Some("true")));
+        for valor in [None, Some("TRUE"), Some("1"), Some(" true"), Some("true ")] {
+            assert!(!valor_habilita_base_insegura(valor));
+        }
+    }
+
+    #[test]
+    fn sslmode_omitido_o_prefer_se_elevan_a_require() {
+        for sslmode in [None, Some("prefer")] {
+            let mut config = config(sslmode);
+            assert_eq!(config.get_ssl_mode(), SslMode::Prefer);
+            aplicar_politica_tls(&mut config, false).expect("prefer debe elevarse");
+            assert_eq!(config.get_ssl_mode(), SslMode::Require);
+        }
+    }
+
+    #[test]
+    fn sslmode_disable_falla_sin_opt_in_exacto() {
+        let mut config = config(Some("disable"));
+        let error = aplicar_politica_tls(&mut config, false)
+            .expect_err("disable debe rechazarse sin opt-in");
+        assert!(error.to_string().contains("ALLOW_INSECURE_DATABASE=true"));
+    }
+
+    #[test]
+    fn sslmode_disable_solo_pasa_con_opt_in() {
+        let mut config = config(Some("disable"));
+        aplicar_politica_tls(&mut config, true).expect("el opt-in explícito habilita entorno local");
+        assert_eq!(config.get_ssl_mode(), SslMode::Disable);
+    }
+
+    #[test]
+    fn sslmode_require_permanece_estricto() {
+        let mut config = config(Some("require"));
+        aplicar_politica_tls(&mut config, false).expect("require ya cumple la política");
+        assert_eq!(config.get_ssl_mode(), SslMode::Require);
     }
 }

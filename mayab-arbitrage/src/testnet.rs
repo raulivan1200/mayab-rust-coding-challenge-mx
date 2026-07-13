@@ -192,6 +192,44 @@ pub trait TradingTransport: Send + Sync {
     async fn fills(&self, order_id: &str) -> anyhow::Result<Value>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OrderLifecycle {
+    Accepted,
+    Partial,
+    Filled,
+    Canceled,
+    Rejected,
+    Timeout,
+    LateFill,
+    Open,
+    Unknown,
+}
+
+fn lifecycle_from_status(status: &str) -> OrderLifecycle {
+    match status.to_ascii_lowercase().as_str() {
+        "open" | "pending" | "received" | "accepted" | "active" => OrderLifecycle::Accepted,
+        "partial" | "partially_filled" | "partially-filled" => OrderLifecycle::Partial,
+        "done" | "settled" | "filled" => OrderLifecycle::Filled,
+        "canceled" | "cancelled" | "expired" => OrderLifecycle::Canceled,
+        "rejected" => OrderLifecycle::Rejected,
+        _ => OrderLifecycle::Unknown,
+    }
+}
+
+fn lifecycle_terminal(lifecycle: OrderLifecycle) -> bool {
+    matches!(
+        lifecycle,
+        OrderLifecycle::Filled | OrderLifecycle::Canceled | OrderLifecycle::Rejected
+    )
+}
+
+fn fills_non_empty(value: &Value) -> bool {
+    value
+        .as_array()
+        .is_some_and(|items| !items.is_empty())
+}
+
 pub struct CoinbaseSandboxTransport {
     client: Client,
     config: TestnetConfig,
@@ -375,8 +413,12 @@ pub async fn run_cycle<T: TradingTransport>(
             .get("status")
             .and_then(Value::as_str)
             .unwrap_or("unknown");
-        ledger.append("order_status", json!({"orderId":order_id,"status":status}))?;
-        if matches!(status, "done" | "settled" | "filled") {
+        let lifecycle = lifecycle_from_status(status);
+        ledger.append(
+            "order_status",
+            json!({"orderId":order_id,"status":status,"lifecycle":lifecycle,"terminal":lifecycle_terminal(lifecycle)}),
+        )?;
+        if lifecycle_terminal(lifecycle) {
             final_order = state;
             break;
         }
@@ -384,9 +426,27 @@ pub async fn run_cycle<T: TradingTransport>(
             let cancellation = transport.cancel_order(&order_id).await?;
             ledger.append(
                 "timeout_cancel",
-                json!({"orderId":order_id,"result":cancellation}),
+                json!({"orderId":order_id,"result":cancellation,"lifecycle":OrderLifecycle::Timeout}),
             )?;
             final_order = transport.order(&order_id).await?;
+            let final_status = final_order
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let final_lifecycle = lifecycle_from_status(final_status);
+            ledger.append(
+                "post_timeout_status",
+                json!({"orderId":order_id,"status":final_status,"lifecycle":final_lifecycle,"terminal":lifecycle_terminal(final_lifecycle)}),
+            )?;
+            let fills_after_cancel = transport.fills(&order_id).await?;
+            if fills_non_empty(&fills_after_cancel)
+                && !matches!(final_lifecycle, OrderLifecycle::Filled)
+            {
+                ledger.append(
+                    "late_fill",
+                    json!({"orderId":order_id,"fills":fills_after_cancel,"lifecycle":OrderLifecycle::LateFill}),
+                )?;
+            }
             break;
         }
         tokio::time::sleep(config.poll_interval).await;

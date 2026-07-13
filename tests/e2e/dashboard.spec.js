@@ -265,8 +265,14 @@ test("las seis pruebas aceptan clic en su texto y preparan evidencia dentro del 
   });
   await page.goto("/");
 
+  const juryMinute = page.locator("#juryMinute");
+  await expect(juryMinute).toBeVisible();
+  await expect(juryMinute).toHaveCSS("opacity", "1");
+  await expect(juryMinute).toHaveCSS("pointer-events", "auto");
+
   await page.locator('[data-jury-proof="market"] strong').click();
   await expect(page.locator("#tab-mercado")).toHaveClass(/activo/);
+  await expect(page.locator("#tab-mercado .panel").first()).toBeVisible();
 
   await page.locator('[data-jury-proof="wallets"] small').click();
   await expect(page.locator("#tab-riesgo")).toHaveClass(/activo/);
@@ -277,6 +283,25 @@ test("las seis pruebas aceptan clic en su texto y preparan evidencia dentro del 
   await expect(page.locator("#juryMinuteStatus")).toContainText("12/12 checks verdes");
 
   await expect(page.locator('[data-jury-proof="download"]')).toHaveAttribute("download", "");
+});
+
+test("la espera del paquete rota mensajes de Bitcoin sin abrir una pantalla vacía", async ({ page }) => {
+  await page.route("**/api/paquete-evaluacion", async route => {
+    await new Promise(resolve => setTimeout(resolve, 3_100));
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json; charset=utf-8",
+      body: JSON.stringify({ ok: true }),
+    });
+  });
+  await page.goto("/");
+
+  const popupPromise = page.waitForEvent("popup");
+  await page.locator("#btnEvidenceHero").click();
+  const popup = await popupPromise;
+  await expect(popup.locator("#mayabEvidencePercent")).toBeVisible();
+  await expect(popup.locator("#mayabEvidenceStatus")).toContainText(/Bitcoin|sats|SHA-256/);
+  await expect.poll(() => popup.locator("#mayabEvidenceStatus").textContent()).toContain("sats");
 });
 
 test("la prueba de un clic no pinta éxito con una respuesta casi lista", async ({ page }) => {

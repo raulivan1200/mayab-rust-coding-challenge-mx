@@ -39,7 +39,10 @@ pub struct Motor {
     eventos: AtomicU64,
     ops_ejecutadas: AtomicU64,
     ops_fallidas: AtomicU64,
+    corridas_jurado: AtomicU64,
     ejecucion_en_curso: AtomicBool,
+    kill_switch_emergencia: AtomicBool,
+    kill_switch_commit: std::sync::Mutex<()>,
     carril_simulacion: Arc<Mutex<()>>,
     ga_evolucion_en_curso: Mutex<()>,
 }
@@ -225,7 +228,10 @@ impl Motor {
             eventos: AtomicU64::new(0),
             ops_ejecutadas: AtomicU64::new(0),
             ops_fallidas: AtomicU64::new(0),
+            corridas_jurado: AtomicU64::new(0),
             ejecucion_en_curso: AtomicBool::new(false),
+            kill_switch_emergencia: AtomicBool::new(false),
+            kill_switch_commit: std::sync::Mutex::new(()),
             carril_simulacion: Arc::new(Mutex::new(())),
             ga_evolucion_en_curso: Mutex::new(()),
         }
@@ -331,7 +337,17 @@ impl Motor {
             evolucionar_ga_automaticamente,
         ) = {
             let mut state = self.state.write().await;
-            procesar_transferencias(&mut state, ahora);
+            {
+                let _commit = self
+                    .kill_switch_commit
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if !self.kill_switch_emergencia.load(Ordering::SeqCst)
+                    && !state.kill_switch_activo
+                {
+                    procesar_transferencias(&mut state, ahora);
+                }
+            }
             if evento_actual == state.ultimo_evento_analizado {
                 state.telemetria_pipeline.ciclos_sin_cambios_omitidos += 1;
                 return;
@@ -349,9 +365,21 @@ impl Motor {
             let precio_ref = precio_referencia(cotizaciones.values());
             if state.ciclos % 100 == 0 {
                 let costos_rebalanceo = state.costos.clone();
-                let eventos = state
-                    .carteras
-                    .rebalancear(precio_ref, &costos_rebalanceo, ahora);
+                let eventos = {
+                    let _commit = self
+                        .kill_switch_commit
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if self.kill_switch_emergencia.load(Ordering::SeqCst)
+                        || state.kill_switch_activo
+                    {
+                        Vec::new()
+                    } else {
+                        state
+                            .carteras
+                            .rebalancear(precio_ref, &costos_rebalanceo, ahora)
+                    }
+                };
                 if !eventos.is_empty() {
                     for evento in &eventos {
                         self.persistir_rebalanceo(evento);
@@ -392,7 +420,9 @@ impl Motor {
                 cotizaciones,
                 costos,
                 state.carteras.clone(),
-                state.circuit_breaker_activo || state.kill_switch_activo,
+                state.circuit_breaker_activo
+                    || state.kill_switch_activo
+                    || self.kill_switch_emergencia.load(Ordering::SeqCst),
                 state.historial_rutas.clone(),
                 state.enfriamiento.clone(),
                 pesos,
@@ -552,6 +582,25 @@ impl Motor {
         );
     }
 
+    /// Linealiza el commit de wallets con el kill switch. Una activación que
+    /// obtiene el mismo candado primero impide el movimiento; si el commit ya
+    /// empezó, la activación espera sólo esa sección síncrona y al responder no
+    /// queda ninguna mutación de cartera en vuelo.
+    fn aplicar_reporte_si_habilitado(
+        &self,
+        state: &mut State,
+        report: &crate::execution::ExecutionReport,
+    ) -> Option<bool> {
+        let _commit = self
+            .kill_switch_commit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.kill_switch_emergencia.load(Ordering::SeqCst) || state.kill_switch_activo {
+            return None;
+        }
+        Some(state.carteras.aplicar_reporte_ejecucion(report))
+    }
+
     async fn ejecutar(&self, oportunidad: Oportunidad, ahora: DateTime<Utc>) {
         if self
             .ejecucion_en_curso
@@ -619,7 +668,21 @@ impl Motor {
                 return;
             }
         };
-        let exito = state.carteras.aplicar_reporte_ejecucion(&report);
+        let Some(exito) = self.aplicar_reporte_si_habilitado(&mut state, &report) else {
+            let evento = evento_operacion(
+                &op,
+                "kill_switch",
+                "commit de wallets cancelado por kill switch",
+                "alta",
+                ahora,
+            );
+            self.persistir_evento(&evento);
+            state.eventos_ejecucion.push_front(evento);
+            state.eventos_ejecucion.truncate(128);
+            actualizar_historial(&op, &mut state.historial_rutas, false);
+            self.ops_fallidas.fetch_add(1, Ordering::SeqCst);
+            return;
+        };
         actualizar_historial(&op, &mut state.historial_rutas, exito);
         if exito {
             registrar_reporte_ejecucion(&mut state, &report, ahora);
@@ -729,7 +792,9 @@ impl Motor {
                 operaciones_fallidas: self.ops_fallidas.load(Ordering::SeqCst),
                 rebalanceos_totales: state.rebalanceos_total as usize,
                 costo_rebalanceo_acumulado_usd: state.costo_rebalanceo_acumulado_usd,
-                circuit_breaker_activo: state.circuit_breaker_activo || state.kill_switch_activo,
+                circuit_breaker_activo: state.circuit_breaker_activo
+                    || state.kill_switch_activo
+                    || self.kill_switch_emergencia.load(Ordering::SeqCst),
                 modo_conservador: state.modo_conservador,
                 ejecucion_en_curso: self.ejecucion_en_curso.load(Ordering::SeqCst),
             },
@@ -858,14 +923,21 @@ impl Motor {
         state.utilidad = 0.0;
         state.precios_ref.clear();
         state.circuit_breaker_activo = false;
-        state.kill_switch_activo = false;
+        // Un reset de demo no puede desactivar una orden de emergencia emitida
+        // por el operador mientras este recorrido esperaba el lock de estado.
+        state.kill_switch_activo = self.kill_switch_emergencia.load(Ordering::SeqCst);
         state.modo_conservador = false;
         state.historial_rutas.clear();
         state.historial_spreads.clear();
         state.ciclos = 0;
         state.ga = EstadoGa::default();
+        state.ga.validacion.dataset_hash = crate::version::demo_dataset_hash();
         state.demo_forzado = None;
-        let corrida_id = format!("jury-{}", ahora.format("%Y%m%dT%H%M%S%.3fZ"));
+        let secuencia = self.corridas_jurado.fetch_add(1, Ordering::SeqCst) + 1;
+        let corrida_id = format!(
+            "jury-{}-{secuencia:06}",
+            ahora.format("%Y%m%dT%H%M%S%.9fZ")
+        );
         state.corrida = EstadoCorrida {
             id: corrida_id.clone(),
             modo: "demo_controlada".to_string(),
@@ -902,16 +974,33 @@ impl Motor {
     /// Pausa inmediatamente nuevas ejecuciones simuladas. Los feeds continúan
     /// para conservar observabilidad y permitir una recuperación controlada.
     pub async fn set_kill_switch(&self, activo: bool) {
+        {
+            let _commit = self
+                .kill_switch_commit
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.kill_switch_emergencia
+                .store(activo, Ordering::SeqCst);
+        }
+
         let mut state = self.state.write().await;
         state.kill_switch_activo = activo;
-        if activo {
-            insertar_evento_sistema(
-                &mut state,
+        let (tipo, detalle, severidad) = if activo {
+            (
                 "kill_switch",
                 "ejecuciones simuladas pausadas manualmente",
                 "alta",
-                Utc::now(),
-            );
+            )
+        } else {
+            (
+                "kill_switch_reanudado",
+                "ejecuciones simuladas reanudadas manualmente",
+                "normal",
+            )
+        };
+        insertar_evento_sistema(&mut state, tipo, detalle, severidad, Utc::now());
+        if let Some(evento) = state.eventos_ejecucion.front() {
+            self.persistir_evento(evento);
         }
     }
 
@@ -1057,7 +1146,10 @@ impl Motor {
                 })
             }
             EscenarioDemo::FalloSegundaPierna => {
-                let op_id = format!("demo-leg2-{}", ahora.timestamp_millis());
+                let op_id = identidad_corrida(
+                    &state,
+                    &format!("demo-leg2-{}", ahora.timestamp_millis()),
+                );
                 let precio = precio_referencia_demo(&state);
                 let Some((compra_en, venta_en)) = state.carteras.mejor_ruta_demo() else {
                     return serde_json::json!({
@@ -1095,15 +1187,28 @@ impl Motor {
                         return serde_json::json!({"ok": false, "modo": "bloqueado", "error": error});
                     }
                 };
-                if !state.carteras.aplicar_reporte_ejecucion(&report) {
-                    insertar_evento_sistema(
-                        &mut state,
-                        "segunda_pierna_no_reconciliada",
-                        "demo bloqueada: el snapshot de wallets cambió antes del commit",
-                        "alta",
-                        ahora,
-                    );
-                    return serde_json::json!({"ok": false, "modo": "wallet_snapshot_stale"});
+                match self.aplicar_reporte_si_habilitado(&mut state, &report) {
+                    Some(true) => {}
+                    Some(false) => {
+                        insertar_evento_sistema(
+                            &mut state,
+                            "segunda_pierna_no_reconciliada",
+                            "demo bloqueada: el snapshot de wallets cambió antes del commit",
+                            "alta",
+                            ahora,
+                        );
+                        return serde_json::json!({"ok": false, "modo": "wallet_snapshot_stale"});
+                    }
+                    None => {
+                        insertar_evento_sistema(
+                            &mut state,
+                            "kill_switch",
+                            "demo de segunda pierna cancelada antes del commit",
+                            "alta",
+                            ahora,
+                        );
+                        return serde_json::json!({"ok": false, "modo": "kill_switch_activo"});
+                    }
                 }
                 let pnl = report.pnl_usd.to_f64().unwrap_or(0.0);
                 state.utilidad += pnl;
@@ -1173,7 +1278,7 @@ impl Motor {
                     });
                 };
                 let inventario_venta = state.carteras.balance(&venta_en).btc;
-                let op = operacion_demo_fill_parcial(
+                let mut op = operacion_demo_fill_parcial(
                     &state.costos,
                     precio,
                     inventario_venta,
@@ -1182,14 +1287,28 @@ impl Motor {
                     ahora.timestamp_millis() as u64,
                     ahora,
                 );
+                op.id = identidad_corrida(&state, &op.id);
                 let report = simular_ejecucion_dos_piernas(
                     &state,
                     &op,
                     crate::execution::ExecutionScenario::BothLegsFilled,
                 );
-                let exito = report
-                    .as_ref()
-                    .is_ok_and(|report| state.carteras.aplicar_reporte_ejecucion(report));
+                let exito = match report.as_ref() {
+                    Ok(report) => match self.aplicar_reporte_si_habilitado(&mut state, report) {
+                        Some(exito) => exito,
+                        None => {
+                            insertar_evento_sistema(
+                                &mut state,
+                                "kill_switch",
+                                "demo de fill parcial cancelada antes del commit",
+                                "alta",
+                                ahora,
+                            );
+                            return serde_json::json!({"ok": false, "modo": "kill_switch_activo"});
+                        }
+                    },
+                    Err(_) => false,
+                };
                 if !exito {
                     insertar_evento_sistema(
                         &mut state,
@@ -1292,7 +1411,26 @@ impl Motor {
             }
             EscenarioDemo::Rebalanceo => {
                 let precio = precio_referencia_demo(&state);
-                let evento = state.carteras.forzar_rebalanceo_demo(precio, ahora);
+                let mut evento = {
+                    let _commit = self
+                        .kill_switch_commit
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if self.kill_switch_emergencia.load(Ordering::SeqCst)
+                        || state.kill_switch_activo
+                    {
+                        insertar_evento_sistema(
+                            &mut state,
+                            "kill_switch",
+                            "demo de rebalanceo cancelada antes del movimiento",
+                            "alta",
+                            ahora,
+                        );
+                        return serde_json::json!({"ok": false, "modo": "kill_switch_activo"});
+                    }
+                    state.carteras.forzar_rebalanceo_demo(precio, ahora)
+                };
+                evento.id = identidad_corrida(&state, &evento.id);
                 let transferencia = crear_transferencia(&state, &evento, ahora);
                 self.persistir_rebalanceo(&evento);
                 state.rebalanceos_total += 1;
@@ -1335,6 +1473,11 @@ impl Motor {
                     operaciones_sinteticas_ga(&state.costos, 18, precio, seed, ahora, false);
                 let mut insertadas = 0usize;
                 for mut op in replay.operaciones {
+                    // La receta económica y su datasetHash permanecen fijos,
+                    // pero la identidad durable pertenece a esta corrida. Así
+                    // retries dentro de una sesión son idempotentes sin borrar
+                    // la evidencia de sesiones posteriores.
+                    op.id = identidad_corrida(&state, &op.id);
                     // La demo rentable no debe agotar las wallets que después
                     // usan los escenarios forenses. Conservamos inventario
                     // suficiente para al menos 0.025 BTC y su compra simulada.
@@ -1371,9 +1514,19 @@ impl Motor {
                     ) else {
                         continue;
                     };
-                    let exito = state.carteras.aplicar_reporte_ejecucion(&report);
-                    if !exito {
-                        continue;
+                    match self.aplicar_reporte_si_habilitado(&mut state, &report) {
+                        Some(true) => {}
+                        Some(false) => continue,
+                        None => {
+                            insertar_evento_sistema(
+                                &mut state,
+                                "kill_switch",
+                                "demo rentable cancelada antes del commit",
+                                "alta",
+                                ahora,
+                            );
+                            break;
+                        }
                     }
                     registrar_reporte_ejecucion(&mut state, &report, op.ejecutada_en);
                     self.persistir_ejecucion(&report);
@@ -1660,183 +1813,218 @@ impl Motor {
 
     /// Devuelve sensibilidad GA con entrenamiento y holdout separados.
     pub async fn ga_ablacion(&self) -> serde_json::Value {
-        use crate::ga::ConfigGa;
-        let state = self.state.read().await;
-        let costos = state.costos.clone();
-        let precio_ref = precio_referencia(state.cotizaciones.values());
-        let cfg = state.ga.config;
-        drop(state);
+        let (costos, precio_ref, cfg) = {
+            let state = self.state.read().await;
+            (
+                state.costos.clone(),
+                precio_referencia(state.cotizaciones.values()),
+                state.ga.config,
+            )
+        };
 
-        // Configuraciones reproducibles a comparar. Los nombres describen
-        // exactamente lo que cambia; no se presentan como ablaciones de
-        // operadores que EstadoGa todavía ejecuta internamente.
-        let estrategias = vec![
-            (
-                "Población mínima sin mutación",
-                ConfigGa {
-                    tamano_poblacion: 10,
-                    tasa_mutacion: 0.0,
-                    tasa_cruce: 0.0,
-                },
-            ),
-            (
-                "Población mínima con cruce",
-                ConfigGa {
-                    tamano_poblacion: 10,
-                    tasa_mutacion: 0.0,
-                    tasa_cruce: 0.72,
-                },
-            ),
-            (
-                "Población mínima con mutación",
-                ConfigGa {
-                    tamano_poblacion: 10,
-                    tasa_mutacion: 0.15,
-                    tasa_cruce: 0.0,
-                },
-            ),
-            (
-                "GA compacto",
-                ConfigGa {
-                    tamano_poblacion: 25,
-                    tasa_mutacion: 0.15,
-                    tasa_cruce: 0.72,
-                },
-            ),
-            (
-                "GA conservador",
-                ConfigGa {
-                    tamano_poblacion: cfg.tamano_poblacion,
-                    tasa_mutacion: (cfg.tasa_mutacion * 0.5).clamp(0.0, 0.8),
-                    tasa_cruce: cfg.tasa_cruce,
-                },
-            ),
-            (
-                "GA exploratorio",
-                ConfigGa {
-                    tamano_poblacion: cfg.tamano_poblacion,
-                    tasa_mutacion: (cfg.tasa_mutacion * 1.75).clamp(0.0, 0.8),
-                    tasa_cruce: cfg.tasa_cruce,
-                },
-            ),
-            ("Configuración activa", cfg),
-        ];
-
-        // Todas las configuraciones reciben exactamente los mismos pares. El
-        // genoma se ajusta sólo con la semilla train; la semilla holdout genera
-        // un corpus distinto y se consulta una sola vez después de congelar la
-        // estrategia de esa corrida.
-        let semillas_entrenamiento: Vec<u64> = (101..=124).collect();
-        let semillas_holdout: Vec<u64> = (401..=424).collect();
-        let reloj_fijo = DateTime::<Utc>::from_timestamp(1_700_000_000, 0)
-            .expect("timestamp reproducible válido");
-        let mut resultados = Vec::new();
-
-        for (nombre, ga_cfg) in estrategias {
-            let mut pnls = Vec::new();
-            let mut trades_holdout = 0usize;
-            for (&semilla_train, &semilla_holdout) in
-                semillas_entrenamiento.iter().zip(&semillas_holdout)
-            {
-                let train = operaciones_sinteticas_ga(
-                    &costos,
-                    48,
-                    precio_ref,
-                    semilla_train,
-                    reloj_fijo,
-                    true,
-                );
-                let holdout = operaciones_sinteticas_ga(
-                    &costos,
-                    48,
-                    precio_ref,
-                    semilla_holdout,
-                    reloj_fijo,
-                    true,
-                );
-                let mut ga = crate::ga::EstadoGa::default();
-                ga.config = ga_cfg;
-                ga.evolucionar(&train.operaciones, train.fallos);
-                let estrategia = ga.estrategia();
-                let seleccionadas = holdout
-                    .operaciones
-                    .iter()
-                    .filter(|op| {
-                        let capital = op.precio_compra * op.cantidad_btc;
-                        let neto_bps = if capital > 0.0 {
-                            op.utilidad_esperada_usd / capital * 10_000.0
-                        } else {
-                            0.0
-                        };
-                        capital > 0.0
-                            && neto_bps >= estrategia.umbral_min_spread_bps
-                            && op.latencia_max_ms <= estrategia.tolerancia_latencia_ms
-                    });
-                let mut trades_corrida = 0usize;
-                let pnl: f64 = seleccionadas
-                    .map(|op| {
-                        trades_corrida += 1;
-                        let cantidad_aplicada = op.cantidad_btc.min(estrategia.max_operacion_btc);
-                        op.utilidad_usd * cantidad_aplicada / op.cantidad_btc.max(0.000_000_01)
-                    })
-                    .sum();
-                trades_holdout += trades_corrida;
-                pnls.push(pnl);
+        match tokio::task::spawn_blocking(move || calcular_ga_ablacion(costos, precio_ref, cfg))
+            .await
+        {
+            Ok(resultado) => resultado,
+            Err(error) => {
+                tracing::error!(%error, "falló el worker de sensibilidad GA");
+                respuesta_ga_ablacion_fallida()
             }
-            pnls.sort_by(f64::total_cmp);
-            let mediana = pnls[pnls.len() / 2];
-            let p05 = pnls[pnls.len() * 5 / 100];
-            let p95 = pnls[pnls.len() * 95 / 100];
-            let trades = pnls.len();
-            let win = pnls.iter().filter(|&&x| x > 0.0).count() as f64 / trades as f64;
-            let peor_perdida = pnls
-                .iter()
-                .copied()
-                .fold(f64::INFINITY, f64::min)
-                .min(0.0)
-                .abs();
-            let pf = pnls.iter().filter(|&&x| x > 0.0).sum::<f64>()
-                / pnls
-                    .iter()
-                    .filter(|&&x| x <= 0.0)
-                    .map(|&x| -x)
-                    .sum::<f64>()
-                    .max(1.0);
-
-            resultados.push(serde_json::json!({
-                "modelo": nombre,
-                "profitFactor": (pf * 100.0).round() / 100.0,
-                "winRate": (win * 100.0).round() / 100.0,
-                "drawdown": (peor_perdida * 100.0).round() / 100.0,
-                "worstRunLoss": (peor_perdida * 100.0).round() / 100.0,
-                "sharpe": 0.0,
-                "runs": trades,
-                "trades": trades_holdout,
-                "medianaPnL": (mediana * 100.0).round() / 100.0,
-                "p05": (p05 * 100.0).round() / 100.0,
-                "p95": (p95 * 100.0).round() / 100.0,
-                "p05_p95": format!("{:.0} / {:.0}", p05, p95),
-                "config": {
-                    "tamanoPoblacion": ga_cfg.tamano_poblacion,
-                    "tasaMutacion": ga_cfg.tasa_mutacion,
-                    "tasaCruce": ga_cfg.tasa_cruce,
-                },
-            }));
         }
-
-        serde_json::json!({
-            "tipoAnalisis": "sensibilidad_hiperparametros",
-            "esAblacionOperadores": false,
-            "metodologia": "24 pares comunes: entrenamiento en semillas 101..124 y evaluación única en 24 semillas holdout 401..424 no vistas; se varían población, cruce y mutación. No se afirma causalidad sobre recocido, evolución diferencial ni reinicio adaptativo",
-            "sinFugaHoldout": true,
-            "seleccionAntesHoldout": true,
-            "semillasEntrenamiento": semillas_entrenamiento,
-            "semillasHoldoutNoVistas": semillas_holdout,
-            "muestrasEntrenamientoPorRun": 48,
-            "muestrasHoldoutPorRun": 48,
-            "resultados": resultados
-        })
     }
+}
+
+fn calcular_ga_ablacion(
+    costos: MapaCostos,
+    precio_ref: f64,
+    cfg: crate::ga::ConfigGa,
+) -> serde_json::Value {
+    use crate::ga::ConfigGa;
+
+    // Configuraciones reproducibles a comparar. Los nombres describen
+    // exactamente lo que cambia; no se presentan como ablaciones de
+    // operadores que EstadoGa todavía ejecuta internamente.
+    let estrategias = vec![
+        (
+            "Población mínima sin mutación",
+            ConfigGa {
+                tamano_poblacion: 10,
+                tasa_mutacion: 0.0,
+                tasa_cruce: 0.0,
+            },
+        ),
+        (
+            "Población mínima con cruce",
+            ConfigGa {
+                tamano_poblacion: 10,
+                tasa_mutacion: 0.0,
+                tasa_cruce: 0.72,
+            },
+        ),
+        (
+            "Población mínima con mutación",
+            ConfigGa {
+                tamano_poblacion: 10,
+                tasa_mutacion: 0.15,
+                tasa_cruce: 0.0,
+            },
+        ),
+        (
+            "GA compacto",
+            ConfigGa {
+                tamano_poblacion: 25,
+                tasa_mutacion: 0.15,
+                tasa_cruce: 0.72,
+            },
+        ),
+        (
+            "GA conservador",
+            ConfigGa {
+                tamano_poblacion: cfg.tamano_poblacion,
+                tasa_mutacion: (cfg.tasa_mutacion * 0.5).clamp(0.0, 0.8),
+                tasa_cruce: cfg.tasa_cruce,
+            },
+        ),
+        (
+            "GA exploratorio",
+            ConfigGa {
+                tamano_poblacion: cfg.tamano_poblacion,
+                tasa_mutacion: (cfg.tasa_mutacion * 1.75).clamp(0.0, 0.8),
+                tasa_cruce: cfg.tasa_cruce,
+            },
+        ),
+        ("Configuración activa", cfg),
+    ];
+
+    // Todas las configuraciones reciben exactamente los mismos pares. El
+    // genoma se ajusta sólo con la semilla train; la semilla holdout genera
+    // un corpus distinto y se consulta una sola vez después de congelar la
+    // estrategia de esa corrida.
+    let semillas_entrenamiento: Vec<u64> = (101..=124).collect();
+    let semillas_holdout: Vec<u64> = (401..=424).collect();
+    let reloj_fijo = DateTime::<Utc>::from_timestamp(1_700_000_000, 0)
+        .expect("timestamp reproducible válido");
+    let mut resultados = Vec::new();
+
+    for (nombre, ga_cfg) in estrategias {
+        let mut pnls = Vec::new();
+        let mut trades_holdout = 0usize;
+        for (&semilla_train, &semilla_holdout) in
+            semillas_entrenamiento.iter().zip(&semillas_holdout)
+        {
+            let train = operaciones_sinteticas_ga(
+                &costos,
+                48,
+                precio_ref,
+                semilla_train,
+                reloj_fijo,
+                true,
+            );
+            let holdout = operaciones_sinteticas_ga(
+                &costos,
+                48,
+                precio_ref,
+                semilla_holdout,
+                reloj_fijo,
+                true,
+            );
+            let mut ga = EstadoGa::default();
+            ga.actualizar_config(ga_cfg);
+            ga.evolucionar(&train.operaciones, train.fallos);
+            let estrategia = ga.estrategia();
+            let seleccionadas = holdout.operaciones.iter().filter(|op| {
+                let capital = op.precio_compra * op.cantidad_btc;
+                let neto_bps = if capital > 0.0 {
+                    op.utilidad_esperada_usd / capital * 10_000.0
+                } else {
+                    0.0
+                };
+                capital > 0.0
+                    && neto_bps >= estrategia.umbral_min_spread_bps
+                    && op.latencia_max_ms <= estrategia.tolerancia_latencia_ms
+            });
+            let mut trades_corrida = 0usize;
+            let pnl: f64 = seleccionadas
+                .map(|op| {
+                    trades_corrida += 1;
+                    let cantidad_aplicada = op.cantidad_btc.min(estrategia.max_operacion_btc);
+                    op.utilidad_usd * cantidad_aplicada / op.cantidad_btc.max(0.000_000_01)
+                })
+                .sum();
+            trades_holdout += trades_corrida;
+            pnls.push(pnl);
+        }
+        pnls.sort_by(f64::total_cmp);
+        let mediana = pnls[pnls.len() / 2];
+        let p05 = pnls[pnls.len() * 5 / 100];
+        let p95 = pnls[pnls.len() * 95 / 100];
+        let trades = pnls.len();
+        let win = pnls.iter().filter(|&&x| x > 0.0).count() as f64 / trades as f64;
+        let peor_perdida = pnls
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min)
+            .min(0.0)
+            .abs();
+        let pf = pnls.iter().filter(|&&x| x > 0.0).sum::<f64>()
+            / pnls
+                .iter()
+                .filter(|&&x| x <= 0.0)
+                .map(|&x| -x)
+                .sum::<f64>()
+                .max(1.0);
+
+        resultados.push(serde_json::json!({
+            "modelo": nombre,
+            "profitFactor": (pf * 100.0).round() / 100.0,
+            "winRate": (win * 100.0).round() / 100.0,
+            "drawdown": (peor_perdida * 100.0).round() / 100.0,
+            "worstRunLoss": (peor_perdida * 100.0).round() / 100.0,
+            "sharpe": 0.0,
+            "runs": trades,
+            "trades": trades_holdout,
+            "medianaPnL": (mediana * 100.0).round() / 100.0,
+            "p05": (p05 * 100.0).round() / 100.0,
+            "p95": (p95 * 100.0).round() / 100.0,
+            "p05_p95": format!("{:.0} / {:.0}", p05, p95),
+            "config": {
+                "tamanoPoblacion": ga_cfg.tamano_poblacion,
+                "tasaMutacion": ga_cfg.tasa_mutacion,
+                "tasaCruce": ga_cfg.tasa_cruce,
+            },
+        }));
+    }
+
+    serde_json::json!({
+        "tipoAnalisis": "sensibilidad_hiperparametros",
+        "esAblacionOperadores": false,
+        "metodologia": "24 pares comunes: entrenamiento en semillas 101..124 y evaluación única en 24 semillas holdout 401..424 no vistas; se varían población, cruce y mutación. No se afirma causalidad sobre recocido, evolución diferencial ni reinicio adaptativo",
+        "sinFugaHoldout": true,
+        "seleccionAntesHoldout": true,
+        "semillasEntrenamiento": semillas_entrenamiento,
+        "semillasHoldoutNoVistas": semillas_holdout,
+        "muestrasEntrenamientoPorRun": 48,
+        "muestrasHoldoutPorRun": 48,
+        "resultados": resultados
+    })
+}
+
+fn respuesta_ga_ablacion_fallida() -> serde_json::Value {
+    serde_json::json!({
+        "ok": false,
+        "tipoAnalisis": "sensibilidad_hiperparametros",
+        "esAblacionOperadores": false,
+        "metodologia": "24 pares comunes: entrenamiento en semillas 101..124 y evaluación única en 24 semillas holdout 401..424 no vistas; se varían población, cruce y mutación. No se afirma causalidad sobre recocido, evolución diferencial ni reinicio adaptativo",
+        "sinFugaHoldout": false,
+        "seleccionAntesHoldout": false,
+        "semillasEntrenamiento": (101_u64..=124).collect::<Vec<_>>(),
+        "semillasHoldoutNoVistas": (401_u64..=424).collect::<Vec<_>>(),
+        "muestrasEntrenamientoPorRun": 48,
+        "muestrasHoldoutPorRun": 48,
+        "resultados": [],
+        "error": "GA_ABLATION_WORKER_JOIN_FAILED",
+        "mensaje": "no se pudo completar la sensibilidad GA; no se publican resultados parciales"
+    })
 }
 
 fn registrar_muestra_pipeline(
@@ -1923,16 +2111,41 @@ fn crear_transferencia(
         .unwrap_or(0.0);
     let eta_ms = state.costos.rebalance_settlement_ms.max(100);
     let retraso = (rebalanceo.id.bytes().map(i64::from).sum::<i64>() % (eta_ms / 3).max(1)).max(0);
+    let configuracion_desde = config_exchange(&state.costos, &rebalanceo.desde);
+    let probabilidad_demora = (1.0 - configuracion_desde.confiabilidad).clamp(0.05, 0.75);
+    let retiro_suspendido = probabilidad_demora > 0.25 && cantidad_neta > 0.005;
+    let red_elegida = if rebalanceo.activo == "BTC" {
+        "bitcoin-mainnet"
+    } else {
+        "internal-ledger"
+    }
+    .to_string();
+    let confirmaciones_requeridas = if rebalanceo.activo == "BTC" {
+        if retiro_suspendido { 3 } else { 2 }
+    } else {
+        1
+    };
+    let capital_bloqueado_usd = cantidad_neta
+        * if rebalanceo.activo == "BTC" { precio } else { 1.0 };
     TransferenciaInventario {
         id: format!("tx-{}", rebalanceo.id),
         rebalanceo_id: rebalanceo.id.clone(),
         desde: rebalanceo.desde.clone(),
         hacia: rebalanceo.hacia.clone(),
         activo: rebalanceo.activo.clone(),
+        red_elegida,
+        retiro_suspendido,
+        confirmaciones_requeridas,
         cantidad_bruta,
         cantidad_neta,
         costo_usd: rebalanceo.costo_usd,
-        estado: "TRANSFER_REQUESTED".to_string(),
+        capital_bloqueado_usd,
+        probabilidad_demora,
+        estado: if retiro_suspendido {
+            "WITHDRAWAL_SUSPENDED".to_string()
+        } else {
+            "TRANSFER_REQUESTED".to_string()
+        },
         nivel_minimo_s: minimo,
         objetivo_s: objetivo,
         banda_muerta: banda,
@@ -1964,6 +2177,13 @@ fn procesar_transferencias(state: &mut State, ahora: DateTime<Utc>) {
     let mut movimientos: Vec<(String, String, f64)> = Vec::new();
     for transferencia in &mut state.transferencias_inventario {
         match transferencia.estado.as_str() {
+            "WITHDRAWAL_SUSPENDED" if ahora
+                >= transferencia.creada_en
+                    + chrono::Duration::milliseconds((transferencia.eta_ms / 2).max(1)) =>
+            {
+                transferencia.estado = "IN_TRANSIT".to_string();
+                transferencia.intentos += 1;
+            }
             "TRANSFER_REQUESTED" => transferencia.estado = "IN_TRANSIT".to_string(),
             "IN_TRANSIT" if ahora >= transferencia.timeout_en => {
                 transferencia.estado = "FAILED".to_string();
@@ -2792,7 +3012,10 @@ fn insertar_evento_sistema(
     state.eventos_ejecucion.insert(
         0,
         EventoEjecucion {
-            id: format!("evt-{}-{}", tipo, ahora.timestamp_millis()),
+            id: identidad_corrida(
+                state,
+                &format!("evt-{}-{}", tipo, ahora.timestamp_millis()),
+            ),
             tipo: tipo.to_string(),
             ruta: "sistema".to_string(),
             detalle: detalle.to_string(),
@@ -2803,6 +3026,10 @@ fn insertar_evento_sistema(
         },
     );
     state.eventos_ejecucion.truncate(128);
+}
+
+fn identidad_corrida(state: &State, identidad_local: &str) -> String {
+    format!("{}:{identidad_local}", state.corrida.id)
 }
 
 fn evento_operacion(
@@ -4607,7 +4834,12 @@ mod tests {
     #[tokio::test]
     async fn kill_switch_pausa_y_reanuda_simulacion() {
         let motor = Motor::new(cfg_test(), 250_000.0, 2.5, "BTC/USD".into(), vec![], None);
-        motor.set_kill_switch(true).await;
+        let recorrido = motor.bloquear_recorrido_simulado().await;
+        tokio::time::timeout(Duration::from_millis(50), motor.set_kill_switch(true))
+            .await
+            .expect("el kill switch no debe esperar al carril de demo");
+        drop(recorrido);
+
         assert!(motor.estado().await.metricas.circuit_breaker_activo);
         assert!(motor
             .estado()
@@ -4615,8 +4847,26 @@ mod tests {
             .eventos_ejecucion
             .iter()
             .any(|e| e.tipo == "kill_switch"));
+
+        motor.reiniciar_demo_jurado().await;
+        assert!(
+            motor.estado().await.metricas.circuit_breaker_activo,
+            "un reset de jurado no debe desactivar una emergencia"
+        );
+        let bloqueada = motor
+            .activar_escenario_demo(EscenarioDemo::MercadoRentable)
+            .await;
+        assert_eq!(bloqueada["ok"], false);
+        assert_eq!(bloqueada["operacionesInsertadas"], 0);
+
         motor.set_kill_switch(false).await;
         assert!(!motor.estado().await.metricas.circuit_breaker_activo);
+        assert!(motor
+            .estado()
+            .await
+            .eventos_ejecucion
+            .iter()
+            .any(|e| e.tipo == "kill_switch_reanudado"));
     }
 
     #[tokio::test]

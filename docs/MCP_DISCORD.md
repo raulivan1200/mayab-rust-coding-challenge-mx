@@ -168,7 +168,7 @@ registran en el servidor indicado y suelen quedar disponibles inmediatamente.
 |---|---:|---|---|
 | `get_state` | Sí | Todos | Métricas, riesgo, operaciones y GA |
 | `get_config` | Sí | Todos | Parámetros vigentes del simulador |
-| `get_audit_history` | Sí | Todos | Resumen SQLite y últimas 20 operaciones |
+| `get_audit_history` | Sí | Todos | Resumen del backend de auditoría y últimas 20 operaciones |
 | `prepare_demo` | No | Todos | Prepara `mercado_rentable` en la simulación |
 | `update_parameters` | No | Administradores | Cambia únicamente cinco límites validados |
 

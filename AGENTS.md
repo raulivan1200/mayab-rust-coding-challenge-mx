@@ -15,7 +15,7 @@ No hay ordenes reales, llaves API, custodia ni transferencias on-chain. Los POST
 
 ```bash
 cargo fmt -- --check
-cargo test
+cargo test --workspace
 cargo run
 ```
 

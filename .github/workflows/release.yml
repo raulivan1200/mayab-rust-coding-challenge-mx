@@ -8,7 +8,26 @@ permissions:
   contents: read
 
 jobs:
+  validate-tag:
+    name: Validate SemVer release tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require vMAJOR.MINOR.PATCH SemVer
+        shell: bash
+        run: |
+          number='(0|[1-9][0-9]*)'
+          prerelease_identifier='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+          build_identifiers='[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*'
+          semver_regex="^v${number}\.${number}\.${number}(-${prerelease_identifier}(\.${prerelease_identifier})*)?(\+${build_identifiers})?$"
+          if [[ ! "$GITHUB_REF_NAME" =~ $semver_regex ]]; then
+            echo "Tag inválido: $GITHUB_REF_NAME" >&2
+            echo "Se requiere SemVer: vMAJOR.MINOR.PATCH, con prerelease/build opcionales." >&2
+            exit 1
+          fi
+
   build:
+    needs: validate-tag
     strategy:
       fail-fast: false
       matrix:
@@ -31,15 +50,100 @@ jobs:
           toolchain: 1.96.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
-      - run: cargo build -p mayab-cli --bin mayab-arbitrage --release --locked --features timescaledb
-      - name: Package binary
+      - name: Build release binary with provenance
+        shell: bash
+        env:
+          MAYAB_GIT_SHA: ${{ github.sha }}
+          MAYAB_BUILD_ENV: production
+          MAYAB_RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          MAYAB_BUILD_TIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          export MAYAB_BUILD_TIME
+          printf 'MAYAB_EXPECTED_BUILD_TIME=%s\n' "$MAYAB_BUILD_TIME" >> "$GITHUB_ENV"
+          cargo build -p mayab-cli --bin mayab-arbitrage --release --locked --features timescaledb
+      - name: Package executable bundle
         shell: bash
         run: |
+          bundle="${{ matrix.artifact }}"
+          rm -rf "$bundle"
+          rm -f "${{ matrix.artifact }}.${{ matrix.archive }}"
+          mkdir -p "$bundle/internal/webui" "$bundle/data" "$bundle/scripts/timescaledb"
+          cp -R internal/webui/web "$bundle/internal/webui/"
+          cp data/captura_real.json "$bundle/data/captura_real.json"
+          cp scripts/timescaledb/schema.sql "$bundle/scripts/timescaledb/schema.sql"
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            7z a "${{ matrix.artifact }}.zip" ./target/release/mayab-arbitrage.exe
+            cp target/release/mayab-arbitrage.exe "$bundle/mayab-arbitrage.exe"
+            7z a "${{ matrix.artifact }}.zip" "$bundle"
           else
-            tar -C target/release -czf "${{ matrix.artifact }}.tar.gz" mayab-arbitrage
+            cp target/release/mayab-arbitrage "$bundle/mayab-arbitrage"
+            tar -czf "${{ matrix.artifact }}.tar.gz" "$bundle"
           fi
+      - name: Smoke extracted Linux bundle
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke_root="${RUNNER_TEMP}/mayab-release-smoke"
+          log_file="${RUNNER_TEMP}/mayab-release-smoke.log"
+          rm -rf "$smoke_root" "$log_file" "${RUNNER_TEMP}/mayab-release-smoke.sqlite"
+          mkdir -p "$smoke_root"
+          tar -xzf "${{ matrix.artifact }}.tar.gz" -C "$smoke_root"
+          cd "$smoke_root/${{ matrix.artifact }}"
+
+          test -x ./mayab-arbitrage
+          test -s internal/webui/web/index.html
+          test -s internal/webui/web/app.js
+          test -s internal/webui/web/styles.css
+          test -s data/captura_real.json
+          test -s scripts/timescaledb/schema.sql
+
+          PORT=18080 \
+          MAYAB_ENV=development \
+          MAYAB_OPEN_BROWSER=0 \
+          DEMO_RENTABLE_INICIAL=false \
+          STORAGE_MODE=sqlite_ephemeral \
+          AUDITORIA_DB_PATH="${RUNNER_TEMP}/mayab-release-smoke.sqlite" \
+          RUST_LOG=error \
+          ./mayab-arbitrage >"$log_file" 2>&1 &
+          server_pid=$!
+          cleanup() {
+            if kill -0 "$server_pid" 2>/dev/null; then
+              kill -TERM "$server_pid" 2>/dev/null || true
+              wait "$server_pid" || true
+            fi
+          }
+          trap cleanup EXIT
+
+          ready=0
+          for _ in {1..45}; do
+            if curl --fail --silent --show-error http://127.0.0.1:18080/healthz >/dev/null; then
+              ready=1
+              break
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              cat "$log_file"
+              exit 1
+            fi
+            sleep 1
+          done
+          if [[ "$ready" != "1" ]]; then
+            cat "$log_file"
+            exit 1
+          fi
+
+          curl --fail --silent --show-error http://127.0.0.1:18080/ > dashboard.html
+          curl --fail --silent --show-error http://127.0.0.1:18080/api/research/tapes > tapes.json
+          curl --fail --silent --show-error http://127.0.0.1:18080/api/version > version.json
+          grep -F '<!doctype html>' dashboard.html
+          grep -F '"available":true' tapes.json
+          grep -F '"gitSha":"${{ github.sha }}"' version.json
+          grep -F '"buildTime":"${MAYAB_EXPECTED_BUILD_TIME}"' version.json
+          grep -F '"environment":"production"' version.json
+          grep -F '"version":"${{ github.ref_name }}"' version.json
+
+          kill -TERM "$server_pid"
+          wait "$server_pid"
+          trap - EXIT
       - name: Generate checksum
         shell: bash
         run: |

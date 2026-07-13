@@ -10,7 +10,7 @@ use chrono::Utc;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 
-use crate::types::{EstadoGenetico, MoneyUnits, Operacion, PuntoPareto, QtyUnits};
+use crate::types::{EstadoGenetico, MoneyUnits, Operacion, PuntoPareto, QtyUnits, ValidacionGa};
 
 /// Score canónico compartido por ejecución, explicación y entrenamiento GA.
 /// Mantener esta transformación en un solo sitio evita que el campeón se
@@ -68,6 +68,47 @@ impl Default for ConfigGa {
             tasa_cruce: 0.72,
         }
     }
+}
+
+// Cada nicho conserva una presión evolutiva distinta, pero las tasas globales
+// siguen siendo la fuente de verdad: una tasa global de cero produce cero en
+// todas las islas y cualquier cambio de configuración recalibra estos valores.
+const ESCALAS_MUTACION_ISLAS: [f64; 4] = [2.0 / 3.0, 4.0 / 3.0, 2.0, 1.0 / 3.0];
+const ESCALAS_CRUCE_ISLAS: [f64; 4] = [10.0 / 9.0, 35.0 / 36.0, 5.0 / 6.0, 5.0 / 4.0];
+
+fn normalizar_config_ga(mut config: ConfigGa) -> ConfigGa {
+    config.tamano_poblacion = config.tamano_poblacion.clamp(10, 300);
+    config.tasa_mutacion = if config.tasa_mutacion.is_finite() {
+        config.tasa_mutacion.clamp(0.0, 0.8)
+    } else {
+        0.0
+    };
+    config.tasa_cruce = if config.tasa_cruce.is_finite() {
+        config.tasa_cruce.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    config
+}
+
+fn tasa_escalada(base: f64, escala: f64, maximo: f64) -> f64 {
+    if base <= 0.0 {
+        0.0
+    } else {
+        (base * escala).clamp(0.0, maximo)
+    }
+}
+
+fn configuraciones_islas(config: ConfigGa) -> [ConfigGa; 4] {
+    core::array::from_fn(|indice| ConfigGa {
+        tamano_poblacion: config.tamano_poblacion,
+        tasa_mutacion: tasa_escalada(
+            config.tasa_mutacion,
+            ESCALAS_MUTACION_ISLAS[indice],
+            0.8,
+        ),
+        tasa_cruce: tasa_escalada(config.tasa_cruce, ESCALAS_CRUCE_ISLAS[indice], 1.0),
+    })
 }
 
 /// Estrategia derivada del mejor genoma disponible.
@@ -255,6 +296,7 @@ fn crowding_distance_assignment(poblacion: &mut [Genoma], front: &[usize]) {
 /// cambiar la implementación sin tocar el contrato del dashboard.
 pub struct EstadoGa {
     pub config: ConfigGa,
+    pub validacion: ValidacionGa,
     pub generacion: i64,
     pub mejor_fitness: f64,
     pub fitness_promedio: f64,
@@ -271,6 +313,7 @@ pub struct EstadoGa {
     pub inyecciones_diferenciales: usize,
     islas: [Vec<Genoma>; 4],
     config_islas: [ConfigGa; 4],
+    config_aplicada: ConfigGa,
     poblacion: Vec<Genoma>,
     rng: StdRng,
 }
@@ -291,31 +334,12 @@ impl Default for EstadoGa {
             islas[i % 4].push(genoma.clone());
         }
 
-        // Configuraciones base (Meta-GA mutará esto)
-        let config_islas = [
-            ConfigGa {
-                tasa_mutacion: 0.1,
-                tasa_cruce: 0.8,
-                ..config
-            }, // Nicho 0: Tendencia
-            ConfigGa {
-                tasa_mutacion: 0.2,
-                tasa_cruce: 0.7,
-                ..config
-            }, // Nicho 1: Rango
-            ConfigGa {
-                tasa_mutacion: 0.3,
-                tasa_cruce: 0.6,
-                ..config
-            }, // Nicho 2: Volátil
-            ConfigGa {
-                tasa_mutacion: 0.05,
-                tasa_cruce: 0.9,
-                ..config
-            }, // Nicho 3: Calmo
-        ];
+        // Configuraciones base por nicho. El Meta-GA puede adaptarlas después,
+        // siempre dentro de límites derivados de la configuración pública.
+        let config_islas = configuraciones_islas(config);
         Self {
             config,
+            validacion: ValidacionGa::default(),
             generacion: 0,
             mejor_fitness: 0.0,
             fitness_promedio: 0.0,
@@ -332,6 +356,7 @@ impl Default for EstadoGa {
             inyecciones_diferenciales: 0,
             islas,
             config_islas,
+            config_aplicada: config,
             poblacion,
             rng,
         }
@@ -350,16 +375,19 @@ impl EstadoGa {
     }
 
     /// Actualiza límites de población y tasas, aplicando rangos seguros.
-    pub fn actualizar_config(&mut self, mut cfg: ConfigGa) {
-        cfg.tamano_poblacion = cfg.tamano_poblacion.clamp(10, 300);
-        cfg.tasa_mutacion = cfg.tasa_mutacion.clamp(0.0, 0.8);
-        cfg.tasa_cruce = cfg.tasa_cruce.clamp(0.0, 1.0);
-        self.config = cfg;
+    pub fn actualizar_config(&mut self, cfg: ConfigGa) {
+        self.config = normalizar_config_ga(cfg);
+        self.aplicar_config_a_islas();
         self.ajustar_poblacion();
+        self.repartir_en_islas();
     }
 
     /// Evoluciona la población usando operaciones simuladas y conteo de fallos.
     pub fn evolucionar(&mut self, operaciones: &[Operacion], fallos: usize) {
+        // `config` es público por compatibilidad y algunos laboratorios crean un
+        // EstadoGa desechable asignándolo directamente. Detectar ese cambio aquí
+        // garantiza que también gobierne las tasas efectivas de las cuatro islas.
+        self.sincronizar_config_asignada();
         self.ajustar_poblacion();
         // Las islas son una vista de la población vigente, no una copia de la
         // población inicial. Sin esta sincronización las generaciones 2..N
@@ -534,13 +562,23 @@ impl EstadoGa {
         // auto-adaptadas sí gobiernan la descendencia de la próxima llamada.
         if self.generacion % 5 == 0 {
             let emigrantes = core::array::from_fn::<_, 4, _>(|i| self.islas[i].first().cloned());
+            let mutacion_min = self.config.tasa_mutacion * 0.25;
+            let mutacion_max = (self.config.tasa_mutacion * 2.0).min(0.8);
+            let cruce_min = self.config.tasa_cruce * 0.5;
+            let cruce_max = (self.config.tasa_cruce * 1.5).min(1.0);
             for (i, emigrante) in emigrantes.into_iter().enumerate() {
-                self.config_islas[i].tasa_mutacion = (self.config_islas[i].tasa_mutacion
-                    + self.rng.gen_range(-0.02..0.02))
-                .clamp(0.01, 0.4);
-                self.config_islas[i].tasa_cruce = (self.config_islas[i].tasa_cruce
-                    + self.rng.gen_range(-0.05..0.05))
-                .clamp(0.5, 0.95);
+                self.config_islas[i].tasa_mutacion = if self.config.tasa_mutacion <= 0.0 {
+                    0.0
+                } else {
+                    (self.config_islas[i].tasa_mutacion + self.rng.gen_range(-0.02..0.02))
+                        .clamp(mutacion_min, mutacion_max)
+                };
+                self.config_islas[i].tasa_cruce = if self.config.tasa_cruce <= 0.0 {
+                    0.0
+                } else {
+                    (self.config_islas[i].tasa_cruce + self.rng.gen_range(-0.05..0.05))
+                        .clamp(cruce_min, cruce_max)
+                };
                 let destino = (i + 1) % self.islas.len();
                 if let (Some(emigrante), Some(reemplazo)) =
                     (emigrante, self.islas[destino].last_mut())
@@ -582,6 +620,7 @@ impl EstadoGa {
                 "NSGA-II en 4 islas".into(),
                 "tasas auto-adaptativas por nicho".into(),
             ],
+            validacion: self.validacion.clone(),
         })
     }
 
@@ -594,8 +633,8 @@ impl EstadoGa {
             "fitnessDelRepresentantePareto": self.mejor_fitness,
             "maxFitness": self.mejor_fitness.max(self.retador_fitness),
             "meanFitness": self.fitness_promedio,
-            "champion": "baseline_hasta_validar_holdout",
-            "challenger": "ga_pareto",
+            "champion": self.validacion.campeon.as_str(),
+            "challenger": self.validacion.challenger.as_str(),
             "fitnessPromedio": self.fitness_promedio,
             "retadorFitness": self.retador_fitness,
             "diversidad": self.diversidad,
@@ -614,13 +653,14 @@ impl EstadoGa {
             "temperaturaAnnealing": self.temperatura_annealing,
             "inyeccionesDiferenciales": self.inyecciones_diferenciales,
             "fronteraPareto": self.frontera_pareto(),
-            "politicaCampeon": "max_fitness_ajustado_riesgo_en_primer_frente",
+            "politicaCampeon": "baseline_con_holdout_sellado_y_ga_como_challenger",
             "metaheuristicas": [
                 "GA + recocido simulado",
                 "GA + evolucion diferencial",
                 "NSGA-II en 4 islas",
                 "tasas auto-adaptativas por nicho"
             ],
+            "validacion": &self.validacion,
             "mejorGenoma": {
                 "ponderacionUtilidad": self.mejores_pesos[0],
                 "ponderacionFrescura": self.mejores_pesos[1],
@@ -765,6 +805,20 @@ impl EstadoGa {
         }
         while self.poblacion.len() < self.config.tamano_poblacion {
             self.poblacion.push(Genoma::random(&mut self.rng));
+        }
+    }
+
+    fn aplicar_config_a_islas(&mut self) {
+        self.config_islas = configuraciones_islas(self.config);
+        self.config_aplicada = self.config;
+    }
+
+    fn sincronizar_config_asignada(&mut self) {
+        let normalizada = normalizar_config_ga(self.config);
+        let cambio = normalizada != self.config_aplicada;
+        self.config = normalizada;
+        if cambio {
+            self.aplicar_config_a_islas();
         }
     }
 
@@ -1206,6 +1260,13 @@ mod tests {
         }
     }
 
+    fn assert_casi_igual(actual: f64, esperado: f64) {
+        assert!(
+            (actual - esperado).abs() < 1e-12,
+            "se esperaba {esperado}, se obtuvo {actual}"
+        );
+    }
+
     #[test]
     fn ga_evoluciona_poblacion_y_publica_estrategia() {
         let mut ga = EstadoGa::default();
@@ -1223,9 +1284,11 @@ mod tests {
         assert_eq!(estado.mejores_pesos.len(), 5);
         assert!(estado.umbral_optimizado >= 0.1);
         assert!(!estado.frontera_pareto.is_empty());
+        assert!(estado.validacion.holdout_sellado);
+        assert!(!estado.validacion.dataset_hash.is_empty());
         assert_eq!(
             ga.api_estado()["politicaCampeon"],
-            "max_fitness_ajustado_riesgo_en_primer_frente"
+            "baseline_con_holdout_sellado_y_ga_como_challenger"
         );
     }
 
@@ -1235,6 +1298,99 @@ mod tests {
             r#"{"tamanoPoblacion":50,"tasaMutacion":0.15,"tasaCruce":0.72,"modoReal":true}"#,
         );
         assert!(resultado.is_err());
+    }
+
+    #[test]
+    fn config_ga_gobierna_poblacion_tasas_de_islas_y_contrato_publico() {
+        let mut ga = EstadoGa::default();
+        let config = ConfigGa {
+            tamano_poblacion: 24,
+            tasa_mutacion: 0.12,
+            tasa_cruce: 0.64,
+        };
+
+        ga.actualizar_config(config);
+
+        assert_eq!(ga.config, config);
+        assert_eq!(ga.config_aplicada, config);
+        assert_eq!(ga.poblacion.len(), 24);
+        assert_eq!(ga.islas.iter().map(Vec::len).sum::<usize>(), 24);
+        assert!(ga.islas.iter().all(|isla| isla.len() == 6));
+
+        let mutaciones_esperadas = [0.08, 0.16, 0.24, 0.04];
+        let cruces_esperados = [
+            0.711_111_111_111_111_1,
+            0.622_222_222_222_222_2,
+            0.533_333_333_333_333_3,
+            0.8,
+        ];
+        for (indice, config_isla) in ga.config_islas.iter().enumerate() {
+            assert_eq!(config_isla.tamano_poblacion, 24);
+            assert_casi_igual(
+                config_isla.tasa_mutacion,
+                mutaciones_esperadas[indice],
+            );
+            assert_casi_igual(config_isla.tasa_cruce, cruces_esperados[indice]);
+        }
+
+        let publico = ga.public().expect("EstadoGa siempre publica estado");
+        assert_eq!(publico.poblacion, config.tamano_poblacion);
+        assert_casi_igual(publico.tasa_mutacion, config.tasa_mutacion);
+        assert_casi_igual(publico.tasa_cruce, config.tasa_cruce);
+        assert!(publico.validacion.holdout_sellado);
+        let api = ga.api_estado();
+        assert_eq!(
+            api["poblacion"].as_u64(),
+            Some(config.tamano_poblacion as u64)
+        );
+        assert_casi_igual(
+            api["tasaMutacion"]
+                .as_f64()
+                .expect("tasaMutacion numérica"),
+            config.tasa_mutacion,
+        );
+        assert_casi_igual(
+            api["tasaCruce"].as_f64().expect("tasaCruce numérica"),
+            config.tasa_cruce,
+        );
+    }
+
+    #[test]
+    fn asignacion_directa_con_tasas_cero_desactiva_operadores_incluso_tras_meta_ga() {
+        let mut ga = EstadoGa::default();
+        let config = ConfigGa {
+            tamano_poblacion: 12,
+            tasa_mutacion: 0.0,
+            tasa_cruce: 0.0,
+        };
+        // La sensibilidad de `Motor` configura EstadosGa desechables mediante
+        // asignación directa; `evolucionar` debe sincronizar también esa ruta.
+        ga.config = config;
+        let operaciones = vec![
+            op(18.0, false),
+            op(9.0, false),
+            op(-4.0, true),
+            op(14.0, false),
+        ];
+
+        for _ in 0..5 {
+            ga.evolucionar(&operaciones, 1);
+            assert!(ga.config_islas.iter().all(|isla| {
+                isla.tamano_poblacion == config.tamano_poblacion
+                    && isla.tasa_mutacion == 0.0
+                    && isla.tasa_cruce == 0.0
+            }));
+        }
+
+        assert_eq!(ga.config, config);
+        assert_eq!(ga.config_aplicada, config);
+        assert_eq!(ga.poblacion.len(), config.tamano_poblacion);
+        assert_eq!(ga.islas.iter().map(Vec::len).sum::<usize>(), 12);
+        let publico = ga.public().expect("EstadoGa siempre publica estado");
+        assert_eq!(publico.poblacion, config.tamano_poblacion);
+        assert_eq!(publico.tasa_mutacion, 0.0);
+        assert_eq!(publico.tasa_cruce, 0.0);
+        assert!(!publico.validacion.dataset_hash.is_empty());
     }
 
     #[test]

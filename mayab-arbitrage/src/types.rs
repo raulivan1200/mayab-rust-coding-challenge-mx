@@ -279,12 +279,22 @@ pub struct TransferenciaInventario {
     pub desde: String,
     pub hacia: String,
     pub activo: String,
+    #[serde(rename = "redElegida")]
+    pub red_elegida: String,
+    #[serde(rename = "retiroSuspendido")]
+    pub retiro_suspendido: bool,
+    #[serde(rename = "confirmacionesRequeridas")]
+    pub confirmaciones_requeridas: u32,
     #[serde(rename = "cantidadBruta")]
     pub cantidad_bruta: QtyUnits,
     #[serde(rename = "cantidadNeta")]
     pub cantidad_neta: QtyUnits,
     #[serde(rename = "costoUsd")]
     pub costo_usd: MoneyUnits,
+    #[serde(rename = "capitalBloqueadoUsd")]
+    pub capital_bloqueado_usd: MoneyUnits,
+    #[serde(rename = "probabilidadDemora")]
+    pub probabilidad_demora: f64,
     pub estado: String,
     #[serde(rename = "nivelMinimoS")]
     pub nivel_minimo_s: QtyUnits,
@@ -587,6 +597,33 @@ pub struct PuntoPareto {
 
 /// Estado público del algoritmo genético.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidacionGa {
+    pub campeon: String,
+    pub challenger: String,
+    pub dataset_hash: String,
+    pub semillas_entrenamiento: usize,
+    pub semillas_holdout: usize,
+    pub holdout_sellado: bool,
+    pub lectura: String,
+}
+
+impl Default for ValidacionGa {
+    fn default() -> Self {
+        Self {
+            campeon: "baseline_hasta_validar_holdout".to_string(),
+            challenger: "ga_pareto".to_string(),
+            dataset_hash: crate::version::runtime_dataset_hash(),
+            semillas_entrenamiento: 24,
+            semillas_holdout: 24,
+            holdout_sellado: true,
+            lectura: "El GA live queda como challenger; la promoción a champion exige holdout sellado y validación fuera de muestra.".to_string(),
+        }
+    }
+}
+
+/// Estado público del algoritmo genético.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EstadoGenetico {
     pub activo: bool,
     pub generacion: i64,
@@ -625,6 +662,8 @@ pub struct EstadoGenetico {
     pub frontera_pareto: Vec<PuntoPareto>,
     #[serde(rename = "metaheuristicas")]
     pub metaheuristicas: Vec<String>,
+    #[serde(rename = "validacion", default)]
+    pub validacion: ValidacionGa,
 }
 
 /// Estado de la auditoría durable local.

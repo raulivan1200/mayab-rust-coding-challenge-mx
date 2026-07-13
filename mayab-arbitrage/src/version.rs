@@ -97,13 +97,18 @@ pub fn runtime_dataset_hash() -> String {
     {
         return value;
     }
-    let path = std::env::var("MAYAB_RESEARCH_TAPE")
+    let Some(path) = std::env::var("MAYAB_RESEARCH_TAPE")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "data/captura_real.json".to_string());
+    else {
+        // Una sesión alimentada por WebSockets no es un dataset inmutable
+        // mientras no se cierre y selle su captura. Hashear la muestra incluida
+        // en el repo aquí atribuiría falsamente ese archivo a la corrida live.
+        return "unsealed:live-public-stream".to_string();
+    };
     match std::fs::read(Path::new(&path)) {
         Ok(bytes) => format!("sha256:{}", hex::encode(Sha256::digest(bytes))),
-        Err(_) => "unavailable:no-mounted-dataset".to_string(),
+        Err(_) => "unavailable:configured-dataset-not-readable".to_string(),
     }
 }
 

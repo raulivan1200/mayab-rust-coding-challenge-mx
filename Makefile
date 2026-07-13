@@ -6,7 +6,7 @@ run:
 	cargo run
 
 test:
-	cargo test
+	cargo test --workspace
 
 check:
 	cargo fmt --all -- --check

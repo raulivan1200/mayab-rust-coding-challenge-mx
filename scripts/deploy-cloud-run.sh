@@ -4,6 +4,7 @@ set -eu
 SERVICE="${SERVICE:-mayab-btc-arbitrage}"
 REGION="${REGION:-us-central1}"
 PROJECT="${PROJECT:-}"
+RUNTIME_SERVICE_ACCOUNT="${RUNTIME_SERVICE_ACCOUNT:-}"
 MIN_INSTANCES="${MIN_INSTANCES:-1}"
 MAX_INSTANCES="${MAX_INSTANCES:-1}"
 MEMORY="${MEMORY:-512Mi}"
@@ -68,6 +69,11 @@ if [ "$MAYAB_ENV" = "production" ] && [ -z "${ADMIN_TOKEN_SECRET:-}" ]; then
   exit 2
 fi
 
+if [ "$MAYAB_ENV" = "production" ] && [ -z "$RUNTIME_SERVICE_ACCOUNT" ]; then
+  echo "RUNTIME_SERVICE_ACCOUNT es obligatorio en producción; usa una identidad dedicada con privilegios mínimos" >&2
+  exit 2
+fi
+
 if [ "$MAYAB_ENV" = "production" ] && [ "$STORAGE_MODE" != "timescaledb" ]; then
   echo "DATABASE_URL_SECRET es obligatorio en producción para persistencia durable" >&2
   exit 2
@@ -104,6 +110,9 @@ if [ -n "${IMAGE:-}" ]; then
   set -- --image "$IMAGE"
 else
   set -- --source .
+fi
+if [ -n "$RUNTIME_SERVICE_ACCOUNT" ]; then
+  set -- "$@" --service-account "$RUNTIME_SERVICE_ACCOUNT"
 fi
 
 # Build env vars list
@@ -232,7 +241,9 @@ tapes = report.get("tapes") or []
 if not (
     report.get("available") is True
     and tapes
-    and tapes[0].get("provenance") == "repository_capture"
+    and tapes[0].get("provenance") == "repository_sample_unverified"
+    and tapes[0].get("classification") == "unverified_market_sample"
+    and tapes[0].get("authenticityVerified") is False
     and tapes[0].get("events", 0) >= 2
     and tapes[0].get("sha256")
 ):

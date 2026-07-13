@@ -179,7 +179,7 @@ async fn main() -> anyhow::Result<()> {
             tracing::warn!(%error, "el ciclo periódico del motor terminó con error");
         }
     }
-    if let Some(cola) = persistencia_cola {
+    let persistencia_drenada = if let Some(cola) = persistencia_cola {
         let drenada =
             tokio::task::spawn_blocking(move || cola.flush(std::time::Duration::from_secs(10)))
                 .await
@@ -187,7 +187,14 @@ async fn main() -> anyhow::Result<()> {
         if !drenada {
             tracing::error!("la cola de persistencia no drenó sin pérdidas antes del shutdown");
         }
-    }
+        drenada
+    } else {
+        true
+    };
     server_result?;
+    anyhow::ensure!(
+        persistencia_drenada,
+        "la cola de persistencia no drenó sin pérdidas antes del shutdown"
+    );
     Ok(())
 }

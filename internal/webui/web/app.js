@@ -30,14 +30,14 @@ const WS_RECONNECT_MAX = 15_000;
 // Fuente única para el copy editorial de la interfaz. Los estados que cambian
 // en runtime también salen de aquí para evitar variantes dispersas.
 const UI_COPY = Object.freeze({
-  landingKicker: "Datos públicos en vivo · capital real: cero",
-  landingTitle: "El mercado pestañea. Mayab ya hizo las cuentas.",
-  landingBody: "No persigue cualquier destello: descuenta fees, latencia, profundidad e inventario. Si una pierna falla, cierra la exposición y deja recibo.",
-  landingPrimaryCta: "Pon a Mayab contra las cuerdas",
-  landingSecondaryCta: "Seguir el rastro completo",
-  proofMarket: "Consultando cobertura real de CEX",
-  proofCosts: "Del spread al PnL, cada costo da la cara",
-  proofSafety: "La orden falla. La exposición no se queda.",
+  landingKicker: "Mercado en vivo · ejecución simulada",
+  landingTitle: "Arbitraje BTC, explicado decisión por decisión.",
+  landingBody: "Mayab compara precios entre exchanges y descuenta comisiones, slippage, latencia y liquidez. Solo acepta una ruta si la utilidad estimada supera el riesgo.",
+  landingPrimaryCta: "Ver una prueba completa",
+  landingSecondaryCta: "Abrir evidencia técnica",
+  proofMarket: "Consultando cobertura de exchanges",
+  proofCosts: "Costos incluidos en la utilidad neta",
+  proofSafety: "Recuperación ante fallos de ejecución",
   socket: Object.freeze({
     connecting: "Conectando mercado",
     connected: "Canal conectado",
@@ -89,6 +89,19 @@ function aplicarCopyEditorial() {
 aplicarCopyEditorial();
 
 let descargaEvidenciaEnCurso = null;
+
+const MENSAJES_ESPERA_EVIDENCIA = Object.freeze([
+  "Preparando el reporte técnico.",
+  "Reuniendo métricas y decisiones.",
+  "Verificando la conciliación.",
+  "Calculando la huella SHA-256.",
+  "Generando el archivo JSON.",
+]);
+
+function mensajeEsperaEvidencia(segundos) {
+  const indice = Math.floor(segundos / 2.4) % MENSAJES_ESPERA_EVIDENCIA.length;
+  return MENSAJES_ESPERA_EVIDENCIA[indice];
+}
 
 function iniciarDescargaEvidencia() {
   const cta = $("btnEvidenceHero");
@@ -143,12 +156,12 @@ function iniciarDescargaEvidencia() {
     };
     cta.dataset.loading = "true";
     cta.setAttribute("aria-busy", "true");
-    actualizar(0, "Preparando evidencia");
+    actualizar(0, MENSAJES_ESPERA_EVIDENCIA[0]);
     const inicioPreparacion = Date.now();
     const pulsoPreparacion = window.setInterval(() => {
       const segundos = (Date.now() - inicioPreparacion) / 1000;
       const estimado = Math.min(89, 8 + (1 - Math.exp(-segundos / 12)) * 82);
-      actualizar(estimado, "Preparando evidencia");
+      actualizar(estimado, mensajeEsperaEvidencia(segundos));
     }, 300);
 
     try {
@@ -209,20 +222,20 @@ function iniciarDescargaEvidencia() {
 
 const DATA_LENS_COPY = Object.freeze({
   live: Object.freeze({
-    eyebrow: "01 · Mercado público",
-    title: "Mercado real afuera. Ejecución simulada adentro.",
-    detail: "Mayab no mezcla demo con live. Nunca.",
+    eyebrow: "01 · Mercado en vivo",
+    title: "Cotizaciones en vivo con ejecución simulada.",
+    detail: "Las fuentes y los resultados se identifican por separado.",
     tab: "tab-mercado",
   }),
   replay: Object.freeze({
-    eyebrow: "02 · Replay capturado",
-    title: "Mismo mercado. Otro intento. Cero contaminación.",
-    detail: "El motor desechable no toca wallets, PnL, GA ni libros del proceso live.",
+    eyebrow: "02 · Replay reproducible",
+    title: "Repite una captura bajo las mismas condiciones.",
+    detail: "El replay usa un estado aislado y no modifica la sesión en vivo.",
   }),
   demo: Object.freeze({
     eyebrow: "03 · Demo sintética",
-    title: "Hazlo fallar a propósito. Mira qué deja atrás.",
-    detail: "Cada resultado demo queda etiquetado. Capital real y órdenes reales: cero.",
+    title: "Ejecuta escenarios controlados de operación y fallo.",
+    detail: "Cada resultado de prueba queda identificado en la auditoría.",
     tab: "tab-riesgo",
   }),
 });
@@ -293,8 +306,8 @@ async function cargarEscalaCorpusPublico() {
     const scan = payload?.scanStatus === "matched_corpus" ? payload?.quantitativeScan : null;
     if (!corpus || !gates) {
       badge.dataset.status = "unavailable";
-      badge.textContent = "Corpus público · todavía no publicado";
-      badge.title = "La captura incluida es pequeña; no se declara evidencia de escala.";
+      badge.textContent = "Corpus de mercado no publicado";
+      badge.title = "La captura disponible todavía no cumple el umbral de publicación.";
       return;
     }
     const events = Number(corpus.totalEvents || 0);
@@ -321,7 +334,7 @@ async function cargarEscalaCorpusPublico() {
     badge.title = `${shards} shards únicos · ${numero.format(hours)} h capturadas · ${scanDetail} · corpus ${corpus.corpusSha256 || "sin hash"}`;
   } catch (_) {
     badge.dataset.status = "unavailable";
-    badge.textContent = "Corpus público · evidencia no disponible";
+    badge.textContent = "Corpus de mercado no disponible";
     badge.title = "No se pudo consultar /api/research/tapes.";
   }
 }
@@ -1094,18 +1107,18 @@ function renderProvenance(datos) {
   const id = String(corrida.id || "session");
   setText("provenanceRun", corrida.modo === "observacion_live" ? "observación live" : id);
   const inicio = corrida.iniciadaEn ? new Date(corrida.iniciadaEn).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—";
-  setText("provenanceRunMeta", `${corrida.fuentePnl || "simulación"} · ${inicio} · real=${corrida.ejecucionReal ? "sí" : "no"}`);
+  setText("provenanceRunMeta", `${corrida.fuentePnl || "simulación"} · inicio ${inicio} · ejecución ${corrida.ejecucionReal ? "externa" : "simulada"}`);
 
   const fuentePnl = String(corrida.fuentePnl || "").toLowerCase();
   const esSintetica = String(corrida.modo || "").includes("demo")
     || fuentePnl.includes("demo")
     || (datos.eventosEjecucion || []).some((e) => String(e.tipo || "").startsWith("demo"));
-  setText("provenanceResultTag", esSintetica ? "Synthetic paper result" : "Live-market paper result");
+  setText("provenanceResultTag", esSintetica ? "Resultado de escenario sintético" : "Resultado simulado con mercado en vivo");
   const reconciliada = (datos.trazasEjecucion || []).find((trace) =>
     ["RECONCILED", "RECONCILED_LOSS"].includes(String(trace.estado || ""))
       && Math.abs(Number(trace.exposicionBtc || 0)) <= 1e-8,
   );
-  setText("juryProofExecution", reconciliada ? `${reconciliada.estado} · 0 BTC residual` : "pon a Mayab contra las cuerdas");
+  setText("juryProofExecution", reconciliada ? `${reconciliada.estado} · 0 BTC residual` : "ejecuta la prueba completa");
   setText("juryProofWallets", reconciliada ? "ledger conciliado · reservas liberadas" : `${numero.format((datos.balances || []).length)} wallets visibles`);
 }
 
@@ -1117,26 +1130,26 @@ function actualizarDetallePnl(datos) {
   if (operaciones > 0) {
     const esDemoRentable = (datos.eventosEjecucion || []).some((e) => String(e.tipo || "") === "demo_rentable");
     el.textContent = esDemoRentable
-      ? `Utilidad demo: ${numero.format(operaciones)} trades simulados con fees, slippage, latencia, fills parciales y rebalanceo incluidos.`
+      ? `Resultado del escenario: ${numero.format(operaciones)} operaciones con comisiones, slippage, latencia, fills parciales y rebalanceo incluidos.`
       : `Resultado acumulado de ${numero.format(operaciones)} operaciones simuladas después de costos.`;
     return;
   }
 
   const oportunidades = oportunidadesVigentes(datos);
   if (oportunidades.length === 0) {
-    el.textContent = "Mercado real sin edge neto por ahora; la demo rentable mantiene visible el flujo ganador.";
+    el.textContent = "No hay una ruta con utilidad neta en este momento. Puedes ejecutar el escenario rentable para revisar el flujo completo.";
     return;
   }
 
   const ejecutables = oportunidades.filter((o) => o.ejecutable);
   if (ejecutables.length > 0) {
     const mejor = ejecutables.sort((a, b) => b.utilidadUsd - a.utilidadUsd)[0];
-    el.textContent = `Hay una ruta ejecutable en mercado vivo. Mejor utilidad estimada: ${dinero.format(mejor.utilidadUsd)}.`;
+    el.textContent = `Hay una ruta ejecutable. Mejor utilidad estimada: ${dinero.format(mejor.utilidadUsd)}.`;
     return;
   }
 
   const mejor = [...oportunidades].sort((a, b) => b.diferencialNetoBps - a.diferencialNetoBps)[0];
-  el.textContent = `Aún sin trades aceptados en mercado vivo. Mejor neto actual: ${formato(mejor.diferencialNetoBps, 2)} bps (${mejor.razon}).`;
+  el.textContent = `Ninguna ruta cumple los filtros. Mejor spread neto actual: ${formato(mejor.diferencialNetoBps, 2)} bps (${mejor.razon}).`;
 }
 
 // Cargar inputs del formulario una vez
@@ -1530,7 +1543,7 @@ function iniciarDemo() {
           : body?.partialFill
           ? `Fill parcial probado: solicitado ${btc.format(body.requestedQtyBtc || 0)} BTC, ejecutado ${btc.format(body.filledQtyBtc || 0)} BTC.`
           : body?.operacionesInsertadas
-          ? `Profit inyectado: ${body.operacionesInsertadas} trades simulados; GA gen ${body.generacionGa}.`
+          ? `Escenario completado: ${body.operacionesInsertadas} operaciones; GA en generación ${body.generacionGa}.`
           : "Escenario aplicado. Revisa eventos, auditoría y métricas para ver la reacción del motor.";
         const error = ok ? "" : await mensajeErrorApi(res, "No se pudo aplicar escenario");
         mostrarFeedback(feedback, ok ? detalle : `No se pudo aplicar el escenario: ${error}`, ok);
@@ -1549,12 +1562,12 @@ async function ejecutarPruebaCaos() {
   const btn = $("btnDemoCaos");
   const feedback = $("demoFeedback");
   const estado = $("demoEstado");
-  const textoOriginal = btn?.textContent || "Prueba de caos completa";
+  const textoOriginal = btn?.textContent || "Ejecutar prueba de estrés";
   if (btn) {
     btn.disabled = true;
-    btn.textContent = "Estresando motor…";
+    btn.textContent = "Ejecutando prueba…";
   }
-  if (estado) estado.textContent = "caos controlado";
+  if (estado) estado.textContent = "prueba en curso";
   mostrarFeedback(feedback, "Ejecutando fill parcial, baja liquidez, fallo de segunda pierna, circuit breaker, rebalanceo y recuperación…", true);
   try {
     const res = await fetch("/api/demo/caos", {
@@ -1577,7 +1590,7 @@ async function ejecutarPruebaCaos() {
     preflightCache = null;
   } catch (_) {
     if (estado) estado.textContent = "error de red";
-    mostrarFeedback(feedback, "Error de red durante la prueba de caos", false);
+    mostrarFeedback(feedback, "Error de red durante la prueba de estrés", false);
   } finally {
     if (btn) {
       btn.disabled = false;
@@ -1590,7 +1603,7 @@ async function reiniciarDemoJurado() {
   const btn = $("btnResetDemo");
   const feedback = $("demoFeedback");
   if (btn) btn.disabled = true;
-  mostrarFeedback(feedback, "Restableciendo balances, PnL, riesgo y evidencia de la corrida…", true);
+  mostrarFeedback(feedback, "Restableciendo saldos, PnL, riesgo y registro de la prueba…", true);
   try {
     const res = await fetch("/api/demo/reset", {
       method: "POST",
@@ -1602,7 +1615,7 @@ async function reiniciarDemoJurado() {
     }
     const body = await res.json();
     preflightCache = null;
-    mostrarFeedback(feedback, `Corrida ${body.corridaId || "de jurado"} limpia. Ya puedes preparar el recorrido completo.`, true);
+    mostrarFeedback(feedback, `Prueba ${body.corridaId || "actual"} reiniciada. Ya puedes ejecutar el recorrido completo.`, true);
   } catch (_) {
     mostrarFeedback(feedback, "Error de red al reiniciar la corrida", false);
   } finally {
@@ -1627,9 +1640,9 @@ async function ejecutarDemoFinal() {
   const minuteStatus = $("juryMinuteStatus");
   const feedback = $("demoFeedback");
   const estado = $("demoEstado");
-  const textoOriginal = btn?.textContent || "Cargar demo ganadora";
-  const textoTopOriginal = btnTop?.textContent || "Provocar recorrido auditado";
-  const textoHeroOriginal = btnHero?.textContent || "Pon a Mayab contra las cuerdas";
+  const textoOriginal = btn?.textContent || "Ejecutar prueba completa";
+  const textoTopOriginal = btnTop?.textContent || "Ejecutar prueba completa";
+  const textoHeroOriginal = btnHero?.textContent || "Ver una prueba completa";
   minuteStatus?.classList.remove("ok");
   if (btn) {
     btn.disabled = true;
@@ -1643,9 +1656,9 @@ async function ejecutarDemoFinal() {
     btnHero.disabled = true;
     btnHero.textContent = "Ejecutando 6 pruebas…";
   }
-  if (estado) estado.textContent = "armando evidencia";
-  if (minuteStatus) minuteStatus.textContent = "Ejecutando tape, operación rentable, fallo de segunda pierna, recuperación, wallets, GA y export…";
-  mostrarFeedback(feedback, "Cargando corrida rentable, GA, fill parcial y rebalanceo...", true);
+  if (estado) estado.textContent = "prueba en curso";
+  if (minuteStatus) minuteStatus.textContent = "Ejecutando replay, operación rentable, fallo de segunda pierna, recuperación, saldos, GA y exportación…";
+  mostrarFeedback(feedback, "Ejecutando escenario rentable, GA, fill parcial y rebalanceo...", true);
 
   try {
     const res = await fetch("/api/demo/final", {
@@ -1653,7 +1666,7 @@ async function ejecutarDemoFinal() {
       headers: headersMutacion({ "Content-Type": "application/json" }),
     });
     if (!res.ok) {
-      mostrarFeedback(feedback, `No se pudo cargar la demo ganadora: ${await mensajeErrorApi(res, "error de API")}`, false);
+      mostrarFeedback(feedback, `No se pudo ejecutar la prueba: ${await mensajeErrorApi(res, "error de API")}`, false);
       if (estado) estado.textContent = "rechazado";
       if (minuteStatus) minuteStatus.textContent = "La instancia rechazó la prueba; abre el checklist para ver el bloqueo exacto.";
       return false;
@@ -1670,14 +1683,14 @@ async function ejecutarDemoFinal() {
     mostrarFeedback(
       feedback,
       lista
-        ? `Corrida ${body?.corridaId || "de jurado"} lista: PnL ${dinero.format(pnl)}, segunda pierna ${body?.riesgoSegundaPierna?.estadoFinal || "conciliada"}, score evolutivo ${body?.mlEdge?.version || "ok"}, GA ${gen ?? body?.mercadoRentable?.generacionGa ?? "activo"}.`
-        : `Corrida ${body?.corridaId || "de jurado"} incompleta: ${checks.passed || 0}/${checks.total || 12} checks. Revisa preflight antes de presentar evidencia.`,
+        ? `Prueba ${body?.corridaId || "actual"} completa: PnL ${dinero.format(pnl)}, segunda pierna ${body?.riesgoSegundaPierna?.estadoFinal || "conciliada"}, score evolutivo ${body?.mlEdge?.version || "ok"}, GA ${gen ?? body?.mercadoRentable?.generacionGa ?? "activo"}.`
+        : `Prueba ${body?.corridaId || "actual"} incompleta: ${checks.passed || 0}/${checks.total || 12} validaciones. Revisa preflight para ver el detalle.`,
       lista,
     );
     if (minuteStatus) {
       minuteStatus.textContent = lista
-        ? `12/12 checks verdes · corrida ${body?.corridaId || "jury"} · evidencia SHA-256 lista para descargar.`
-        : `BLOCKED · ${checks.passed || 0}/${checks.total || 12} checks · abre preflight para ver el bloqueo exacto.`;
+        ? `12/12 validaciones correctas · prueba ${body?.corridaId || "actual"} · reporte SHA-256 listo.`
+        : `${checks.passed || 0}/${checks.total || 12} validaciones correctas · abre preflight para revisar las pendientes.`;
       minuteStatus.classList.toggle("ok", lista);
     }
     preflightCache = body?.preflight || null;
@@ -1696,7 +1709,7 @@ async function ejecutarDemoFinal() {
     return lista;
   } catch (e) {
     if (estado) estado.textContent = "error";
-    mostrarFeedback(feedback, "Error de red al cargar la demo ganadora", false);
+    mostrarFeedback(feedback, "Error de red al ejecutar la prueba", false);
     if (minuteStatus) {
       minuteStatus.classList.remove("ok");
       minuteStatus.textContent = "La prueba no terminó; revisa la conexión y vuelve a intentarlo.";
@@ -1938,7 +1951,7 @@ async function renderJudgeReadiness(datos) {
         <strong>...</strong>
         <span>calculando</span>
       </div>
-      <p>Calculando evidencia para jurado. Estado local: ${numero.format(ops)} trades y ${numero.format(auditorias)} decisiones auditadas.</p>
+      <p>Calculando validaciones. Estado actual: ${numero.format(ops)} operaciones y ${numero.format(auditorias)} decisiones registradas.</p>
     `;
     return;
   }
@@ -1966,10 +1979,10 @@ async function renderJudgeReadiness(datos) {
     </div>
     <div class="judge-cards">
       ${card("Control de estrategia", byName.netProfitCalculation && byName.feesSlippageLatency && byName.exports, "Umbrales, costos, riesgo, exchanges, GA y exports se pueden revisar o mover desde UI/API.")}
-      ${card("Robustez bajo estrés", byName.riskGuards && byName.safeDemoMode, `Circuit breaker: ${cb} (${cbUsd}). Conservador: ${modCon}. La sala de pruebas deja evidencia visible.`)}
+      ${card("Robustez bajo estrés", byName.riskGuards && byName.safeDemoMode, `Circuit breaker: ${cb} (${cbUsd}). Modo conservador: ${modCon}. Los resultados aparecen en la auditoría.`)}
       ${card("Inventario operativo", byName.walletAccounting && byName.partialFillSupport, "Balances por exchange, fill parcial y rebalanceo con costo explícito.")}
       ${card("Decisión explicable", byName.decisionInspector && byName.mlEdgeExplainable, "Cada ruta muestra score, pesos GA, EV, costos y razón de aceptación o descarte.")}
-      ${card("Mercado conectado", byName.realTimeOrderBooks, "Order books públicos frescos, latencia por exchange y fallback REST visible.")}
+      ${card("Mercado conectado", byName.realTimeOrderBooks, "Libros de órdenes actualizados, latencia por exchange y fallback REST visible.")}
     </div>
     <p><strong>Venues:</strong> ${numero.format(venues.configurados || 0)} adaptadores configurados · ${numero.format(venues.habilitados || 0)} habilitados · ${numero.format(venues.conWebSocketFresco || 0)} LIVE · ${numero.format(venues.conLibroRuteable || 0)} ruteables.</p>
     <p><strong>Evidencia de corrida:</strong> ${evidencia.map((e) => `${escapeHtml(e.claim)}=${escapeHtml(e.status)}`).join(" · ") || "esperando preflight"}. Un WARN significa “aún no ejecutado”, no falla operativa.</p>
@@ -2035,7 +2048,7 @@ function etiquetaCheck(nombre) {
     decisionInspector: "inspector de decisiones",
     mlEdgeExplainable: "score evolutivo",
     riskGuards: "guardas de riesgo",
-    safeDemoMode: "demo segura",
+    safeDemoMode: "modo de simulación",
     exports: "exports",
   };
   return labels[nombre] || nombre || "validación";
@@ -3017,10 +3030,18 @@ function renderAuditoriaDecisiones(datos) {
 function renderGenetico(datos) {
   const g = datos.genetico;
   if (!g) return;
+  const validacion = g.validacion || {};
+  const sha = typeof validacion.datasetHash === "string" && validacion.datasetHash.length > 12
+    ? `${validacion.datasetHash.slice(0, 12)}…`
+    : validacion.datasetHash || "sin huella";
 
   const genEl = $("gaGeneracion");
   if (genEl) genEl.textContent = `Gen ${g.generacion} · ${g.poblacion} ind.`;
   setText("gaEstado", g.activo ? "Optimizando estrategia" : "Listo para competir");
+  setText(
+    "gaValidacion",
+    `${validacion.campeon || "baseline"} vs ${validacion.challenger || "ga_pareto"} · ${validacion.holdoutSellado ? "holdout sellado" : "holdout abierto"} · ${validacion.semillasEntrenamiento || 0}/${validacion.semillasHoldout || 0} semillas · SHA ${sha}`,
+  );
   setText("gaMuestras", `${numero.format(g.operacionesEvaluadas || 0)} ops · ${numero.format(g.fallosEvaluados || 0)} fallos`);
   setText("gaUmbral", `${formato(g.umbralOptimizado, 2)} bps`);
   setText("gaMaxBtc", `${formato(g.maxOperacionOptimizadaBtc, 3)} BTC`);
@@ -3082,6 +3103,15 @@ function actualizarDueloGa(g) {
   } else {
     el.textContent = `Champion: baseline · GA ${formato(Math.abs(delta), 2)} por debajo`;
     el.title = "Resultado científico honesto: el motor conserva la estrategia simple cuando el GA no demuestra uplift.";
+  }
+
+  const validacion = g.validacion || {};
+  const evidencia = $("gaValidacion");
+  if (evidencia) {
+    const sha = typeof validacion.datasetHash === "string" && validacion.datasetHash.length > 12
+      ? `${validacion.datasetHash.slice(0, 12)}…`
+      : validacion.datasetHash || "sin huella";
+    evidencia.textContent = `${validacion.campeon || "baseline"} retenido · ${validacion.holdoutSellado ? "holdout sellado" : "holdout abierto"} · ${validacion.semillasEntrenamiento || 0}/${validacion.semillasHoldout || 0} semillas · SHA ${sha}`;
   }
 }
 
@@ -3167,8 +3197,8 @@ function renderResumenLlm(datos) {
   const g = datos.genetico;
   const esDemoRentable = (datos.eventosEjecucion || []).some((e) => String(e.tipo || "") === "demo_rentable");
   const modo = esDemoRentable
-    ? "Demo rentable auditada: PnL positivo precargado para mostrar el flujo completo; no ejecuta órdenes reales."
-    : "Mercado vivo: esperando edge real o una prueba controlada.";
+    ? "Escenario rentable: PnL positivo generado para revisar el flujo completo."
+    : "Sesión de mercado: esperando una ruta viable o una prueba controlada.";
   const ruta = mejor
     ? `${mejor.compraEn} -> ${mejor.ventaEn} · ${formato(mejor.diferencialNetoBps, 2)} bps netos${mejor.ejecutable ? " · candidata" : " · descartada"}`
     : "sin rutas suficientes";
@@ -4224,7 +4254,10 @@ document.addEventListener("DOMContentLoaded", () => {
         tab.click();
         // Usar el contenedor que realmente hace scroll evita dos animaciones
         // compitiendo entre sí, especialmente en Safari/Chrome móvil.
-        requestAnimationFrame(() => irAlDashboard());
+        // Las seis pruebas son navegación de precisión: su destino aparece en
+        // el siguiente frame, sin un scroll suave que pueda dejar un lienzo
+        // vacío a mitad de camino en Safari o en equipos lentos.
+        requestAnimationFrame(() => irAlDashboard(!control.hasAttribute("data-jury-proof")));
       };
       if (control.hasAttribute("data-prepare-jury") && target === "tab-evidence") {
         const evidenceTab = document.getElementById(target);
@@ -4513,8 +4546,12 @@ function iniciarLanding() {
   // el primer frame evita que una carga lenta del modulo o una peculiaridad del
   // IntersectionObserver de Safari convierta el hero en bloques borrosos.
   document
-    .querySelectorAll(".landing-hero > .landing-copy, .landing-hero .landing-card")
+    .querySelectorAll(".landing-hero .reveal-card")
     .forEach((card) => card.classList.add("is-visible"));
+  // La clase que permite ocultar cards entra sólo después de revelar el hero.
+  // Si el módulo falla antes de este punto, el HTML permanece visible como
+  // fallback progresivo en vez de convertirse en una pantalla en blanco.
+  document.documentElement.classList.add("reveal-ready");
   const ctas = document.querySelectorAll('a[href="#dashboard"]');
   ctas.forEach((cta) => {
     cta.addEventListener("click", (event) => {
@@ -4586,6 +4623,12 @@ function iniciarLanding() {
   };
 
   requestAnimationFrame(revelarCercanas);
+  root?.addEventListener("scroll", revelarCercanas, { passive: true });
+  // Cinturón de seguridad para observers pausados por ahorro de batería,
+  // cambios de pestaña o WebViews: ninguna card queda bloqueada para siempre.
+  window.setTimeout(() => {
+    cards.forEach((card) => card.classList.add("is-visible"));
+  }, 1600);
   window.addEventListener("mayab:tab-visible", revelarTabActivo);
 }
 

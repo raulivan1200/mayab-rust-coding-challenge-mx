@@ -11,6 +11,7 @@ curl http://localhost:8080/healthz
 
 ```bash
 export PROJECT=mi-proyecto
+export RUNTIME_SERVICE_ACCOUNT=mayab-runtime@mi-proyecto.iam.gserviceaccount.com
 export ADMIN_TOKEN_SECRET=mayab-admin-token:latest
 export DATABASE_URL_SECRET=mayab-database-url:latest
 ./scripts/deploy-cloud-run.sh
@@ -23,8 +24,10 @@ psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f scripts/timescaledb/schema.sql
 printf '%s' "$DATABASE_URL" | gcloud secrets versions add mayab-database-url --data-file=-
 ```
 
-La conexión administrada usa TLS por defecto (`sslmode=require`). El modo
-`sslmode=disable` queda reservado para una red privada que ya proteja el canal.
+La conexión administrada usa TLS por defecto (`sslmode=require`). `default` y
+`prefer` también se elevan a `require`. `sslmode=disable` falla cerrado salvo en
+desarrollo con el opt-in exacto `ALLOW_INSECURE_DATABASE=true`; producción lo
+rechaza siempre.
 
 Validación automática: `/healthz`, `/readyz`, `/api/version`, `/api/preflight`,
 `/api/resumen-llm`, el tape versionado, los exports y los estáticos del dashboard.

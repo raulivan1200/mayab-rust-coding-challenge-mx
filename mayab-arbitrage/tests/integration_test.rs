@@ -260,6 +260,30 @@ async fn integration_ga_sensibilidad_aplica_estrategias_y_expone_metodologia() {
 }
 
 #[tokio::test]
+async fn integration_tape_incluido_no_se_presenta_como_captura_verificada() {
+    let (app, _motor) = make_test_app().await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/research/tapes")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let tape = &json["tapes"][0];
+
+    assert_eq!(tape["provenance"], "repository_sample_unverified");
+    assert_eq!(tape["classification"], "unverified_market_sample");
+    assert_eq!(tape["authenticityVerified"], false);
+    assert_eq!(tape["captureManifestVerified"], false);
+    assert!(tape["sha256"].as_str().is_some_and(|hash| !hash.is_empty()));
+}
+
+#[tokio::test]
 async fn integration_demo_caos_ejecuta_checks_y_recupera() {
     let (app, _motor) = make_test_app().await;
 

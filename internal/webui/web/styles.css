@@ -5858,7 +5858,7 @@ body::after {
   transition: transform 700ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 700ms cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 400ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.reveal-card:not(.is-visible) {
+.reveal-ready .reveal-card:not(.is-visible) {
   opacity: 0 !important;
   transform: translateY(30px) scale(0.94) !important;
   pointer-events: none;
@@ -6733,7 +6733,7 @@ strong.metric-value {
 }
 
 @media (max-width: 820px) {
-  .reveal-card:not(.is-visible) {
+  .reveal-ready .reveal-card:not(.is-visible) {
     clip-path: inset(18% 8% 18% 8% round 24px) !important;
     transform: translate3d(0, 18px, 0) scale(0.82, 0.74) !important;
   }
