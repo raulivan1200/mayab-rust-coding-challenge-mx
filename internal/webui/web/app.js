@@ -1690,7 +1690,7 @@ async function ejecutarDemoFinal() {
     if (minuteStatus) {
       minuteStatus.textContent = lista
         ? `12/12 validaciones correctas · prueba ${body?.corridaId || "actual"} · reporte SHA-256 listo.`
-        : `${checks.passed || 0}/${checks.total || 12} validaciones correctas · abre preflight para revisar las pendientes.`;
+        : `BLOCKED · ${checks.passed || 0}/${checks.total || 12} checks · abre preflight para revisar las pendientes.`;
       minuteStatus.classList.toggle("ok", lista);
     }
     preflightCache = body?.preflight || null;

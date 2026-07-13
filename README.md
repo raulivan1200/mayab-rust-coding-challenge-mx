@@ -20,6 +20,21 @@ hardware/dataset. La metodología y sus límites están en
 > hardware, commit, comando y límites están en
 > [BENCHMARKING.md](BENCHMARKING.md).
 
+### Cómo leer “millones” sin confundir volumen con velocidad
+
+**3.6 millones de observaciones históricas describen el tamaño de un corpus, no
+la rapidez de un motor.** La comparación válida exige el mismo dataset, hardware
+y recorrido de código. Mayab publica ambas magnitudes por separado: el contador
+acumulado dice cuánto trabajo realizó el proceso y el throughput dice qué tan
+rápido lo realizó. A la tasa medida arriba, **3.6 millones de iteraciones de este
+mismo benchmark equivalen a ~14.7 segundos de cómputo**; no se afirma que una
+observación de otro sistema sea equivalente a una iteración de Mayab.
+
+La cifra se obtuvo en una laptop Apple M4, no en infraestructura escogida para
+maximizar el resultado. Una instancia con otra asignación de CPU o memoria puede
+dar más o menos rendimiento y debe volver a medirse: **la ventaja demostrada es
+que Mayab reporta tasa, latencia y trabajo acumulado, no sólo un número grande.**
+
 En el dashboard la frase no queda congelada: muestra el total acumulado de
 rutas evaluadas por **ese proceso**, su cómputo p50 y los eventos/s observados.
 Si Mayab permanece corriendo, el contador crece con trabajo realizado; un
@@ -40,12 +55,12 @@ La cifra operacional principal no es un spread bruto: es **cero exposición resi
 
 [Aplicación pública en Cloud Run](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app)
 
-[Repositorio público en GitHub](https://github.com/raulivan1200/mayab-btc-arbitrage)
+[Repositorio público en GitHub](https://github.com/raulivan1200/mayab-rust-coding-challenge-mx)
 
-[![Rust CI](https://github.com/raulivan1200/mayab-btc-arbitrage/actions/workflows/rust.yml/badge.svg)](https://github.com/raulivan1200/mayab-btc-arbitrage/actions/workflows/rust.yml)
-[![Security](https://github.com/raulivan1200/mayab-btc-arbitrage/actions/workflows/security.yml/badge.svg)](https://github.com/raulivan1200/mayab-btc-arbitrage/actions/workflows/security.yml)
-[![Coverage](https://github.com/raulivan1200/mayab-btc-arbitrage/actions/workflows/coverage.yml/badge.svg)](https://github.com/raulivan1200/mayab-btc-arbitrage/actions/workflows/coverage.yml)
-[![Release](https://github.com/raulivan1200/mayab-btc-arbitrage/actions/workflows/release.yml/badge.svg)](https://github.com/raulivan1200/mayab-btc-arbitrage/actions/workflows/release.yml)
+[![Rust CI](https://github.com/raulivan1200/mayab-rust-coding-challenge-mx/actions/workflows/rust.yml/badge.svg)](https://github.com/raulivan1200/mayab-rust-coding-challenge-mx/actions/workflows/rust.yml)
+[![Security](https://github.com/raulivan1200/mayab-rust-coding-challenge-mx/actions/workflows/security.yml/badge.svg)](https://github.com/raulivan1200/mayab-rust-coding-challenge-mx/actions/workflows/security.yml)
+[![Coverage](https://github.com/raulivan1200/mayab-rust-coding-challenge-mx/actions/workflows/coverage.yml/badge.svg)](https://github.com/raulivan1200/mayab-rust-coding-challenge-mx/actions/workflows/coverage.yml)
+[![Release](https://github.com/raulivan1200/mayab-rust-coding-challenge-mx/actions/workflows/release.yml/badge.svg)](https://github.com/raulivan1200/mayab-rust-coding-challenge-mx/actions/workflows/release.yml)
 ![Rust](https://img.shields.io/badge/Rust-2021-b7410e)
 ![Modo](https://img.shields.io/badge/ejecuci%C3%B3n-100%25%20simulada-2563eb)
 
@@ -60,8 +75,8 @@ Abre la [aplicación pública](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.a
 Requiere una toolchain estable de Rust.
 
 ```bash
-git clone https://github.com/raulivan1200/mayab-btc-arbitrage.git
-cd mayab-btc-arbitrage
+git clone https://github.com/raulivan1200/mayab-rust-coding-challenge-mx.git
+cd mayab-rust-coding-challenge-mx
 cargo run
 ```
 
@@ -811,6 +826,8 @@ se valida con Ed25519 antes de leerla. El bot publica `/estado`, `/resumen`,
 `/demo-rentable`, `/mayab pregunta:<texto>` y `/ask pregunta:<texto>`; los dos
 últimos usan NVIDIA NIM como agente con herramientas locales sobre la
 simulación.
+
+![Bot de Mayab respondiendo comandos en Discord](screenshots/discord-bot.png)
 
 Perfil sugerido en Discord Developer Portal:
 

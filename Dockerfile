@@ -48,7 +48,7 @@ FROM debian:bookworm-slim
 
 LABEL org.opencontainers.image.title="Mayab Arbitraje BTC" \
       org.opencontainers.image.description="Motor de arbitraje BTC estrictamente simulado" \
-      org.opencontainers.image.source="https://github.com/raulivan1200/mayab-btc-arbitrage"
+      org.opencontainers.image.source="https://github.com/raulivan1200/mayab-rust-coding-challenge-mx"
 
 RUN groupadd --system --gid 10001 nonroot \
     && useradd --system --uid 10001 --gid nonroot --no-create-home nonroot
