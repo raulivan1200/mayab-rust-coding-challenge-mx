@@ -14,10 +14,11 @@ hardware/dataset. La metodología y sus límites están en
 > **Power phrase medible:** *la red espera en milisegundos; Mayab decide en
 > microsegundos.* En una corrida local reproducible sobre Apple M4, una iteración
 > de ingreso de cotización —incluyendo acceso al estado y paso por el motor—
-> registró **4.089 µs de mediana: ~244,559 iteraciones/s**. El benchmark tomó
-> **1.8 millones de muestras en ~5.01 s**. No es rentabilidad ni volumen de
-> mercado y no se compara con datasets ajenos; hardware, commit, comando y
-> límites están en [BENCHMARKING.md](BENCHMARKING.md).
+> registró **4.089 µs de mediana: ~244,559 iteraciones/s**. Criterion recolectó
+> **~1.8 millones de iteraciones en ~5.01 s** distribuidas en 100 muestras. No
+> es rentabilidad ni volumen de mercado y no se compara con datasets ajenos;
+> hardware, commit, comando y límites están en
+> [BENCHMARKING.md](BENCHMARKING.md).
 
 En el dashboard la frase no queda congelada: muestra el total acumulado de
 rutas evaluadas por **ese proceso**, su cómputo p50 y los eventos/s observados.
@@ -99,7 +100,7 @@ El sistema corre como un solo binario Rust: conexiones WebSocket concurrentes so
 
 ### Profundidad y parametrización
 
-**Mayab no tiene una estrategia rígida: tiene un espacio de control explícito, validado y auditable.** El catálogo contiene **35 controles globales + 4 controles por venue configurado**. Con los 10 CEX públicos son **75 variables independientes**; si también se cargan los dos adaptadores DEX experimentales son **83**. No se cuentan métricas calculadas, campos decorativos ni aliases de variables de entorno. El total efectivo y el catálogo, con categoría, procedencia, mutabilidad y restricción de cada entrada, se calculan en runtime en `GET /api/paquete-evaluacion` bajo `parametrizacion`.
+**Mayab no tiene una estrategia rígida: tiene un espacio de control explícito, validado y auditable.** El catálogo contiene **35 controles globales + 4 controles por venue configurado**. Con los 10 CEX públicos son **75 variables independientes**; si también se cargan los dos adaptadores DEX experimentales son **83**. No se cuentan métricas calculadas, campos decorativos ni alias de variables de entorno. El total efectivo y el catálogo, con categoría, procedencia, mutabilidad y restricción de cada entrada, se calculan en runtime en `GET /api/paquete-evaluacion` bajo `parametrizacion`.
 
 La configuración se divide por nivel para no confundir facilidad de uso con superficie operativa:
 
@@ -233,7 +234,7 @@ Contrato HTTP:
 
 ## Virtudes principales
 
-La revision rapida y reproducible esta en [docs/EVIDENCE_MATRIX.md](docs/EVIDENCE_MATRIX.md). Separa evidencia LIVE de escenarios SYNTHETIC y enlaza cada afirmacion con runtime, codigo, prueba y endpoint.
+La revisión rápida y reproducible está en [docs/EVIDENCE_MATRIX.md](docs/EVIDENCE_MATRIX.md). Separa evidencia LIVE de escenarios SYNTHETIC y enlaza cada afirmación con runtime, código, prueba y endpoint.
 
 - **GA híbrido multiobjetivo**: non-dominated sorting, rank y crowding distance sobre PnL, Sharpe, drawdown y win rate; publica el frente de Pareto y elige de forma determinista el mayor fitness ajustado por riesgo del primer frente. Incluye cruce uniforme, mutación gaussiana, **recocido simulado**, **evolución diferencial** y **reinicio adaptativo**.
 - **Autoridad GA separada**: el hot path usa `mayab-ga-champion-v1`, artefacto offline inmutable entrenado con semillas 101..124 y evaluado una sola vez sobre holdout sellado 401..424. La API/UI publica el SHA del protocolo; el GA live es `ga_live_explorer`, puede mostrar challengers pero no autopromoverse ni cambiar ejecución.
@@ -624,7 +625,7 @@ La demo pública actual apunta a Cloud Run. Es la opción recomendada para el co
 Deploy manual desde el código fuente. El script deja una sola instancia
 caliente porque wallets, GA y WebSocket viven en el proceso; la auditoría queda
 en TimescaleDB durable. Antes, crea dos secretos en Secret Manager (token de
-administración y `DATABASE_URL`) y una service account runtime dedicada con
+administración y `DATABASE_URL`) y una cuenta de servicio de runtime dedicada con
 acceso mínimo a esas versiones de secreto.
 
 ```bash
@@ -838,7 +839,7 @@ en ese servidor para pruebas inmediatas; sin él, se registran globalmente. Para
 instalar la app, habilita los scopes `applications.commands` y `bot`; estos
 comandos no requieren permisos adicionales del bot.
 
-La IA requiere una key nueva y privada en `NVIDIA_API_KEY`. El agente intenta
+La IA requiere una clave nueva y privada en `NVIDIA_API_KEY`. El agente intenta
 los modelos de `NVIDIA_MODELS` en orden y continúa con el siguiente ante errores,
 timeouts o respuestas inválidas. Los defaults comprobados son Nemotron 3 Nano
 Omni, Nemotron 3 Nano y Nemotron 3 Ultra. Sus herramientas son:
@@ -856,7 +857,7 @@ La configuración completa, el flujo de firma y los límites de autorización se
 detallan en [MCP-lite y Discord](docs/MCP_DISCORD.md).
 
 Discord recibe primero una respuesta diferida y el resultado de NVIDIA se
-publica después, evitando exceder la ventana inicial de Interactions. Las keys
+publica después, evitando exceder la ventana inicial de Interactions. Las claves
 de NVIDIA o Discord deben configurarse con Secret Manager en Cloud Run, nunca
 como argumentos, código fuente o variables incluidas en imágenes Docker.
 
