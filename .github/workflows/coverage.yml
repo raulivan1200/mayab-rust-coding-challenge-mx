@@ -12,6 +12,8 @@ jobs:
   llvm-cov:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
@@ -27,9 +29,15 @@ jobs:
           name: rust-lcov
           path: lcov.info
           if-no-files-found: error
+      # Codecov is a mirror, not the coverage gate. The local threshold and
+      # uploaded LCOV artifact above remain authoritative if Codecov is down.
       - name: Publish coverage when Codecov is configured
+        if: ${{ env.CODECOV_TOKEN != '' }}
         uses: codecov/codecov-action@v5
         with:
           files: lcov.info
-          fail_ci_if_error: true
-          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+          token: ${{ env.CODECOV_TOKEN }}
+      - name: Record local-only coverage publication
+        if: ${{ env.CODECOV_TOKEN == '' }}
+        run: echo "LCOV verified and uploaded as the rust-lcov workflow artifact; Codecov token is not configured."

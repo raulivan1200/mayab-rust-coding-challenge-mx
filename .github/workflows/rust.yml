@@ -28,18 +28,18 @@ jobs:
           rustup toolchain install "$RUST_VERSION" --profile minimal --component rustfmt,clippy
           rustup default "$RUST_VERSION"
 
-      - name: Cache Cargo dependencies
+      # Cache only immutable downloads. Restoring target/ across commits can
+      # hide stale build artifacts; release candidates must compile cleanly.
+      - name: Cache Cargo downloads
         uses: actions/cache@v6
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-downloads-v2-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-downloads-v2-
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -126,17 +126,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Cache Docker layers
-        uses: actions/cache@v6
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-docker-${{ hashFiles('Dockerfile') }}
-          restore-keys: |
-            ${{ runner.os }}-docker-
-
       - name: Build multi-stage image
         run: |
-          docker build --tag mayab-btc-arbitrage:ci \
+          docker build --pull --no-cache --tag mayab-btc-arbitrage:ci \
             --build-arg MAYAB_GIT_SHA="$GITHUB_SHA" \
             --build-arg MAYAB_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" .
 
@@ -195,7 +187,7 @@ jobs:
           registry="${REGION}-docker.pkg.dev"
           image="${registry}/${PROJECT}/${GAR_REPOSITORY}/${SERVICE}:${GITHUB_SHA}"
           gcloud auth configure-docker "$registry" --quiet
-          docker build --tag "$image" \
+          docker build --pull --no-cache --tag "$image" \
             --build-arg MAYAB_GIT_SHA="$GITHUB_SHA" \
             --build-arg MAYAB_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --build-arg MAYAB_RELEASE_VERSION="1.0.0-final" \
