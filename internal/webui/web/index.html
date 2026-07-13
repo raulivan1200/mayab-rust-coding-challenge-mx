@@ -138,12 +138,12 @@
             <h2>Arquitectura segura para una simulación.</h2>
             <ul>
               <li>Ejecución totalmente simulada en memoria</li>
-              <li>Métricas Prometheus en <code>/metrics</code></li>
+              <li>Telemetría pública en <code>/api/latencias</code>; Prometheus protegido en <code>/metrics</code></li>
               <li>Sin llaves API ni superficie de órdenes privadas</li>
             </ul>
             <div class="landing-actions" style="margin-top: 1.5rem; margin-bottom: 1rem;">
               <button class="btn-link" type="button" data-tab-target="tab-overview">Abrir resumen</button>
-              <a class="btn-link" href="/metrics" target="_blank" rel="noopener">Ver métricas Prometheus</a>
+              <a class="btn-link" href="/api/latencias" target="_blank" rel="noopener">Ver telemetría pública</a>
             </div>
             <p class="seguridad-estado seguridad-ok">La aplicación no envía órdenes ni administra fondos.</p>
           </article>

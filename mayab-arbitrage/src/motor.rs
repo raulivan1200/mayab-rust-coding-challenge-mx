@@ -285,8 +285,13 @@ impl Motor {
         recalcular_latencia: bool,
     ) {
         cotizacion.recibida_en = ahora;
-        if recalcular_latencia && cotizacion.evento_unix_ms > 0 {
-            cotizacion.latencia_ms = (ahora.timestamp_millis() - cotizacion.evento_unix_ms).max(0);
+        if recalcular_latencia {
+            cotizacion.latencia_ms =
+                if cotizacion.timestamp_confiable && cotizacion.evento_unix_ms > 0 {
+                    (ahora.timestamp_millis() - cotizacion.evento_unix_ms).max(0)
+                } else {
+                    0
+                };
         }
         cotizacion.conectado = cotizacion.ultimo_mensaje != "rest_fallback";
         cotizacion.secuencia = self.eventos.fetch_add(1, Ordering::SeqCst) + 1;
@@ -3140,12 +3145,18 @@ fn simular_ejecucion_dos_piernas(
     let sell = state.carteras.balance(&op.venta_en);
     let extra_cost =
         (op.costos.total_usd - op.costos.fee_compra_usd - op.costos.fee_venta_usd).max(0.0);
+    let shock = (op.precio_compra * 0.0004).max(1.0);
+    let rehedge_price = op.precio_venta - shock;
+    let unwind_price = op.precio_compra - shock;
+    let ventaja_rehedge_usd = ((rehedge_price - unwind_price) * op.cantidad_btc).max(0.0);
     let (rehedge_cost, unwind_cost) = match scenario {
         crate::execution::ExecutionScenario::RehedgeCheaper => (1.25, 8.0),
-        crate::execution::ExecutionScenario::UnwindCheaper => (8.0, 3.25),
+        // La selección compara proceeds netos, no sólo el fee nominal. El costo
+        // extra compensa cualquier ventaja de precio del rehedge y hace que el
+        // escenario etiquetado UnwindCheaper produzca unwind de forma estable.
+        crate::execution::ExecutionScenario::UnwindCheaper => (ventaja_rehedge_usd + 8.0, 3.25),
         _ => (4.0, 3.25),
     };
-    let shock = (op.precio_compra * 0.0004).max(1.0);
     crate::execution::simulate(crate::execution::ExecutionRequest {
         execution_id: op.id.clone(),
         scenario,
@@ -3163,8 +3174,8 @@ fn simular_ejecucion_dos_piernas(
         prices: crate::execution::ExecutionPrices {
             leg1_buy_price_usd: decimal(op.precio_compra, "precio_compra")?,
             leg2_sell_price_usd: decimal(op.precio_venta, "precio_venta")?,
-            rehedge_price_usd: decimal(op.precio_venta - shock, "rehedge_price")?,
-            unwind_price_usd: decimal(op.precio_compra - shock, "unwind_price")?,
+            rehedge_price_usd: decimal(rehedge_price, "rehedge_price")?,
+            unwind_price_usd: decimal(unwind_price, "unwind_price")?,
         },
         costs: crate::execution::ExecutionCosts {
             leg1_fee_usd: decimal(op.costos.fee_compra_usd + extra_cost, "leg1_fee_usd")?,
@@ -4154,6 +4165,58 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn timestamp_no_confiable_no_contamina_la_latencia_live() {
+        let motor = Motor::new(cfg_test(), 20_000.0, 2.0, "BTC/USDT".into(), vec![], None);
+        let ahora = Utc::now();
+        let mut quote = cot("A", 100.0, 101.0, 1.0, 1.0);
+        quote.evento_unix_ms = (ahora - chrono::Duration::hours(4)).timestamp_millis();
+        quote.timestamp_confiable = false;
+        quote.latencia_ms = 14_400_000;
+
+        motor.recibir_cotizacion_en(quote, ahora, true).await;
+
+        let state = motor.state.read().await;
+        assert_eq!(
+            state
+                .cotizaciones
+                .get("A:BTC/USDT")
+                .expect("la cotización debe almacenarse")
+                .latencia_ms,
+            0
+        );
+        assert!(!state.latencias_exchange.contains_key("A"));
+    }
+
+    #[tokio::test]
+    async fn timestamp_confiable_alimenta_la_latencia_live() {
+        let motor = Motor::new(cfg_test(), 20_000.0, 2.0, "BTC/USDT".into(), vec![], None);
+        let ahora = Utc::now();
+        let mut quote = cot("A", 100.0, 101.0, 1.0, 1.0);
+        quote.evento_unix_ms = (ahora - chrono::Duration::milliseconds(125)).timestamp_millis();
+        quote.timestamp_confiable = true;
+
+        motor.recibir_cotizacion_en(quote, ahora, true).await;
+
+        let state = motor.state.read().await;
+        assert_eq!(
+            state
+                .cotizaciones
+                .get("A:BTC/USDT")
+                .expect("la cotización debe almacenarse")
+                .latencia_ms,
+            125
+        );
+        assert_eq!(
+            state
+                .latencias_exchange
+                .get("A")
+                .expect("la latencia confiable debe registrarse")
+                .ultimo_ms,
+            125
+        );
+    }
+
     #[test]
     fn z_score_necesita_historial_suficiente() {
         assert_eq!(z_score(&[1.0, 2.0, 3.0], 4.0), 0.0);
@@ -4701,6 +4764,10 @@ mod tests {
             leg2.get("exposicionFinalBtc")
                 .and_then(|value| value.as_f64()),
             Some(0.0)
+        );
+        assert_eq!(
+            leg2.get("recuperacion").and_then(|value| value.as_str()),
+            Some("unwind")
         );
     }
 

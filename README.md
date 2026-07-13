@@ -51,7 +51,7 @@ reinicio del proceso lo devuelve a cero.
 | 0 BTC residual tras fallar la venta | `POST /api/demo/caos` termina en `RECONCILED` con ledger y reservas conciliadas |
 | p50 / p95 / p99 del pipeline | valores runtime en `GET /api/latencias` y `GET /api/jurado` |
 
-La cifra operacional principal no es un spread bruto: es **cero exposición residual después de una segunda pierna rechazada**, con la transición completa y su pérdida de unwind auditadas. Las cifras runtime se publican desde el proceso evaluado; no se congelan en marketing.
+La cifra operacional principal no es un spread bruto: es **cero exposición residual después de una segunda pierna rechazada**, con la transición completa y la acción de recuperación elegida por costo —`rehedge` o `unwind`— auditadas. Las cifras runtime se publican desde el proceso evaluado; no se congelan en marketing.
 
 [Producción pública: Cloud Run sobre una imagen Docker](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app)
 
@@ -62,6 +62,28 @@ La cifra operacional principal no es un spread bruto: es **cero exposición resi
 > lo que su auditoría se reinicia con la revisión; TimescaleDB está implementado
 > para retención durable, pero no se afirma como activo mientras
 > `/api/jurado#/evidenciaClave/persistencia` reporte `sqlite_ephemeral`.
+
+> **Cómo interpretar el deploy público sin falsos negativos:**
+>
+> - La salud canónica de Cloud Run es `GET /api/healthz`; `/healthz` es un alias
+>   local y su ausencia en el edge público no invalida el rollout si la ruta
+>   canónica y `/api/version` responden.
+> - `/api/preflight` publica dos capas distintas: `checks` es el checklist
+>   operacional extensible (puede crecer) y `judgeReadiness` es el gate oficial
+>   exacto de 12 checks. La señal de aprobación es
+>   `judgeReadiness.status=ready` con `passed=12` y `total=12`.
+> - Un `WARN` en `evidenceMatrix` significa que la corrida visible aún no produjo
+>   ese artefacto específico; no equivale por sí solo a un check fallido. En la
+>   segunda pierna, el ejecutor puede elegir `rehedge` o `unwind` según costo y
+>   factibilidad: el invariante exigido es `RECONCILED`, ledger conciliado y
+>   `residualBtc=0`.
+> - `/metrics` queda protegido por `ADMIN_TOKEN` en producción salvo opt-in
+>   explícito `METRICS_PUBLIC=true`; un `401` anónimo es el cierre seguro
+>   esperado. La evidencia pública equivalente está en `/api/latencias`,
+>   `/api/preflight` y `/api/jurado`.
+> - El campeón GA puede perder contra el baseline en holdout. El resultado se
+>   conserva y `gaGana=false` es evidencia contra cherry-picking, no un error del
+>   endpoint.
 
 [Repositorio público en GitHub](https://github.com/raulivan1200/mayab-rust-coding-challenge-mx)
 
@@ -149,11 +171,11 @@ El usuario puede cambiar en caliente tamaño máximo de orden, utilidad y difere
 | Liquidez o balance insuficiente | Reduce `filledQtyBtc` y marca fill parcial; si el ejecutable llega a cero, descarta con `SKIP_THIN_OR_INVENTORY` | `POST /api/demo {"escenario":"fill_parcial"}` y `liquidez_insuficiente` |
 | Mercado movido entre señal y ejecución | Recalcula precio, costos y utilidad; cancela si la ruta dejó de superar los límites | escenario `mercado_movido` + inspector de decisiones |
 | Orden rechazada | No confirma balances ni P&L como si hubiera fill; registra rechazo y eleva la métrica de fallo | escenario `fallo_orden` + timeline/export |
-| Segunda pierna rechazada | Reserva inventario, registra la exposición temporal, elige recovery, hace unwind simulado y exige conciliación | `POST /api/demo/caos`; FSM termina en `RECONCILED` y `exposicionFinalBtc = 0` |
+| Segunda pierna rechazada | Reserva inventario, registra la exposición temporal, elige por costo entre `rehedge` y `unwind` simulados y exige conciliación | `POST /api/demo/caos`; FSM termina en `RECONCILED` y `exposicionFinalBtc = 0` |
 | Pérdida acumulada o volatilidad extrema | Activa circuit breaker; en modo conservador duplica el diferencial mínimo | escenario `circuit_breaker` + `/api/estado` |
 | Feed desconectado, stale o inconsistente | Deja de rutear ese libro; intenta snapshot REST público etiquetado y publica gaps/checksums/resyncs en métricas | `/api/preflight`, `/api/latencias` y `/metrics` |
 
-La prueba fuerte es `POST /api/demo/caos`: encadena fill parcial, baja liquidez, fallo de segunda pierna, unwind, circuit breaker, rebalanceo y recuperación. No basta con “capturar la excepción”; la corrida valida reservas, ledger, conservación de BTC, ecuación de wallets, P&L realizado y exposición residual cero.
+La prueba fuerte es `POST /api/demo/caos`: encadena fill parcial, baja liquidez, fallo de segunda pierna, recuperación por la alternativa factible de menor costo, circuit breaker, rebalanceo y vuelta a operación. No basta con “capturar la excepción”; la corrida valida reservas, ledger, conservación de BTC, ecuación de wallets, P&L realizado y exposición residual cero.
 
 **Frase de defensa:** *fallar seguro significa terminar conciliado: ninguna pierna rechazada puede desaparecer detrás de un log ni dejar BTC fantasma.*
 
@@ -205,7 +227,7 @@ Los ADR completos están en [`docs/ADRs`](docs/ADRs), y los límites de arquitec
 1. Abre la [aplicación pública](https://mayab-btc-arbitrage-3erllnacaa-uc.a.run.app) y revisa el badge LIVE/DEMO/REST, P&L, mapa de rutas, wallets, eventos y panel GA. Si prefieres una visita guiada, pulsa **Recorrido de 2 min** en el encabezado; es opcional.
 2. Abre `/api/jurado`: concentra rúbrica, scorecard, cobertura finalista, checks, evidencia clave y links de auditoría.
 3. Abre `/api/preflight`: confirma `judgeReadiness.status=ready`, checks completos y la rúbrica oficial de 5 criterios.
-4. La instancia pública queda precargada automáticamente al arrancar en `MAYAB_JUDGE_MODE=true` con una corrida auditada completa: GA, PnL positivo, fill parcial, mercado movido, liquidez insuficiente, segunda pierna rechazada con unwind a exposición cero y rebalanceo. El jurado puede reiniciar y repetir únicamente los recorridos cerrados `/api/demo/reset`, `/api/demo/final` y `/api/demo/caos`; cualquier otra mutación sigue protegida por `ADMIN_TOKEN`.
+4. La instancia pública queda precargada automáticamente al arrancar en `MAYAB_JUDGE_MODE=true` con una corrida auditada completa: GA, PnL positivo, fill parcial, mercado movido, liquidez insuficiente, segunda pierna rechazada con recovery conciliado a exposición cero y rebalanceo. El jurado puede reiniciar y repetir únicamente los recorridos cerrados `/api/demo/reset`, `/api/demo/final` y `/api/demo/caos`; cualquier otra mutación sigue protegida por `ADMIN_TOKEN`.
 5. En local, o como operador autenticado, pulsa **Ejecutar prueba completa** en la portada y **Forzar rebalanceo** en el dashboard para reproducir la corrida y el movimiento interno con costo explícito.
 6. Abre `/api/paquete-evaluacion`: verás scorecard, huella de auditoría, recomendaciones finales, backtest reproducible, estado del backend de evidencia y diferenciadores listos para revisión.
 
@@ -270,7 +292,7 @@ La revisión rápida y reproducible está en [docs/EVIDENCE_MATRIX.md](docs/EVID
 - **Métricas Fintech Avanzadas**: Sharpe Ratio, Sortino Ratio, Kelly Criterion, TOBI, y actualización Bayesiana.
 - **Soporte Multi-Par Automático**: Permite añadir pares dinámicos (e.g. ETH, SOL) a través de PARES_EXTRA.
 - **WebSocket-first con REST fallback público**: los WebSockets son la fuente primaria; si un feed queda stale o desconectado, el adaptador toma un snapshot REST de order book y lo marca como `rest_fallback`.
-- **Integridad observable por feed**: `/metrics` publica conexión, latencia, tiempo invalidado, resincronizaciones, gaps de secuencia y fallos de checksum por exchange/par. Así una desconexión o libro corrupto deja evidencia cuantificable en vez de convertirse silenciosamente en una oportunidad.
+- **Integridad observable por feed**: `/metrics` publica conexión, latencia, tiempo invalidado, resincronizaciones, gaps de secuencia y fallos de checksum por exchange/par. En producción requiere `ADMIN_TOKEN` por defecto salvo `METRICS_PUBLIC=true`; los resúmenes públicos permanecen disponibles en `/api/latencias` y `/api/preflight`. Así una desconexión o libro corrupto deja evidencia cuantificable en vez de convertirse silenciosamente en una oportunidad.
 - **Evaluación de rutas compra-venta en cada ciclo**, no solo comparación entre dos mercados fijos.
 - **Precisión financiera interna con `rust_decimal`**: fees, slippage, retiro amortizado, basis USD/USDT, PnL, tamaño ejecutable y actualización de wallets se calculan con decimal fijo; el JSON público conserva números para compatibilidad con la UI.
 - **Simulación realista** con comisiones por casa, deslizamiento estimado con niveles de order book, retiro amortizado, riesgo de latencia, balances por cartera y ajuste USD/USDT.
@@ -296,7 +318,7 @@ La revisión rápida y reproducible está en [docs/EVIDENCE_MATRIX.md](docs/EVID
 - **Ranking de latencia por exchange** con EWMA, min/max, feed degradado y sugerencia de región operativa.
 - **Telemetría end-to-end del pipeline**: separa wire latency de quote→decisión y compute interno, publica p50/p95/p99, throughput, rutas evaluadas y ticks coalescidos sin datos nuevos.
 - **Modo demo adverso controlado** desde la UI/API para forzar fallo de orden, shock de mercado, liquidez insuficiente, circuit breaker y rebalanceo sin depender del azar.
-- **Prueba de caos encadenada** (`POST /api/demo/caos`): ejecuta fill parcial, baja liquidez, rechazo de segunda pierna con unwind, circuit breaker, rebalanceo y recuperación; termina con ocho checks y exposición residual explícita.
+- **Prueba de caos encadenada** (`POST /api/demo/caos`): ejecuta fill parcial, baja liquidez, rechazo de segunda pierna con recovery seleccionado por costo, circuit breaker, rebalanceo y recuperación; termina con checks explícitos y exposición residual cero.
 - **Modo demo rentable + GA** para inyectar operaciones sintéticas auditables, generar P&L visible y entrenar el GA cuando el mercado real no ofrece spread neto ejecutable.
 - **Exportación JSON/CSV** de operaciones, oportunidades, eventos, auditoría, rebalanceos, balances, configuración y estado GA.
 - Docker listo para correr sin instalar Rust en la máquina evaluadora.
@@ -327,9 +349,10 @@ La revisión rápida y reproducible está en [docs/EVIDENCE_MATRIX.md](docs/EVID
 - **Permite activar/desactivar exchanges individualmente** desde la UI en tiempo real.
 - Permite cambiar el perfil operativo con presets: Balanceado, Agresivo, Seguro y Estrés.
 - Expone un tablero web en tiempo real con mapa de rutas, score por oportunidad, panel genético, tablas, balances, rebalanceos, timeline operativo, modo demo/live/rest, backtest y gráficas.
-- Expone `/api/preflight` como gate exacto 12/12 de operación, evidencia,
-  conciliación adversa y persistencia; `twoLegReconciliation` exige tanto el
-  reporte runtime como la matriz determinista 12/12 con la misma huella.
+- Expone `/api/preflight` con checks operacionales extensibles y un
+  `judgeReadiness` exacto 12/12 de operación, evidencia, conciliación adversa y
+  persistencia; `twoLegReconciliation` exige tanto el reporte runtime como la
+  matriz determinista 12/12 con la misma huella.
 - Expone un snapshot compacto para agentes y scripts en `/api/resumen-llm`, incluyendo decisión actual, mejor ruta, GA, riesgo, PnL y últimos eventos.
 - Expone `/api/paquete-evaluacion` como evidencia autocontenida para jueces: score por criterio, guion de demo, resumen ejecutivo, backtest y enlaces de auditoría.
 - Persiste evidencia en SQLite para desarrollo y demos; ofrece TimescaleDB con TLS para un despliegue que requiera retención durable.
@@ -423,7 +446,7 @@ DETECTED → RESERVED
 → RECONCILED
 ```
 
-La exposición temporal aparece en la traza, el unwind registra su PnL realizado y la conciliación exige `exposicionFinalBtc = 0`. Se reproduce con `POST /api/demo/caos`, se ve en la tabla **FSM de ejecución y conciliación** y forma parte del gate de release.
+La exposición temporal aparece en la traza, la recuperación seleccionada (`rehedge` o `unwind`) registra su PnL realizado y la conciliación exige `exposicionFinalBtc = 0`. Se reproduce con `POST /api/demo/caos`, se ve en la tabla **FSM de ejecución y conciliación** y forma parte del gate de release.
 
 Flujo recomendado para evaluar la aplicación en vivo:
 
@@ -544,9 +567,11 @@ cargo build --release
 
 ### Salud, readiness y límites HTTP
 
-`GET /healthz` confirma que el proceso responde en el binario actual;
+`GET /healthz` confirma que el proceso responde en ejecución local;
 `GET /api/healthz` es la comprobación pública canónica y compatible con la
-revisión desplegada. `GET /readyz` devuelve 200
+revisión desplegada. Los monitores y jueces deben usar la ruta canónica: el
+alias local puede no publicarse en el edge de Cloud Run y no forma parte del
+gate de rollout. `GET /readyz` devuelve 200
 cuando el backend de auditoría seleccionado está activo, su cola no ha perdido
 escrituras, la persistencia es TimescaleDB durable en el perfil
 `MAYAB_ENV=production` sin excepción efímera, el motor tiene
@@ -833,7 +858,7 @@ GET  /api/healthz          verificación de salud canónica para Cloud Run y mon
 GET  /api/version          build, schema, sesión y hashes canónicos de dataset/configuración
 GET  /api/estado           captura JSON completa del estado (incluye estado genético)
 GET  /api/jurado           Jury Mode: rúbrica, scorecard, cobertura, checks y enlaces de auditoría
-GET  /api/preflight        gate 12/12: operación, evidencia, conciliación y persistencia
+GET  /api/preflight        judgeReadiness 12/12 + checks operacionales extensibles
 GET  /api/resumen-llm      snapshot compacto para jueces, scripts y agentes LLM
 POST /api/discord/interactions webhook firmado para slash commands de Discord
 GET  /api/mcp/manifest     catálogo MCP-lite de herramientas para agentes LLM
@@ -845,6 +870,7 @@ GET  /api/lab/sweep        Research Lab: sweep Conservador/Balanceado/Agresivo/G
 GET  /api/research/economics waterfall, break-even, capacidad y embudo observados
 GET  /api/research/execution-matrix matriz determinista de 12 escenarios de ejecución
 GET  /api/research/ledger-audit conciliación de IDs, métricas, wallets, fills, reservas y PnL
+GET  /metrics              Prometheus; protegido por ADMIN_TOKEN en producción salvo METRICS_PUBLIC=true
 GET  /api/export/json      descarga reporte completo de auditoría en JSON
 GET  /api/export/csv       descarga bitácora unificada en CSV
 GET  /api/export/evidence  resumen Markdown con sesión y hashes de procedencia
